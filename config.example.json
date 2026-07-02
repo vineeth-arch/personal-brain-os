@@ -1,0 +1,23 @@
+{
+  "vault_path": "",
+  "inbox_path": "",
+  "archive_path": "",
+  "failed_path": "",
+  "transcription": {
+    "engine": "whispercpp",
+    "whispercpp": {
+      "binary_path": "",
+      "model_path": ""
+    }
+  },
+  "ntfy": {
+    "url": "",
+    "topic": ""
+  },
+  "api": {
+    "auth_token": ""
+  },
+  "classification": {
+    "confidence_threshold": 0.7
+  }
+}

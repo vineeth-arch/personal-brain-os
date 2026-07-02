@@ -1,0 +1,14 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Node
+node_modules/
+
+# Local config & secrets (never commit)
+config.json
+.env
+
+# Pipeline database (SQLite = events/logs only, disposable)
+*.db
