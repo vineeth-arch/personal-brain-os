@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Workflow Decision Tree — Brain OS</title>
+<style>
+  /* Design Innsæit tokens (dark). Self-contained: no external assets.
+     Bricolage/Hanken are used when installed; system sans otherwise. */
+  :root{
+    --bg:#1F006E; --bg-subtle:#1A0552; --bg-emphasis:#3A14BE; --bg-muted:#190550;
+    --stamp:#280A86; --text-emphasis:#FFFFFF; --text:#E2D8F5; --text-subtle:#9B8FC9;
+    --text-muted:#7E70B0; --border:#36207A; --border-subtle:#2A1466; --border-emphasis:#523399;
+    --brand:#00FFCF; --brand-text:#11003B; --spark:#FF006C;
+    --font-cal:"Bricolage Grotesque","Hanken Grotesk",system-ui,sans-serif;
+    --font-sans:"Hanken Grotesk",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font-sans);font-size:15px;line-height:1.55;padding:48px 20px 96px}
+  .wrap{max-width:960px;margin:0 auto}
+  .eyebrow{color:var(--brand);font-size:11px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;margin-bottom:10px}
+  h1{font-family:var(--font-cal);font-weight:800;font-size:clamp(34px,6vw,56px);line-height:.95;letter-spacing:-.02em;color:var(--text-emphasis)}
+  h1 .muted{display:block;color:var(--text-subtle);font-weight:600;font-size:.5em;margin-bottom:6px}
+  .lede{color:var(--text-subtle);max-width:60ch;margin-top:14px}
+  .lede b{color:var(--text-emphasis);font-weight:600}
+  .rail{border-left:2px solid var(--border);margin:56px 0 0 10px;padding-bottom:8px}
+  .node{position:relative;padding:0 0 44px 30px}
+  .node::before{content:"";position:absolute;left:-10px;top:6px;width:18px;height:18px;border-radius:50%;
+    background:var(--bg);border:2px solid var(--border-emphasis)}
+  .node .q-eyebrow{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:var(--text-muted)}
+  .node h2{font-family:var(--font-cal);font-weight:800;font-size:26px;letter-spacing:-.02em;color:var(--text-emphasis);margin:4px 0 14px}
+  .branches{display:grid;grid-template-columns:repeat(auto-fit,minmax(270px,1fr));gap:12px}
+  .branch{background:var(--bg-subtle);border:1px solid var(--border-subtle);border-radius:14px;padding:16px 18px}
+  .branch.chosen{background:var(--stamp);border-color:var(--border-emphasis)}
+  .branch h3{font-family:var(--font-cal);font-weight:700;font-size:16px;letter-spacing:-.01em;color:var(--text-emphasis);display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+  .chosen-pill{font-family:var(--font-sans);font-size:10px;font-weight:800;text-transform:uppercase;letter-spacing:.14em;
+    background:var(--brand);color:var(--brand-text);border-radius:999px;padding:2px 10px}
+  .branch ul{list-style:none;margin-top:10px}
+  .branch li{padding:4px 0 4px 22px;position:relative;font-size:13.5px}
+  .branch li.plus::before{content:"+";position:absolute;left:2px;top:3px;color:var(--text-emphasis);font-weight:800}
+  .branch li.minus::before{content:"−";position:absolute;left:2px;top:3px;color:var(--spark);font-weight:800}
+  .adhd{margin-top:10px;border-left:3px solid var(--border-emphasis);padding:2px 0 2px 12px;color:var(--text-subtle);font-size:13px}
+  .adhd b{color:var(--text-emphasis);font-weight:700;font-size:10.5px;text-transform:uppercase;letter-spacing:.12em;display:block;margin-bottom:2px}
+  .verdict{background:var(--stamp);border:1px solid var(--border-emphasis);border-radius:16px;padding:26px 28px;margin-top:24px}
+  .verdict .big{font-family:var(--font-cal);font-weight:800;font-size:26px;letter-spacing:-.02em;line-height:1.05;color:var(--brand)}
+  .verdict p{margin-top:10px;max-width:70ch}
+  .verdict .fine{color:var(--text-subtle);font-size:13px}
+  footer{margin-top:72px;color:var(--text-muted);font-size:12px}
+  footer .eyebrow{color:var(--text-subtle);letter-spacing:.08em}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">Brain OS · From the research · docs/RESEARCH.md</div>
+    <h1><span class="muted">Adopting a workflow or system —</span>The decision tree</h1>
+    <p class="lede">Seven decisions, in the order they constrain each other. Each branch lists its
+    benefits (+), its tradeoffs (−), and the ADHD-specific note from the research.
+    <b>Teal pills mark the path Brain OS takes.</b> Sources and the full findings live in
+    <b>docs/RESEARCH.md</b>.</p>
+  </header>
+
+  <div class="rail">
+
+    <div class="node">
+      <div class="q-eyebrow">Decision 1</div>
+      <h2>How do thoughts get captured?</h2>
+      <div class="branches">
+        <div class="branch chosen">
+          <h3>Voice-first <span class="chosen-pill">Brain OS</span></h3>
+          <ul>
+            <li class="plus">Beats the thought's decay — speaking ≈130 wpm vs ≈40 typing</li>
+            <li class="plus">Forgives rambling and topic-jumps (the ADHD input mode)</li>
+            <li class="minus">Needs transcription, and everything downstream must be triaged</li>
+            <li class="minus">Awkward in public — keep a text fallback</li>
+          </ul>
+          <p class="adhd"><b>ADHD note</b>Capture reliability must be near-100%. One silently lost memo kills the habit faster than any missing feature.</p>
+        </div>
+        <div class="branch">
+          <h3>Text quick-add</h3>
+          <ul>
+            <li class="plus">Precise, silent, searchable the moment it lands</li>
+            <li class="minus">~6 executive-function steps per capture (unlock, find, open, type…)</li>
+          </ul>
+          <p class="adhd"><b>ADHD note</b>Good secondary path (the cockpit's quick-capture box); too much friction as the primary one.</p>
+        </div>
+        <div class="branch">
+          <h3>Always-on wearable</h3>
+          <ul>
+            <li class="plus">Zero effort — nothing is ever missed</li>
+            <li class="minus">Hallucinated summaries and invented commitments (Limitless reports)</li>
+            <li class="minus">Consent problems for everyone around you</li>
+          </ul>
+          <p class="adhd"><b>ADHD note</b>Floods the review queue — trades capture friction for triage debt. Actively harmful.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="node">
+      <div class="q-eyebrow">Decision 2</div>
+      <h2>Who files things?</h2>
+      <div class="branches">
+        <div class="branch">
+          <h3>You, manually</h3>
+          <ul>
+            <li class="plus">Full trust in every placement</li>
+            <li class="minus">Filing is the chore that kills Obsidian/Notion systems</li>
+          </ul>
+          <p class="adhd"><b>ADHD note</b>"Systems that worked brilliantly when I remembered they existed." The filing backlog becomes the shame surface.</p>
+        </div>
+        <div class="branch chosen">
+          <h3>AI, behind a review gate <span class="chosen-pill">Brain OS</span></h3>
+          <ul>
+            <li class="plus">Filing stops being your job; trust survives because every low-confidence call waits for you</li>
+            <li class="plus">Every decision builds an accuracy record — autonomy can be earned later</li>
+            <li class="minus">The queue is a new surface: it must stay bounded and drainable or it becomes inbox-guilt</li>
+          </ul>
+          <p class="adhd"><b>ADHD note</b>The gate is one-tap, batched, capped (~10). Approve or retype — never re-organize.</p>
+        </div>
+        <div class="branch">
+          <h3>AI, fully automatic</h3>
+          <ul>
+            <li class="plus">Zero friction, zero decisions</li>
+            <li class="minus">Silent errors → trust collapse → abandonment (Mem's ghost tags, Voicenotes' invented todos)</li>
+          </ul>
+          <p class="adhd"><b>ADHD note</b>Once you stop believing the system filed correctly, you stop capturing. Earn autonomy per-category instead of granting it up front.</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="node">
+      <div class="q-eyebrow">Decision 3</div>
+      <h2>How is knowledge organized?</h2>
+      <div class="branches">
+        <div class="branch">
+          <h3>Folders (PARA)</h3>
+          <ul>
+            <li class="plus">Clear homes; works in any tool</li>
+            <li class="minus">One-place-only rigidity; endless boundary disputes</li>
+          </ul>
+        </div>
+        <div class="branch">
+          <h3>Tags</h3>
+          <ul>
+            <li class="plus">Multi-membership; cheap to apply</li>
+            <li class="minus">Sprawl and synonyms without a locked vocabulary</li>
+          </ul>
+          <p class="adhd"><b>ADHD note</b>Only survives with a small, fixed list — the 8-capture-tags rule is that mitigation.</p>
+        </div>
+        <div class="branch">
+          <h3>Links / IDs</h3>
+          <ul>
+            <li class="plus">Matches associative recall — you rarely think in categories</li>
+            <li class="minus">Without resurfacing it decays into Roam's "garbage dump of crufty links"</li>
+          </ul>
+        </div>
+        <div class="branch chosen">
+          <h3>Typed objects + links <span class="chosen-pill">Brain OS</span></h3>
+          <ul>
+            <li class="plus">Structure without filing decisions (Tana's supertag lesson) — the pipeline sets <i>type</i>, links point to immutable ids</li>
+            <li class="plus">Coarse folders remain only as domain bins</li>
+            <li class="minus">The schema must be designed once, well, before note #1 (hence SCHEMA-REFERENCE.md is locked)</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="node">
+      <div class="q-eyebrow">Decision 4</div>
+      <h2>Where do captures land first?</h2>
+      <div class="branches">
+        <div class="branch">
+          <h3>Daily-note-first</h3>
+          <ul>
+            <li class="plus">Zero placement decisions; chronological safety net (Logseq, Reflect)</li>
+            <li class="minus">Knowledge fragments across days unless queries recombine it</li>
+          </ul>
+        </div>
+        <div class="branch chosen">
+          <h3>Inbox-first, then routed <span class="chosen-pill">Brain OS</span></h3>
+          <ul>
+            <li class="plus">Everything ends up typed, routed, and findable by property</li>
+            <li class="minus">Inbox debt and guilt if the queue is allowed to grow unbounded</li>
+          </ul>
+          <p class="adhd"><b>ADHD note</b>Inbox-first only survives with three supports: a push signal, one-touch triage, and a hard cap (~10 items).</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="node">
+      <div class="q-eyebrow">Decision 5</div>
+      <h2>What marks progress?</h2>
+      <div class="branches">
+        <div class="branch">
+          <h3>Streaks</h3>
+          <ul>
+            <li class="plus">Strong short-term pull via loss aversion (Duolingo)</li>
+            <li class="minus">A break is a double failure — demotivation is documented, and freezes exist because of it</li>
+          </ul>
+          <p class="adhd"><b>ADHD note</b>Fragile chains punish the inconsistency that is part of ADHD → shame spiral → app deleted.</p>
+        </div>
+        <div class="branch chosen">
+          <h3>Cumulative + windowed <span class="chosen-pill">Direction</span></h3>
+          <ul>
+            <li class="plus">Shame-free and resilient: "217 captures · 5 of the last 7 days"</li>
+            <li class="plus">Gaps stay visually empty (hollow rings) — never marked as failures</li>
+            <li class="minus">Weaker daily pull — compensate with a small push digest</li>
+          </ul>
+          <p class="adhd"><b>ADHD note</b>The cockpit's dot-row already uses filled-vs-hollow (no X's); the framing shift to cumulative+window is queued in DEFERRED.md.</p>
+        </div>
+        <div class="branch">
+          <h3>None</h3>
+          <ul>
+            <li class="plus">Calmest option (Sunsama ships no gamification at all)</li>
+            <li class="minus">No scaffold during the fragile first weeks of the habit</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="node">
+      <div class="q-eyebrow">Decision 6</div>
+      <h2>How much gets captured — and when is it processed?</h2>
+      <div class="branches">
+        <div class="branch chosen">
+          <h3>Capture everything <span class="chosen-pill">Brain OS</span></h3>
+          <ul>
+            <li class="plus">Nothing lost; classification is the machine's call, not a capture-time decision</li>
+            <li class="minus">Collector's fallacy — "collections make us drown in liabilities" — unless archiving is cheap and deletion honest</li>
+          </ul>
+        </div>
+        <div class="branch">
+          <h3>Scheduled weekly review</h3>
+          <ul>
+            <li class="plus">Thorough distillation</li>
+            <li class="minus">A standing chore — skipped, then shame-spiraled over</li>
+          </ul>
+          <p class="adhd"><b>ADHD note</b>The 15-minute Sunday sweep works only because it's small and bounded. Anything bigger dies.</p>
+        </div>
+        <div class="branch chosen">
+          <h3>Opportunistic + tiny daily resurface <span class="chosen-pill">Direction</span></h3>
+          <ul>
+            <li class="plus">Process a note only when you touch it anyway (Forte); one resurfaced note a day makes the archive pay rent</li>
+            <li class="minus">Slower distillation than scheduled reviews</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+    <div class="node">
+      <div class="q-eyebrow">Decision 7</div>
+      <h2>Who owns the data?</h2>
+      <div class="branches">
+        <div class="branch chosen">
+          <h3>Your own files <span class="chosen-pill">Brain OS</span></h3>
+          <ul>
+            <li class="plus">Survives app churn — every hosted tool in this research has a churn story</li>
+            <li class="plus">Enables the git review gate: every AI batch write is reviewable and revertible</li>
+            <li class="minus">You own the sync and mobile reliability story (where Logseq-style capture risk lives)</li>
+          </ul>
+        </div>
+        <div class="branch">
+          <h3>Hosted cloud</h3>
+          <ul>
+            <li class="plus">Sync and mobile solved for you</li>
+            <li class="minus">Lock-in; your thoughts on someone else's roadmap (Roam's decline, Mem's pivots)</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="verdict">
+    <div class="big">The path, and its two known costs</div>
+    <p>Voice-first → AI with a review gate → typed objects in your own vault → inbox-first →
+    capture everything → resurface daily. That is the maximum-trust, maximum-ownership path —
+    and it occupies a gap no commercial tool fills.</p>
+    <p class="fine">The research prices this path honestly: (1) the triage queue must stay
+    <b>bounded and drainable</b> or it becomes the new guilt pile; (2) progress framing should
+    move toward <b>cumulative + windowed</b>, never fragile chains. Both are queued in
+    DEFERRED.md — after the 30-day test, not before.</p>
+  </div>
+
+  <footer>
+    <div class="eyebrow">Design Innsæit · Brain OS · Decision tree · from docs/RESEARCH.md</div>
+    Every branch above is cited in the research report. A tool, not a monument.
+  </footer>
+
+</div>
+</body>
+</html>
