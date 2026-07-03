@@ -12,3 +12,6 @@ config.json
 
 # Pipeline database (SQLite = events/logs only, disposable)
 *.db
+
+# Vite build output
+web/dist/

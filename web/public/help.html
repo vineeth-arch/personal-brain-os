@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Brain OS — Operating Manual v3</title>
+<style>
+  @font-face{font-family:"Hanken Grotesk";src:url(fonts/hanken-grotesk-latin.woff2) format("woff2-variations");font-weight:100 900;font-display:swap}
+  @font-face{font-family:"Bricolage Grotesque";src:url(fonts/bricolage-grotesque-latin.woff2) format("woff2-variations");font-weight:200 800;font-display:swap}
+  :root{
+    --bg:#1F006E; --bg-subtle:#1A0552; --bg-emphasis:#3A14BE; --bg-muted:#190550;
+    --stamp:#280A86; --text-emphasis:#FFFFFF; --text:#E2D8F5; --text-subtle:#9B8FC9;
+    --text-muted:#7E70B0; --border:#36207A; --border-subtle:#2A1466; --border-emphasis:#523399;
+    --brand:#00FFCF; --brand-emphasis:#00C9A3; --brand-text:#11003B; --spark:#FF006C;
+    --font-cal:"Bricolage Grotesque",sans-serif; --font-sans:"Hanken Grotesk",sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:var(--font-sans);font-size:15px;line-height:1.6;padding:48px 20px 96px}
+  .wrap{max-width:880px;margin:0 auto}
+  .eyebrow{color:var(--brand);font-size:11px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;margin-bottom:10px}
+  .eyebrow.quiet{color:var(--text-subtle);letter-spacing:.08em}
+  h1{font-family:var(--font-cal);font-weight:800;font-size:clamp(38px,7vw,64px);line-height:.95;letter-spacing:-.02em;color:var(--text-emphasis)}
+  h1 .muted{display:block;color:var(--text-subtle);font-weight:600;font-size:.5em;letter-spacing:-.01em;margin-bottom:6px}
+  h2{font-family:var(--font-cal);font-weight:800;font-size:28px;letter-spacing:-.02em;line-height:1;color:var(--text-emphasis);margin-bottom:6px}
+  h3{font-family:var(--font-cal);font-weight:700;font-size:16px;color:var(--text-emphasis);letter-spacing:-.01em}
+  .lede{color:var(--text-subtle);max-width:56ch;margin-top:14px}
+  section{margin-top:72px}
+  .sub{color:var(--text-subtle);font-size:13px;margin-bottom:24px}
+  .rail{border-left:2px solid var(--border);margin-left:8px}
+  .tick{position:relative;padding:18px 0 18px 28px}
+  .tick::before{content:"";position:absolute;left:-8px;top:26px;width:14px;height:2px;background:var(--border-emphasis)}
+  .tick.you::before{background:var(--brand);width:20px;left:-11px}
+  .tick .when{font-family:var(--font-cal);font-weight:800;font-size:22px;letter-spacing:-.02em;color:var(--text-emphasis)}
+  .tick.you .when{color:var(--brand)}
+  .tick .who{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:var(--text-muted);margin-bottom:4px}
+  .tick p{max-width:60ch}
+  .tick .fine{color:var(--text-subtle);font-size:13px;margin-top:4px}
+  kbd{font-family:var(--font-sans);font-weight:600;font-size:12px;background:var(--bg-emphasis);color:var(--text-emphasis);border:1px solid var(--border-emphasis);border-radius:6px;padding:1px 7px;white-space:nowrap}
+  code{font-family:ui-monospace,Menlo,monospace;font-size:12.5px;background:var(--bg-muted);border:1px solid var(--border-subtle);border-radius:6px;padding:2px 6px;color:var(--text)}
+  pre{background:var(--bg-muted);border:1px solid var(--border-subtle);border-radius:12px;padding:14px 16px;overflow-x:auto;margin:10px 0}
+  pre code{background:none;border:none;padding:0}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:14px}
+  .card{background:var(--bg-subtle);border:1px solid var(--border-subtle);border-radius:14px;padding:18px}
+  .card h3{margin-bottom:8px}
+  .card ul{list-style:none}
+  .card li{padding:5px 0 5px 24px;position:relative;font-size:13.5px}
+  .card li::before{content:"";position:absolute;left:2px;top:12px;width:10px;height:10px;border:2px solid var(--border-emphasis);border-radius:50%}
+  .card .tool-eyebrow{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:var(--text-muted);margin-bottom:2px}
+  .dont{border:1px solid var(--border-subtle);border-radius:14px;background:var(--bg-muted);padding:6px 20px;list-style:none}
+  .dont li{padding:13px 0 13px 30px;position:relative;border-bottom:1px solid var(--border-subtle)}
+  .dont li:last-child{border-bottom:none}
+  .dont li::before{content:"✕";position:absolute;left:0;top:12px;color:var(--spark);font-weight:800;font-size:14px}
+  .dont b{color:var(--text-emphasis);font-weight:600}
+  table{width:100%;border-collapse:collapse;font-size:13.5px}
+  th{text-align:left;font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:var(--text-muted);padding:8px 12px;border-bottom:1px solid var(--border)}
+  td{padding:11px 12px;border-bottom:1px solid var(--border-subtle);vertical-align:top}
+  td:first-child{color:var(--text-emphasis);font-weight:600}
+  .stamp{background:var(--stamp);border:1px solid var(--border-emphasis);border-radius:16px;padding:26px 28px;margin-top:18px}
+  .stamp .big{font-family:var(--font-cal);font-weight:800;font-size:44px;letter-spacing:-.03em;line-height:.95;color:var(--brand)}
+  .divider{border:none;border-top:1px dashed var(--border-emphasis);margin:18px 0}
+  .pill{display:inline-block;background:rgba(0,255,207,.10);border:1px solid var(--border-subtle);border-radius:999px;padding:3px 12px;font-size:12px;color:var(--brand);font-weight:600;margin:2px 4px 2px 0}
+  .pill.grey{color:var(--text-subtle);background:transparent}
+  .note{border-left:3px solid var(--brand);padding:4px 0 4px 16px;color:var(--text-subtle);font-size:13.5px;margin-top:14px;max-width:62ch}
+  .phase{display:flex;gap:16px;padding:16px 0;border-bottom:1px solid var(--border-subtle);align-items:baseline}
+  .phase:last-child{border-bottom:none}
+  .phase .num{font-family:var(--font-cal);font-weight:800;font-size:26px;color:var(--text-muted);min-width:70px;letter-spacing:-.02em}
+  .phase.now .num{color:var(--brand)}
+  .phase .body{flex:1}
+  .phase .body b{color:var(--text-emphasis);font-weight:700}
+  .phase .body p{font-size:13.5px;color:var(--text-subtle);margin-top:2px;max-width:58ch}
+  .spark-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--spark);margin-right:6px;vertical-align:middle}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">Personal Brain OS · Field Manual · v3</div>
+    <h1><span class="muted">How to live with it —</span>The Operating Manual</h1>
+    <p class="lede">The system's job: you speak, it remembers, it files, it resurfaces. Your job is four habits and two rituals. Sections 01–06 are today; 07–09 are what each coming pass adds to your day, so you always know what's next and why.</p>
+  </header>
+
+  <!-- ============ 01 DAILY LOOP ============ -->
+  <section>
+    <div class="eyebrow">01 · The Daily Loop</div>
+    <h2>What you do vs. what it does</h2>
+    <p class="sub">Teal ticks = your moves. Grey ticks = automatic. Total human time: under 10 minutes a day.</p>
+    <div class="rail">
+      <div class="tick you">
+        <div class="who">You · all day, anywhere</div>
+        <div class="when">Capture</div>
+        <p>Thought arrives → <kbd>press Action Button</kbd> → talk → <kbd>press again</kbd>. That's the entire habit. Say the tag in the first five words if you know it (<i>"Idea: …", "Todo: …", "Resource: …"</i>) and routing costs nothing. Don't organize. Don't type. Don't open Obsidian.</p>
+        <p class="fine">No Action Button? Lock-Screen Voice Memo control, Control Center wave icon, or "Hey Siri, record a voice memo" — all record with the screen locked.</p>
+      </div>
+      <div class="tick you">
+        <div class="who">You · 2 taps per memo, batch anytime</div>
+        <div class="when">Send to Brain</div>
+        <p>Voice Memos → share → <kbd>→ Brain</kbd> → optional name, optional tag → "✅ Captured". Recordings are safe in Voice Memos until you do this; batching at lunch or evening is fine. Capture never waits on filing.</p>
+      </div>
+      <div class="tick">
+        <div class="who">System · Mac, every 5 min</div>
+        <div class="when">Pipeline</div>
+        <p>Syncthing carries the file over → whisper.cpp transcribes locally → tags route free, untagged goes to Haiku → schema-correct note lands in the right folder → action items appended to today's todos → audio archived, never deleted. Low-confidence guesses park in <code>00-Inbox</code> instead of being silently misfiled.</p>
+      </div>
+      <div class="tick you">
+        <div class="who">You · morning, 2 minutes</div>
+        <div class="when">Glance + Triage</div>
+        <p>Open the <b>Cockpit</b> on your home screen (Pass 3 — it shipped; <code>_System/PIPELINE-STATUS.md</code> remains the markdown fallback). The Today screen answers the three questions at a glance: the traffic-light card is calm, teal, or pink; the streak shows yesterday landed. Then the Triage tab — approve or retype, one tap per note.</p>
+      </div>
+      <div class="tick">
+        <div class="who">System · when something breaks</div>
+        <div class="when">It tells you</div>
+        <p>Failures go to <code>_failed/</code> with a plain-English reason and one ntfy push. Silence means healthy. You never re-listen to audio "just to check".</p>
+      </div>
+      <div class="tick you">
+        <div class="who">You · Sunday, 15 minutes</div>
+        <div class="when">Weekly sweep</div>
+        <p>Inbox to zero · skim <code>capture_log.md</code> · <code>git log</code> the vault · one voice reflection on the week. Done.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 02 DONTS ============ -->
+  <section>
+    <div class="eyebrow">02 · The Don'ts</div>
+    <h2>What you never do</h2>
+    <p class="sub">Each of these feels productive. Each one is the system eating your life instead of serving it.</p>
+    <ul class="dont">
+      <li><b>Don't hand-file or reorganize notes in Obsidian.</b> The pipeline files; you only triage <code>00-Inbox</code>.</li>
+      <li><b>Don't edit anything in <code>raw/</code>.</b> Transcripts are immutable sources. Synthesis happens in <code>wiki/</code>, in the weekly compile.</li>
+      <li><b>Don't invent new folders, types, or tags mid-flow.</b> Vocabulary is locked. Taxonomy itches go to <code>IDEAS-BACKLOG.md</code>.</li>
+      <li><b>Don't skip a capture because it "isn't important enough."</b> Capture everything; classification is the machine's call.</li>
+      <li><b>Don't build past the current pass.</b> New feature ideas → <code>DEFERRED.md</code>, one line, keep living.</li>
+      <li><b>Don't let <code>00-Inbox</code> pass ~10 items.</b> Past ten, triage becomes a chore; chores die.</li>
+      <li><b>Don't babysit the pipeline.</b> Fresh heartbeat + quiet ntfy = working. Checking is the old anxiety, not the new system.</li>
+    </ul>
+  </section>
+
+  <!-- ============ 03 FIRST RUN ============ -->
+  <section>
+    <div class="eyebrow">03 · First Run</div>
+    <h2>Get it live — per tool</h2>
+    <p class="sub">One-time, top-to-bottom, one sitting (~90 min). The code is built; this is the wiring.</p>
+    <div class="grid">
+      <div class="card"><div class="tool-eyebrow">Mac</div><h3>whisper.cpp</h3><ul>
+        <li><code>brew install whisper-cpp</code> (or clone + <code>make</code>)</li>
+        <li>Download <code>small.en</code> model (~466 MB)</li>
+        <li>Test on one wav; note binary + model paths</li>
+        <li><code>brew install ffmpeg</code> if missing</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Repo</div><h3>config.json</h3><ul>
+        <li>Copy <code>config.example.json</code> → <code>config.json</code></li>
+        <li>Fill vault, inbox (Syncthing CaptureInbox), archive, failed paths</li>
+        <li>whisper binary + model paths</li>
+        <li>Random string as <code>api.auth_token</code>; threshold stays <code>0.7</code></li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Shell</div><h3>API keys</h3><ul>
+        <li><code>export ANTHROPIC_API_KEY=…</code> in <code>~/.zshrc</code></li>
+        <li><code>OPENAI_API_KEY</code> only for the cloud fallback</li>
+        <li>Keys live in env — never in config, never in git</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Vault</div><h3>Git</h3><ul>
+        <li><code>git init</code> the vault if not already</li>
+        <li>One clean commit <i>before</i> the backlog run</li>
+        <li>This is the undo button for every batch and every purge</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Phone + Mac</div><h3>ntfy</h3><ul>
+        <li>Install ntfy on iPhone, subscribe to a unique topic</li>
+        <li>Put url + topic in config.json</li>
+        <li>Send a test push; feel the buzz</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Sync</div><h3>Syncthing + Möbius</h3><ul>
+        <li>Confirm CaptureInbox syncs phone ↔ Mac</li>
+        <li>Drop a test file on the phone; watch it land on the Mac</li>
+        <li>Möbius folder visible in the Files app</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">iPhone</div><h3>Capture triggers</h3><ul>
+        <li>Action Button → Voice Memo (records while locked)</li>
+        <li>Build "→ Brain": accept audio → optional name → tag menu (8 tags, skippable) → rename <code>YYYY-MM-DD-HHmm name #tag</code> → save to CaptureInbox → ✅</li>
+        <li>Test end-to-end: record → share → file on Mac</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Terminal</div><h3>Run it</h3><ul>
+        <li>First: the Backlog Ritual (04)</li>
+        <li>Daily: <code>.venv/bin/python -m pipeline --loop</code> in a tab that stays open</li>
+        <li>Phase 5 makes this permanent on ZimaOS</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Browser</div><h3>Cockpit (Pass 3)</h3><ul>
+        <li><code>cd web &amp;&amp; npm ci &amp;&amp; npm run build</code>, serve <code>dist/</code> (or <code>npm run dev</code>)</li>
+        <li>Connect screen: server address + the <code>api.auth_token</code> from config.json</li>
+        <li>Install to home screen (browser menu → Add to Home Screen)</li>
+        <li>Settings (gear, top right): connection, deep links, where every key lives</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Mac</div><h3>API (Pass 2 — next build)</h3><ul>
+        <li><code>.venv/bin/uvicorn api.main:app</code> — the server the Cockpit talks to</li>
+        <li>Until it's built, the Cockpit shows its designed "can't reach the server" card — expected, not broken</li>
+        <li>The contract it must implement: <code>web/API-CONTRACT.md</code></li>
+      </ul></div>
+    </div>
+  </section>
+
+  <!-- ============ 04 BACKLOG ============ -->
+  <section>
+    <div class="eyebrow">04 · The Backlog Ritual</div>
+    <h2>Your month of audio, finally heard</h2>
+    <div class="stamp">
+      <div class="big">--backlog</div>
+      <hr class="divider">
+      <pre><code>cd brain-cockpit
+.venv/bin/python -m pipeline --backlog</code></pre>
+      <p>Oldest-first, batches of 25. Before each batch it git-commits the vault; after each it prints <i>file → type → destination → confidence</i> and waits. Skim, spot-open two or three notes in Obsidian, press enter. Low-confidence items park in <code>00-Inbox</code> — triage across the week, not tonight.</p>
+      <p class="fine">Expect 2–4 sittings for a month. Failures land in <code>_failed/</code> with a reason — retry after fixing, never mid-run.</p>
+    </div>
+    <p class="note">The day the backlog clears, the 30-day clock starts. Not before.</p>
+  </section>
+
+  <!-- ============ 05 TROUBLESHOOTING ============ -->
+  <section>
+    <div class="eyebrow">05 · When it misbehaves</div>
+    <h2>Symptom → cause → fix</h2>
+    <table>
+      <tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr>
+      <tr><td>Recording died mid-thought</td><td>Old Shortcuts recorder</td><td>Voice Memos via Action Button / Lock Screen only — survives lock</td></tr>
+      <tr><td>File never reaches the Mac</td><td>Möbius not syncing / wrong save path</td><td>Force sync in Möbius; check the "→ Brain" save folder</td></tr>
+      <tr><td>Notes stopped appearing</td><td>Watcher not running / Mac asleep</td><td>Check <code>.watcher-heartbeat</code> age; rerun <code>--loop</code>; disable sleep while plugged in</td></tr>
+      <tr><td>Note in <code>00-Inbox</code></td><td>Classifier under 0.7 — by design</td><td>Triage, not an error. Approve or retype</td></tr>
+      <tr><td>File in <code>_failed/</code></td><td>Read its plain-English reason</td><td>Fix the cause, move back to inbox (or retry via API/UI)</td></tr>
+      <tr><td>Transcript is garbage</td><td>Muffled audio / model too small</td><td>Speak near the mic up-front; consider <code>medium.en</code></td></tr>
+      <tr><td>Haiku errors / 429s</td><td>Key missing or rate-limited</td><td>Check env key; transient errors auto-retry then quarantine</td></tr>
+      <tr><td>No ntfy pushes ever</td><td>Wrong topic / not subscribed</td><td>Match topic in config + app; manual test push</td></tr>
+      <tr><td>Cockpit says it can't reach the server</td><td>API (Pass 2) not running / wrong address</td><td>Start <code>uvicorn api.main:app</code>; check the address in Settings → Connection</td></tr>
+      <tr><td>Cockpit rejects the token</td><td>Token ≠ <code>api.auth_token</code> in config.json</td><td>Copy it from config.json into Settings → Connection</td></tr>
+      <tr><td>Cockpit looks stale after an update</td><td>Old app shell cached by the service worker</td><td>Reload twice (the new shell installs on the first, shows on the second)</td></tr>
+      <tr><td>Sample resources still showing</td><td>Seed data not purged yet</td><td>Resources screen → Sample data card → Remove (git-committed first)</td></tr>
+    </table>
+  </section>
+
+  <!-- ============ 06 GATE ============ -->
+  <section>
+    <div class="eyebrow">06 · The Gate</div>
+    <h2>The 30-day test</h2>
+    <div class="stamp">
+      <p>From the day the backlog clears, live the loop daily. The system passes only if, by day 30, you can name out loud:</p>
+      <p style="margin-top:12px"><span class="pill">3 decisions it improved</span> <span class="pill">3 insights it saved</span></p>
+      <hr class="divider">
+      <p class="fine">Fail → kill down to the parts you actually used. Not opened daily by week 3 → same. A tool, not a monument.</p>
+    </div>
+  </section>
+
+  <!-- ============ 07 THE COCKPIT (PASSES 3–5) ============ -->
+  <section>
+    <div class="eyebrow">07 · The Cockpit</div>
+    <h2>Pass 3 is live; what 4–5 add next</h2>
+    <p class="sub">Same loop, better instrument. Nothing below changes the habits — it removes friction from them.</p>
+    <div class="rail">
+      <div class="tick you">
+        <div class="who">Pass 3 · Cockpit UI · shipped</div>
+        <div class="when">Glance is an app</div>
+        <p>The morning check is a PWA on your home screen: traffic-light health card (calm / teal "needs your call" / pink "needs a look"), capture streak in big numerals with the 30-day dot row, one resurfaced note with an Open-in-Obsidian link, the triage queue as one-tap cards, quick text capture with the 8 tag chips, and a Settings screen (gear icon) with the connection, deep links, and a map of where every key and path lives. <b>You do:</b> install it to the home screen once; the 2-minute morning ritual now takes 60 seconds. It needs the Pass 2 API running to have data — until then it shows the plain-English "can't reach the server" card.</p>
+      </div>
+      <div class="tick">
+        <div class="who">Pass 4 · Integrations</div>
+        <div class="when">One pane of truth</div>
+        <p>Status cards for every moving part — whisper.cpp, OpenAI fallback toggle, Claude key, ntfy, Syncthing, git, watcher heartbeat — plus deep links out to Obsidian, Dex, Gmail, Calendar, cal.diy, n8n, ZimaOS. <b>You do:</b> nothing daily; visit when something feels off instead of guessing.</p>
+      </div>
+      <div class="tick">
+        <div class="who">Pass 5 · Hardening</div>
+        <div class="when">It watches itself</div>
+        <p>Watchdog pings if the watcher dies, optional 8am digest, auto-retry on transient failures, startup self-check, backup card. <b>You do:</b> trust the silence even more.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 08 RESOURCE OS (PASS 6) ============ -->
+  <section>
+    <div class="eyebrow">08 · Resource OS · Pass 6</div>
+    <h2>Your library, alive</h2>
+    <p class="sub">Every tool, book, film, article, recipe, and place you save — as a visual gallery with your one-line insight attached. <span class="spark-dot"></span>The pink dot means a resource carries an insight.</p>
+    <div class="rail">
+      <div class="tick you">
+        <div class="who">You · when you meet a resource</div>
+        <div class="when">Save it by voice</div>
+        <p><kbd>Action Button</kbd> → <i>"Resource: the book Alchemy by Rory Sutherland — someone said it's the anti-logic of branding."</i> Done. The pipeline files it as a resource note; the gallery picks it up on next load. Typing a URL into quick capture works too.</p>
+      </div>
+      <div class="tick you">
+        <div class="who">You · browsing, deciding, remembering</div>
+        <div class="when">The gallery</div>
+        <p>Cover-card grid, filter by category (books / films / tools / recipes / places) and status, search everything. Tap a card → detail drawer: <kbd>Open source ↗</kbd> deep-links out, <kbd>Open in Obsidian</kbd> for the raw note, one button advances the status ("Start consuming" → "Mark consumed").</p>
+      </div>
+      <div class="tick you">
+        <div class="who">You · the moment you finish something</div>
+        <div class="when">One takeaway</div>
+        <p>Marking a resource consumed lands you in a single input: <i>"One takeaway?"</i> Speak-to-type one sentence, save. That sentence is the whole point of the Resource OS — a library of things you consumed <b>with what they changed in you</b> attached. Skippable, never nagging.</p>
+      </div>
+      <div class="tick">
+        <div class="who">System · sample data lifecycle</div>
+        <div class="when">Seeded → explored → purged</div>
+        <p>The dashboard launches with ~36 sample resources (<code>sample: true</code>) so you learn it full, not empty. When real resources flow in: the quiet <b>Sample data</b> card at the bottom removes them — scoped to older than 1 day / 1 week / 1 month / all, git-committed before every purge, physically unable to touch a real note. The card disappears when no samples remain.</p>
+      </div>
+      <div class="tick you">
+        <div class="who">You · Sunday, folded into the sweep</div>
+        <div class="when">Shelf check</div>
+        <p>Filter status = consuming. Anything stalled three weeks? Be honest: archive it or finish it. The library stays alive because it stays honest.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 09 THE ROAD AFTER ============ -->
+  <section>
+    <div class="eyebrow">09 · The Road After</div>
+    <h2>What comes next, in order</h2>
+    <p class="sub">So the future stops occupying working memory. Each unlocks when the previous is lived-in, not merely built.</p>
+    <div class="phase now"><div class="num">Now</div><div class="body"><b>Wire + backlog + live the loop</b><p>Section 03 → 04 → daily loop. Everything below waits on this being real.</p></div></div>
+    <div class="phase"><div class="num">P 3–5</div><div class="body"><b>Finish the Cockpit</b><p>UI, integrations, hardening — one session each, prompts already written in the build plan.</p></div></div>
+    <div class="phase"><div class="num">P 6</div><div class="body"><b>Resource OS dashboard</b><p>Spec written (PASS-6-RESOURCE-OS-BUILD.md). Seed → explore → purge samples as real data arrives.</p></div></div>
+    <div class="phase"><div class="num">P 7</div><div class="body"><b>Relationship OS surfaces</b><p>07-People views, cadence board, warm-up stages for the Dubai pipeline — after Dex sync + the proactive engine exist. Deliberately later, at your call.</p></div></div>
+    <div class="phase"><div class="num">P 8–9</div><div class="body"><b>Decision views + /query</b><p>Calibration charts over the decision journal; ask-your-vault with cited answers.</p></div></div>
+    <div class="phase"><div class="num">P 10</div><div class="body"><b>ZimaOS deploy</b><p>Docker Compose + Cloudflare Tunnel — the whole Cockpit, anywhere, always-on. This one can move earlier; it's deployment, not features.</p></div></div>
+    <div class="phase"><div class="num">P ∞</div><div class="body"><b>The unified graph</b><p>The capstone. Needs a rich, lived-in vault or it's noise. Last, on purpose.</p></div></div>
+  </section>
+
+  <footer style="margin-top:80px;color:var(--text-muted);font-size:12px">
+    <div class="eyebrow quiet">Design Innsæit · Brain OS · Manual v3</div>
+    Capture is the only habit. Everything else is the machine keeping its promises.
+  </footer>
+
+</div>
+</body>
+</html>

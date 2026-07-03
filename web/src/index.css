@@ -1,0 +1,146 @@
+@import "tailwindcss";
+
+/* Dark mode is class-driven (DESIGNSYSTEM.md: dark is the DEFAULT — index.html
+   hardcodes <html class="dark">). Tailwind v4 defaults to media-query dark,
+   so the variant must be redefined. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* ---- Fonts: self-hosted variable woff2 (OFL — see public/fonts/OFL.txt) ---- */
+@font-face {
+  font-family: "Hanken Grotesk";
+  src: url(/fonts/hanken-grotesk-latin.woff2) format("woff2-variations");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Bricolage Grotesque";
+  src: url(/fonts/bricolage-grotesque-latin.woff2) format("woff2-variations");
+  font-weight: 200 800;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---- DESIGNSYSTEM.md §2 color tokens, verbatim. Light on :root, dark on .dark. ---- */
+:root {
+  --cal-bg: #edeae2;
+  --cal-bg-subtle: #e4e0d6;
+  --cal-bg-emphasis: #d6d1c5;
+  --cal-bg-muted: #eae6dd;
+  --cal-stamp: #fbf9f3;
+  --cal-bg-inverted: #161310;
+  --cal-text-emphasis: #161310;
+  --cal-text: #524e47;
+  --cal-text-subtle: #6e6a61;
+  --cal-text-muted: #9c988d;
+  --cal-text-inverted: #edeae2;
+  --cal-border: #d2ccbe;
+  --cal-border-subtle: #ded8cc;
+  --cal-border-emphasis: #9c988d;
+  --cal-border-muted: #e4e0d6;
+  --cal-brand: #ff006c;
+  --cal-brand-emphasis: #d60059;
+  --cal-brand-text: #ffffff;
+  --cal-spark: #ff006c;
+}
+.dark {
+  --cal-bg: #1f006e;
+  --cal-bg-subtle: #1a0552;
+  --cal-bg-emphasis: #3a14be;
+  --cal-bg-muted: #190550;
+  --cal-stamp: #280a86;
+  --cal-bg-inverted: #efe6ea;
+  --cal-text-emphasis: #ffffff;
+  --cal-text: #e2d8f5;
+  --cal-text-subtle: #9b8fc9;
+  --cal-text-muted: #7e70b0;
+  --cal-text-inverted: #11003b;
+  --cal-border: #36207a;
+  --cal-border-subtle: #2a1466;
+  --cal-border-emphasis: #523399;
+  --cal-border-muted: #190550;
+  --cal-brand: #00ffcf;
+  --cal-brand-emphasis: #00c9a3;
+  --cal-brand-text: #11003b;
+  --cal-spark: #ff006c;
+  color-scheme: dark;
+}
+
+/* `@theme inline` (not plain @theme) so the var() reference survives to runtime
+   and .dark can flip values live. Brand goes through the theme to get opacity
+   modifiers (bg-brand-default/10 — the DS soft accent pill). */
+@theme inline {
+  --font-sans: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif;
+  --font-cal: "Bricolage Grotesque", "Hanken Grotesk", ui-sans-serif, sans-serif;
+  --color-brand-default: var(--cal-brand);
+  --color-brand-emphasis: var(--cal-brand-emphasis);
+  --color-brand: var(--cal-brand-text);
+  --color-spark: var(--cal-spark);
+  --color-spark-text: #ffffff;
+}
+
+/* Semantic utilities (DESIGNSYSTEM.md §6). bg-emphasis and text-emphasis map to
+   DIFFERENT tokens, so these can't share a theme color namespace — they are
+   declared as standalone utilities instead. */
+@utility bg-default {
+  background-color: var(--cal-bg);
+}
+@utility bg-subtle {
+  background-color: var(--cal-bg-subtle);
+}
+@utility bg-emphasis {
+  background-color: var(--cal-bg-emphasis);
+}
+@utility bg-cal-muted {
+  background-color: var(--cal-bg-muted);
+}
+@utility bg-cal-stamp {
+  background-color: var(--cal-stamp);
+}
+@utility bg-inverted {
+  background-color: var(--cal-bg-inverted);
+}
+@utility text-emphasis {
+  color: var(--cal-text-emphasis);
+}
+@utility text-default {
+  color: var(--cal-text);
+}
+@utility text-subtle {
+  color: var(--cal-text-subtle);
+}
+@utility text-muted {
+  color: var(--cal-text-muted);
+}
+@utility text-inverted {
+  color: var(--cal-text-inverted);
+}
+@utility border-default {
+  border-color: var(--cal-border);
+}
+@utility border-subtle {
+  border-color: var(--cal-border-subtle);
+}
+@utility border-emphasis {
+  border-color: var(--cal-border-emphasis);
+}
+@utility border-muted {
+  border-color: var(--cal-border-muted);
+}
+
+@layer base {
+  html {
+    background-color: var(--cal-bg);
+  }
+  body {
+    background-color: var(--cal-bg);
+    color: var(--cal-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-align: left; /* flush-left, ragged-right — no centered text on primary surfaces */
+  }
+  :focus-visible {
+    outline: 2px solid var(--cal-brand);
+    outline-offset: 2px;
+  }
+}
