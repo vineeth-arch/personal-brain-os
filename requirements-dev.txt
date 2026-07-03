@@ -1,0 +1,3 @@
+# Dev/test only — not a runtime dependency (CLAUDE.md §7).
+-r requirements.txt
+pytest
