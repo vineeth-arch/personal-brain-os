@@ -103,3 +103,29 @@ export interface ResurfacedNote {
   type: NoteType;
   created: string;
 }
+
+// Integrations screen (Pass 4). Health checks run server-side, cached 60s.
+export type EngineName = "whispercpp" | "openai";
+export type IntegrationStatus = "ok" | "warn" | "problem" | "unknown";
+export type IntegrationGroup = "health" | "link";
+
+export interface IntegrationCard {
+  id: string;
+  group: IntegrationGroup;
+  name: string;
+  description: string;
+  icon: string; // key → inline SVG (IntegrationIcon), lettermark fallback
+  status: IntegrationStatus;
+  badge: string | null; // null for link cards
+  detail?: string;
+  error?: ErrorEnvelope; // present on warn/problem health cards
+  url?: string; // present on link cards
+  meta?: Record<string, string | number | boolean>;
+}
+
+export interface IntegrationsResponse {
+  engine: EngineName;
+  generated_at: string;
+  fresh: boolean;
+  cards: IntegrationCard[];
+}

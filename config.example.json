@@ -19,5 +19,14 @@
   },
   "classification": {
     "confidence_threshold": 0.7
+  },
+  "links": {
+    "dex": "https://getdex.com/",
+    "gmail": "https://mail.google.com/",
+    "gcal": "https://calendar.google.com/",
+    "caldiy": "https://cal.diy/",
+    "n8n": "http://zimaos.local:5678/",
+    "zima": "http://zimaos.local/",
+    "supabase": "https://app.supabase.com/project/_"
   }
 }

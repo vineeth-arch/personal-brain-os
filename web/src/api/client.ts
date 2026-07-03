@@ -1,8 +1,10 @@
 import type {
   CaptureTag,
+  EngineName,
   ErrorEnvelope,
   EventRow,
   FailedItem,
+  IntegrationsResponse,
   NoteType,
   ResurfacedNote,
   ReviewItem,
@@ -129,4 +131,12 @@ export const api = {
   run: () => request<{ started: boolean }>("/api/run", { method: "POST" }),
   streak: () => request<Streak>("/api/streak"),
   resurfaced: () => request<{ note: ResurfacedNote | null }>("/api/resurfaced"),
+  integrations: (fresh = false) =>
+    request<IntegrationsResponse>(`/api/integrations${fresh ? "?fresh=1" : ""}`),
+  setEngine: (engine: EngineName) =>
+    request<{ ok: boolean; engine: EngineName }>("/api/integrations/engine", {
+      method: "POST",
+      body: JSON.stringify({ engine }),
+    }),
+  ntfyTest: () => request<{ ok: boolean }>("/api/integrations/ntfy/test", { method: "POST" }),
 };

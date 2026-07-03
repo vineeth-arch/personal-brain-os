@@ -24,14 +24,34 @@ export function Layout({ route, children }: Props) {
             {route}
           </h1>
         </div>
-        <a
-          href="#/settings"
-          aria-label="Settings"
-          aria-current={route === "settings" ? "page" : undefined}
-          className={`hover:border-emphasis mt-1 flex h-11 w-11 items-center justify-center rounded-full border ${
-            route === "settings" ? "border-emphasis text-emphasis" : "border-subtle text-subtle"
-          }`}
-        >
+        <div className="mt-1 flex gap-2">
+          <a
+            href="#/integrations"
+            aria-label="Integrations"
+            aria-current={route === "integrations" ? "page" : undefined}
+            className={`hover:border-emphasis flex h-11 w-11 items-center justify-center rounded-full border ${
+              route === "integrations" ? "border-emphasis text-emphasis" : "border-subtle text-subtle"
+            }`}
+          >
+            {/* plug / integrations, drawn inline — no icon lib */}
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M9 2v5M15 2v5M7 7h10v3a5 5 0 0 1-10 0V7ZM12 15v7"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </a>
+          <a
+            href="#/settings"
+            aria-label="Settings"
+            aria-current={route === "settings" ? "page" : undefined}
+            className={`hover:border-emphasis flex h-11 w-11 items-center justify-center rounded-full border ${
+              route === "settings" ? "border-emphasis text-emphasis" : "border-subtle text-subtle"
+            }`}
+          >
           {/* gear, drawn inline — no icon lib */}
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path
@@ -46,7 +66,8 @@ export function Layout({ route, children }: Props) {
               strokeLinejoin="round"
             />
           </svg>
-        </a>
+          </a>
+        </div>
       </header>
 
       <main className="flex-1 px-5 pb-28 pt-6">{children}</main>

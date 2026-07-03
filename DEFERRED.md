@@ -15,3 +15,8 @@
 - Daily ntfy digest: status + resurfaced note + queue count (the system visits you) — research B9.
 - Optional Goblin-style micro-step breakdown for extracted todos with a "how hard does it feel?" dial — research B10.
 - Surface the trust boundary in the UI ("nothing entered your vault without you — N notes gated this month") — research B11.
+- Integrations: real config-write safety for POST /integrations/engine (atomic write + backup of config.json; validate the target engine's key/binary is present before switching) — Pass 2.
+- Integrations: true per-card SSE streaming instead of one cached GET /integrations, if health checks ever grow slow.
+- Integrations: per-integration retry/backoff + a real round-trip ntfy delivery receipt (test push is best-effort send, not confirmed receipt).
+- Integrations: edit the links section from the cockpit (ties into the deferred config-write settings item).
+- Integrations: cache the last successful health snapshot to disk so a cold API start renders last-known state instantly.

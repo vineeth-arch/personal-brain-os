@@ -162,3 +162,89 @@ captured if any file completed the archive stage ok that day (same source as
 One deterministic pick per day (e.g. date-seeded); `note` may be `null` when
 the vault is empty. `file` is vault-relative — the frontend builds
 `obsidian://open?vault=<vault>&file=<file minus .md>` itself.
+
+## Integrations (Pass 4)
+
+The INTEGRATIONS screen ("one pane of truth"). All health checks run
+**server-side and are cached 60s**; the client renders whatever the endpoint
+returns and never runs a check itself.
+
+### `GET /api/integrations?fresh=1`
+
+`?fresh=1` bypasses the 60s cache and re-runs every check (the client's
+"Recheck"). Response:
+
+```json
+{
+  "engine": "whispercpp",
+  "generated_at": "2026-07-03T05:41:00",
+  "fresh": true,
+  "cards": [ {
+    "id": "transcription-whispercpp",
+    "group": "health",
+    "name": "Transcription — whisper.cpp",
+    "description": "Turns your voice memos into text, all on this machine.",
+    "icon": "waveform",
+    "status": "ok",
+    "badge": "Ready · active",
+    "detail": "Local transcription is ready and is the engine in use.",
+    "meta": { "model": "ggml-base.en.bin", "engine_active": true }
+  } ]
+}
+```
+
+Per card: `id`, `group` (`"health"` | `"link"`), `name`, `description`, `icon`
+(a short key the frontend maps to an inline SVG; unknown keys render a
+lettermark), `status` (`"ok"` | `"warn"` | `"problem"` | `"unknown"`), `badge`
+(short label, or `null` for link cards), optional `detail`, optional `error`
+(the `{what,cause,todo}` envelope — present on `warn`/`problem` health cards),
+optional `url` (link cards only), optional `meta` (presentational
+`{[k]: string|number|boolean}` — model name, ages, flags).
+
+**Health cards (7)** — server checks, all cached 60s:
+- `transcription-whispercpp` — binary + model paths exist & executable
+  (`transcribe.py`); `meta.model` = model filename; `meta.engine_active`.
+- `transcription-openai` — `OPENAI_API_KEY` present (boolean) + cached test-call
+  result; `meta.engine_active`. (The engine toggle lives on this card.)
+- `claude` — `ANTHROPIC_API_KEY` present + cached test call.
+- `ntfy` — configured topic; `unknown` until a test push is sent.
+- `vault-sync` — `inbox_path` & `vault_path` reachable + `meta.minutes_since_activity`.
+- `git` — vault repo clean/dirty + commit age; **`warn` if uncommitted > 24h**.
+- `watcher` — heartbeat file age; `problem` if missing or > 20 min.
+
+**Link cards (8)** — no health check, no badge, just `url` from the config
+`links` section (below): `obsidian` (built server-side as
+`obsidian://open?vault=<basename(vault_path)>`), `dex`, `gmail`, `gcal`,
+`caldiy`, `n8n`, `zima`, `supabase`.
+
+### `POST /api/integrations/engine`
+
+Body `{"engine": "whispercpp" | "openai"}`. Writes `transcription.engine` in
+`config.json` (a config **write**). `200 {"ok": true, "engine": "openai"}`;
+unknown engine → `400` + envelope. The client shows the cloud caution
+("Cloud transcription sends your audio to OpenAI…") and requires one confirm
+before switching to `openai`.
+
+### `POST /api/integrations/ntfy/test`
+
+No body. Sends one push via `pipeline/errors.py::ntfy()` — a user-initiated
+self-notification (allowed under CLAUDE.md §4). `200 {"ok": true}` means "sent"
+(ntfy() never raises, so it is not a delivery receipt); unconfigured →
+`400` + envelope.
+
+### config.json `links` section
+
+The link-card URLs (everything except `obsidian`, which is derived from
+`vault_path`):
+
+```json
+"links": {
+  "dex": "https://getdex.com/",
+  "gmail": "https://mail.google.com/",
+  "gcal": "https://calendar.google.com/",
+  "caldiy": "https://cal.diy/",
+  "n8n": "http://zimaos.local:5678/",
+  "zima": "http://zimaos.local/",
+  "supabase": "https://app.supabase.com/project/_"
+}
+```
