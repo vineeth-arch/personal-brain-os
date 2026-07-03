@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from pipeline import classify, config as config_mod, intake, watcher
+from pipeline import classify, config as config_mod, intake, todos as ptodos, watcher
 
 from . import integrations, notes, service
 
@@ -206,6 +206,45 @@ def create_app(root: Path | None = None) -> FastAPI:
     @app.get("/api/resurfaced")
     def resurfaced(config=Depends(require_token)):
         return {"note": notes.resurface(config.vault_path)}
+
+    TODO_RANGES = ("today", "tomorrow", "week", "overdue")
+
+    @app.get("/api/todos")
+    def todos_list(range: str = "today", config=Depends(require_token)):
+        if range not in TODO_RANGES:
+            raise Envelope(
+                400, "That's not a todo range the server knows.",
+                f"'{range}' isn't one of today, tomorrow, week, overdue.",
+                "Use one of the four ranges.")
+        items = [
+            {
+                "id": t.block_id,
+                "task": t.task,
+                "due": t.due,
+                "time": t.time,
+                "done": t.done,
+                "overdue": ptodos.in_range(t, "overdue"),
+                "file": str(t.file.relative_to(config.vault_path)),
+            }
+            for t in ptodos.scan(config.vault_path)
+            if t.block_id and ptodos.in_range(t, range)
+        ]
+        items.sort(key=lambda i: (i["due"] or "", i["time"] or "99:99"))
+        return {"items": items}
+
+    @app.post("/api/todos/{block_id}/toggle")
+    def todos_toggle(block_id: str, config=Depends(require_token)):
+        try:
+            done = ptodos.toggle(config.vault_path, block_id)
+        except LookupError:
+            raise Envelope(
+                404, "That todo isn't in the daily notes anymore.",
+                "Its line was edited or removed in Obsidian, or the id is unknown.",
+                "Refresh the agenda.")
+        notes.git_commit_vault(
+            config.vault_path,
+            f"api: todo {block_id} marked {'done' if done else 'open'}")
+        return {"ok": True, "done": done}
 
     # ---- write routes (each git-commits the vault) ---------------------------------
 

@@ -17,6 +17,10 @@ CREATE TABLE IF NOT EXISTS events (
     message TEXT,
     plain_english_error TEXT
 );
+CREATE TABLE IF NOT EXISTS reminders (
+    key TEXT PRIMARY KEY,            -- todo block-id, or digest-<date>
+    fired_at TEXT NOT NULL
+);
 """
 
 
@@ -27,7 +31,7 @@ class EventLog:
         self._system = self.vault / "_System"
         self._system.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path)
-        self.conn.execute(_SCHEMA)
+        self.conn.executescript(_SCHEMA)
         self.conn.commit()
 
     def log(self, file: str, stage: str, status: str, duration_ms: int | None = None,
@@ -44,6 +48,16 @@ class EventLog:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
         with (self._system / "capture_log.md").open("a") as f:
             f.write(f"- {stamp} — {line}\n")
+
+    def reminder_fired(self, key: str) -> bool:
+        cur = self.conn.execute("SELECT 1 FROM reminders WHERE key = ?", (key,))
+        return cur.fetchone() is not None
+
+    def mark_reminder(self, key: str) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO reminders (key, fired_at) VALUES (?, ?)",
+            (key, datetime.now().isoformat(timespec="seconds")))
+        self.conn.commit()
 
     def heartbeat(self, path: Path) -> None:
         Path(path).write_text(datetime.now().isoformat(timespec="seconds") + "\n")

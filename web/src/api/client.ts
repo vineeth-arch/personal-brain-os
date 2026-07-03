@@ -1,6 +1,8 @@
 import type {
   CaptureTag,
   EngineName,
+  TodoItem,
+  TodoRange,
   ErrorEnvelope,
   EventRow,
   FailedItem,
@@ -139,4 +141,7 @@ export const api = {
       body: JSON.stringify({ engine }),
     }),
   ntfyTest: () => request<{ ok: boolean }>("/api/integrations/ntfy/test", { method: "POST" }),
+  todos: (range: TodoRange) => request<{ items: TodoItem[] }>(`/api/todos?range=${range}`),
+  toggleTodo: (id: string) =>
+    request<{ ok: boolean; done: boolean }>(`/api/todos/${id}/toggle`, { method: "POST" }),
 };

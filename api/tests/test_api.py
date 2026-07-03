@@ -327,3 +327,34 @@ def test_integrations_shape_and_engine_guard(env):
         assert s.req("POST", "/api/integrations/engine", {"engine": "openai"})[0] == 400
         # ntfy test on an unconfigured topic → 400
         assert s.req("POST", "/api/integrations/ntfy/test")[0] == 400
+
+
+def test_todos_ranges_and_toggle(env):
+    root, vault, _, _ = env
+    from datetime import timedelta
+    from pipeline.todos import today_kolkata
+    (vault / "06-Todos").mkdir()
+    today = today_kolkata()  # ranges are Asia/Kolkata by spec, not server-local
+    lines = [
+        f"- [ ] pay the electrician 📅 {today.isoformat()} ⏰ 14:00 ^20260701090000-1",
+        f"- [ ] send the invoice 📅 {(today - timedelta(days=2)).isoformat()} ^20260701090000-2",
+        f"- [ ] review the deck 📅 {(today + timedelta(days=1)).isoformat()} ^20260701090000-3",
+        f"- [ ] book flights 📅 {(today + timedelta(days=4)).isoformat()} ^20260701090000-4",
+        "- [ ] undated thing ^20260701090000-5",
+    ]
+    (vault / "06-Todos" / f"{today.isoformat()}.md").write_text("\n".join(lines) + "\n")
+    with Server(root) as s:
+        assert [i["id"] for i in s.req("GET", "/api/todos?range=today")[1]["items"]] == ["20260701090000-1"]
+        overdue = s.req("GET", "/api/todos?range=overdue")[1]["items"]
+        assert [i["id"] for i in overdue] == ["20260701090000-2"] and overdue[0]["overdue"]
+        assert [i["id"] for i in s.req("GET", "/api/todos?range=tomorrow")[1]["items"]] == ["20260701090000-3"]
+        assert [i["id"] for i in s.req("GET", "/api/todos?range=week")[1]["items"]] == ["20260701090000-4"]
+        assert s.req("GET", "/api/todos?range=bogus")[0] == 400
+        # toggle round-trips through the file and git-commits the vault
+        code, body = s.req("POST", "/api/todos/20260701090000-1/toggle")
+        assert code == 200 and body["done"] is True
+        assert "- [x] pay the electrician" in (vault / "06-Todos" / f"{today.isoformat()}.md").read_text()
+        logmsg = subprocess.run(["git", "-C", str(vault), "log", "-1", "--format=%s"],
+                                capture_output=True, text=True).stdout.strip()
+        assert logmsg == "api: todo 20260701090000-1 marked done"
+        assert s.req("POST", "/api/todos/nope/toggle")[0] == 404

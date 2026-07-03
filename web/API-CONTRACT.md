@@ -273,3 +273,29 @@ Body may set any of `engine`, `confidence_threshold` (0..1), `ntfy_topic`,
 preserving unknown keys (`links`, paths, `api`). Rejects `engine: "openai"`
 when `OPENAI_API_KEY` is missing (400 + envelope). Returns the same shape as
 `GET`. `POST /api/integrations/engine` shares this validated writer.
+
+## Todos (Pass T)
+
+Todos are Obsidian Tasks-compatible checkbox lines in `06-Todos/<date>.md`:
+`- [ ] task (from [[<note-id>]]) 📅 2026-07-05 ⏰ 14:00 ^<block-id>` — markers
+only when known; a ⏰ time means a reminder fires at that time (once, via the
+watcher's --loop tick). Completing flips `- [ ]` to `- [x]` in place; lines are
+never deleted. All date ranges are **Asia/Kolkata**.
+
+### `GET /api/todos?range=today|tomorrow|week|overdue`
+
+```json
+{ "items": [ { "id": "20260703140000-1", "task": "call the dentist",
+  "due": "2026-07-05", "time": "14:00", "done": false, "overdue": false,
+  "file": "06-Todos/2026-07-03.md" } ] }
+```
+
+Only lines with a due date and a block id appear (undated todos live in the
+daily note). `week` = the day after tomorrow through +7 days. Unknown range →
+400 envelope.
+
+### `POST /api/todos/{block_id}/toggle`
+
+Flips the checkbox in place and git-commits the vault
+(`api: todo <id> marked done|open`). `200 {"ok": true, "done": true}`;
+unknown id → 404 envelope.

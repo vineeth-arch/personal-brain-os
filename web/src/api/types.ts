@@ -129,3 +129,16 @@ export interface IntegrationsResponse {
   fresh: boolean;
   cards: IntegrationCard[];
 }
+
+// Todos (Pass T): Obsidian Tasks-compatible checkbox lines in 06-Todos/.
+export type TodoRange = "today" | "tomorrow" | "week" | "overdue";
+
+export interface TodoItem {
+  id: string;
+  task: string;
+  due: string | null; // YYYY-MM-DD
+  time: string | null; // HH:MM — presence means a reminder fires at that time
+  done: boolean;
+  overdue: boolean;
+  file: string;
+}

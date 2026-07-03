@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import archive, classify as classify_mod, config as config_mod, errors, extract, intake, route
+from . import archive, classify as classify_mod, config as config_mod, errors, extract, intake, route, todos
 from .events import EventLog
 from .transcribe import Transcriber, build_transcriber
 
@@ -32,6 +32,7 @@ class Deps:
     """Injectable seams so the e2e test runs hermetically (no binaries, no API)."""
     transcriber: Transcriber
     classifier_fn: object = None      # llm_fn(transcript, config) -> dict; None = real Haiku
+    extract_llm: object = None        # llm_fn(prompt, config) -> str; None = real Haiku
 
 
 @dataclass
@@ -75,7 +76,7 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
         # Stage 5 — extract action items (append only)
         t0 = time.monotonic()
         note_id = item.captured.strftime("%Y%m%d%H%M%S")
-        n = extract.extract(transcript, note_id, item.captured, config.vault_path)
+        n = extract.extract(transcript, note_id, item.captured, config, llm_fn=deps.extract_llm)
         events.log(fkey, "extract", "ok", int((time.monotonic() - t0) * 1000),
                    message=f"{len(n)} action item(s)")
 
@@ -136,6 +137,7 @@ def run_loop(config, events, deps) -> None:
         results = run_once(config, events, deps)
         if results:
             print(f"Processed {len(results)} file(s).")
+        todos.tick(config, events)   # reminders + optional digest, same process
         time.sleep(POLL_SECONDS)
 
 

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api } from "../api/client";
-import type { CaptureTag, Status } from "../api/types";
+import type { CaptureTag, Status, TodoItem } from "../api/types";
 import { CAPTURE_TAGS } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
 import { StreakDots } from "../components/StreakDots";
@@ -119,6 +119,164 @@ function Resurfaced({ vault }: { vault: string }) {
   );
 }
 
+
+interface AgendaData {
+  today: TodoItem[];
+  tomorrow: TodoItem[];
+  week: TodoItem[];
+}
+
+async function fetchAgenda(): Promise<AgendaData> {
+  const [today, overdue, tomorrow, week] = await Promise.all([
+    api.todos("today"),
+    api.todos("overdue"),
+    api.todos("tomorrow"),
+    api.todos("week"),
+  ]);
+  // ADHD rule: today is always fully visible — open + overdue together.
+  return {
+    today: [...overdue.items, ...today.items],
+    tomorrow: tomorrow.items,
+    week: week.items,
+  };
+}
+
+function fmtDay(iso: string): string {
+  const d = new Date(`${iso}T00:00:00`);
+  return Number.isNaN(d.getTime())
+    ? iso
+    : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function AgendaRow({
+  item,
+  onToggle,
+}: {
+  item: TodoItem;
+  onToggle: (item: TodoItem) => void;
+}) {
+  return (
+    <li className="flex min-h-11 items-center gap-3 py-1">
+      <button
+        type="button"
+        aria-label={item.done ? `Reopen: ${item.task}` : `Mark done: ${item.task}`}
+        onClick={() => onToggle(item)}
+        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 transition-colors motion-reduce:transition-none ${
+          item.done ? "bg-inverted border-transparent" : "border-emphasis"
+        }`}
+      >
+        {item.done && (
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+            <path d="M2 6.5 4.8 9 10 3.5" stroke="var(--cal-text-inverted)" strokeWidth="2" fill="none" strokeLinecap="round" />
+          </svg>
+        )}
+      </button>
+      <div className="min-w-0 flex-1">
+        <p
+          className={`truncate text-sm transition-opacity motion-reduce:transition-none ${
+            item.done ? "text-subtle line-through opacity-60" : "text-emphasis font-semibold"
+          }`}
+        >
+          {item.task}
+        </p>
+        {(item.overdue || item.time) && (
+          <p className="text-subtle text-xs">
+            {item.overdue && !item.done ? (
+              // overdue is marked tonally, never with the accent
+              <span className="bg-cal-muted text-emphasis rounded px-1.5 py-0.5 font-bold">
+                Overdue · {item.due ? fmtDay(item.due) : ""}
+              </span>
+            ) : (
+              item.time && `at ${item.time}`
+            )}
+          </p>
+        )}
+      </div>
+    </li>
+  );
+}
+
+function Agenda() {
+  const { data, error, loading, refetch } = usePolling(fetchAgenda, 60_000);
+  const [flipped, setFlipped] = useState<Record<string, boolean>>({});
+
+  if (loading && !data) {
+    return <div aria-hidden="true" className="bg-subtle h-20 animate-pulse rounded-xl" />;
+  }
+  if (error && !data) return null; // the hero card owns whole-screen error surfacing
+
+  const withFlips = (items: TodoItem[]) =>
+    items.map((i) => (i.id in flipped ? { ...i, done: flipped[i.id] } : i));
+
+  const toggle = async (item: TodoItem) => {
+    const next = !item.done;
+    setFlipped((f) => ({ ...f, [item.id]: next })); // optimistic
+    try {
+      await api.toggleTodo(item.id);
+      toast(next ? "Done." : "Reopened.");
+      refetch();
+    } catch (err) {
+      setFlipped((f) => ({ ...f, [item.id]: item.done }));
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(envelope ? `${envelope.what} ${envelope.todo}` : "That didn't reach the server.", "error");
+    }
+  };
+
+  const today = withFlips(data!.today);
+  const { tomorrow, week } = data!;
+
+  return (
+    <section>
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">Agenda</p>
+      {today.length === 0 && tomorrow.length === 0 && week.length === 0 ? (
+        <p className="text-default mt-2 text-sm">
+          Nothing due. Capture a todo by voice — say the day and time.
+        </p>
+      ) : (
+        <>
+          {today.length > 0 ? (
+            <ul className="mt-2">
+              {today.map((t) => (
+                <AgendaRow key={t.id} item={t} onToggle={toggle} />
+              ))}
+            </ul>
+          ) : (
+            <p className="text-default mt-2 text-sm">Nothing due today.</p>
+          )}
+          {/* the future is never more than a count until asked */}
+          {tomorrow.length > 0 && (
+            <details className="mt-1">
+              <summary className="text-subtle min-h-11 cursor-pointer list-none py-2 text-sm font-semibold">
+                Tomorrow ({tomorrow.length})
+              </summary>
+              <ul>
+                {tomorrow.map((t) => (
+                  <AgendaRow key={t.id} item={t} onToggle={toggle} />
+                ))}
+              </ul>
+            </details>
+          )}
+          {week.length > 0 && (
+            <details>
+              <summary className="text-subtle min-h-11 cursor-pointer list-none py-2 text-sm font-semibold">
+                This week ({week.length})
+              </summary>
+              <ul>
+                {week.map((t) => (
+                  <li key={t.id} className="flex items-baseline gap-2 py-1">
+                    <span className="text-muted text-xs">{t.due ? fmtDay(t.due) : ""}</span>
+                    <span className="text-default truncate text-sm">{t.task}</span>
+                  </li>
+                ))}
+              </ul>
+            </details>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 function QuickCapture() {
   const [text, setText] = useState("");
   const [tag, setTag] = useState<CaptureTag | null>(null);
@@ -220,6 +378,7 @@ export function Today() {
   return (
     <div className="space-y-8">
       {status.data && <HeroCard status={status.data} />}
+      <Agenda />
       {streak.data && <StreakDots streak={streak.data} />}
       {status.data && <Resurfaced vault={status.data.vault} />}
       <QuickCapture />
