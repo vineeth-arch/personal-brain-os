@@ -248,3 +248,28 @@ The link-card URLs (everything except `obsidian`, which is derived from
   "supabase": "https://app.supabase.com/project/_"
 }
 ```
+
+## Config (Pass 2)
+
+Safe settings only — **key VALUES are never returned or accepted**; the provider
+API keys live in the server's environment (CLAUDE.md §7). No frontend consumes
+this yet (Settings.tsx is read-only documentation), but the endpoint exists and
+is documented here so the contract stays honest.
+
+### `GET /api/config`
+
+```json
+{ "engine": "whispercpp", "confidence_threshold": 0.7,
+  "ntfy_url": "https://ntfy.sh", "ntfy_topic": "brain-cockpit",
+  "keys": { "anthropic": true, "openai": false } }
+```
+
+`keys` are presence booleans. `api.auth_token` is never included.
+
+### `PUT /api/config`
+
+Body may set any of `engine`, `confidence_threshold` (0..1), `ntfy_topic`,
+`ntfy_url` (omitted fields unchanged). Writes `config.json` atomically,
+preserving unknown keys (`links`, paths, `api`). Rejects `engine: "openai"`
+when `OPENAI_API_KEY` is missing (400 + envelope). Returns the same shape as
+`GET`. `POST /api/integrations/engine` shares this validated writer.
