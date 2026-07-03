@@ -1,4 +1,5 @@
 import type {
+  AppConfig,
   BuildResponse,
   CaptureTag,
   EngineName,
@@ -148,4 +149,5 @@ export const api = {
     request<{ ok: boolean; done: boolean }>(`/api/todos/${id}/toggle`, { method: "POST" }),
   build: (fresh = false) => request<BuildResponse>(`/api/build${fresh ? "?fresh=1" : ""}`),
   providers: () => request<{ providers: ProviderStat[] }>("/api/providers"),
+  config: () => request<AppConfig>("/api/config"),
 };

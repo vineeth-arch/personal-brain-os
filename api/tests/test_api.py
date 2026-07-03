@@ -387,3 +387,42 @@ def test_build_probes_and_providers(env):
         assert stats["claude-haiku"]["avg_confidence"] == 0.9
         assert stats["gemini-flash"]["fell_through"] == 1
         assert stats["gemini-flash"]["invalid_json"] == 1
+
+
+def test_resource_enrich_endpoint(env, monkeypatch):
+    root, vault, _, _ = env
+    (vault / "04-Resources").mkdir()
+    note = vault / "04-Resources" / "2026-07-04-a-reel.md"
+    note.write_text(
+        "---\nid: 20260704100000\ntype: resource\nresource_type: article\ncreated: 2026-07-04\n"
+        "source: manual\norigin: human\nmeta_origin: ai\ntitle: a reel\ncover: \n"
+        "source_url: https://example.com/x\ndescription: \nstatus: inbox\nplatform: web\n"
+        "enriched: false\nenrich_attempts: 1\nenrich_last: 2026-07-04T10:00:00\n"
+        "categories: []\nsubjects: []\ntags: []\n---\n\n## Insight\n\nsaw this\n")
+    subprocess.run(["git", "-C", str(vault), "add", "-A"], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(vault), "commit", "-qm", "seed"], check=True, capture_output=True)
+
+    import api.main as main_mod
+    # monkeypatch the enricher's default fetch so no real network is hit
+    monkeypatch.setattr(
+        main_mod.enrich, "_default_fetch",
+        lambda url, data=None, timeout=10:
+        b'<html><head><title>Now Enriched</title></head></html>')
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/resources/20260704100000/enrich")
+        assert code == 200 and body["enriched"] is True
+        assert "enriched: true" in note.read_text() and "Now Enriched" in note.read_text()
+        logmsg = subprocess.run(["git", "-C", str(vault), "log", "-1", "--format=%s"],
+                                capture_output=True, text=True).stdout.strip()
+        assert logmsg == "api: enriched 20260704100000"
+        assert s.req("POST", "/api/resources/nope/enrich")[0] == 404
+
+
+def test_config_has_enrichment_block(env):
+    root, _, _, _ = env
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/config")
+        assert code == 200
+        assert body["enrichment"]["youtube_keyless"] is True
+        assert body["enrichment"]["apify_token"] is False   # no env token in the test
+        assert body["enrichment"]["apify_actor_set"] is False

@@ -167,3 +167,18 @@ export interface ProviderStat {
   invalid_json: number;
   avg_confidence: number | null;
 }
+
+// Config (Pass 2 GET /api/config) — safe values only, never key values.
+export interface AppConfig {
+  engine: EngineName;
+  confidence_threshold: number;
+  ntfy_url: string;
+  ntfy_topic: string;
+  keys: { anthropic: boolean; openai: boolean };
+  enrichment: {
+    apify_token: boolean;
+    apify_actor_set: boolean;
+    apify_last_call: string | null;
+    youtube_keyless: boolean;
+  };
+}

@@ -34,5 +34,8 @@
     "n8n": "http://zimaos.local:5678/",
     "zima": "http://zimaos.local/",
     "supabase": "https://app.supabase.com/project/_"
+  },
+  "apify": {
+    "actor_id": ""
   }
 }

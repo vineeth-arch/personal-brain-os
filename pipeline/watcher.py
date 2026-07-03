@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import archive, classify as classify_mod, config as config_mod, errors, extract, intake, route, todos
+from . import archive, classify as classify_mod, config as config_mod, enrich, errors, extract, intake, route, todos
 from .events import EventLog
 from .transcribe import Transcriber, build_transcriber
 
@@ -33,6 +33,8 @@ class Deps:
     transcriber: Transcriber
     classifier_fn: object = None      # llm_fn(transcript, config) -> dict; None = real Haiku
     extract_llm: object = None        # llm_fn(prompt, config) -> str; None = real Haiku
+    enrich_fetch: object = None       # fetch(url, data=, timeout=) -> bytes; None = real HTTP
+    enrich_router: object = None      # router(prompt, config, validate) -> (data, provider, attempts)
 
 
 @dataclass
@@ -46,7 +48,7 @@ class Result:
 
 
 def _transcribe(item, deps: Deps) -> str:
-    if item.kind == "text":
+    if item.kind in ("text", "link"):
         return item.path.read_text()
     return deps.transcriber.transcribe(item.path)
 
@@ -60,24 +62,41 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
         transcript = _transcribe(item, deps)
         events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000))
 
-        # Stage 3 — classify
-        t0 = time.monotonic()
-        cls = classify_mod.classify(item, transcript, config, deps.classifier_fn)
-        status = "needs_review" if cls.needs_review else "ok"
-        provider_note = f" provider={cls.provider}" if cls.provider else ""
-        events.log(fkey, "classify", status, int((time.monotonic() - t0) * 1000),
-                   message=f"type={cls.type} confidence={cls.confidence:.2f} by={cls.routed_by}"
-                           + provider_note)
-        for att in cls.attempts:   # router stats — aggregated by GET /api/providers
-            conf_note = f" confidence={att.confidence:.2f}" if att.confidence is not None else ""
-            events.log(fkey, "llm", "ok" if att.outcome == "served" else "failed",
-                       message=f"provider={att.provider} outcome={att.outcome}" + conf_note)
+        if item.kind == "link":
+            # A link IS a resource — no classify LLM, no review gate. Enrich
+            # (best-effort) then route to 04-Resources. Enrichment never fails
+            # the note (Pass L principle).
+            t0 = time.monotonic()
+            url = enrich.extract_url(transcript)
+            enr = (enrich.enrich_url(url, config, fetch=deps.enrich_fetch) if url
+                   else enrich.Enrichment("web", False, "", detail="No URL found in the capture."))
+            structured = enrich.structure(transcript, enr, config, router=deps.enrich_router)
+            paths = [enrich.route_link(item, transcript, enr, structured, config.vault_path)]
+            events.log(fkey, "enrich", "ok", int((time.monotonic() - t0) * 1000),
+                       message=f"platform={enr.platform} enriched={str(enr.enriched).lower()}")
+            events.log(fkey, "route", "ok", 0, message=f"wrote {paths[0].name}")
+            cls = classify_mod.Classification(type="resource", title=structured.get("title", item.name),
+                                              confidence=1.0, needs_review=False, routed_by="link")
+            status = "ok"
+        else:
+            # Stage 3 — classify
+            t0 = time.monotonic()
+            cls = classify_mod.classify(item, transcript, config, deps.classifier_fn)
+            status = "needs_review" if cls.needs_review else "ok"
+            provider_note = f" provider={cls.provider}" if cls.provider else ""
+            events.log(fkey, "classify", status, int((time.monotonic() - t0) * 1000),
+                       message=f"type={cls.type} confidence={cls.confidence:.2f} by={cls.routed_by}"
+                               + provider_note)
+            for att in cls.attempts:   # router stats — aggregated by GET /api/providers
+                conf_note = f" confidence={att.confidence:.2f}" if att.confidence is not None else ""
+                events.log(fkey, "llm", "ok" if att.outcome == "served" else "failed",
+                           message=f"provider={att.provider} outcome={att.outcome}" + conf_note)
 
-        # Stage 4 — route
-        t0 = time.monotonic()
-        paths = route.route(item, cls, transcript, config.vault_path)
-        events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
-                   message=f"wrote {', '.join(p.name for p in paths)}")
+            # Stage 4 — route
+            t0 = time.monotonic()
+            paths = route.route(item, cls, transcript, config.vault_path)
+            events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
+                       message=f"wrote {', '.join(p.name for p in paths)}")
 
         # Stage 5 — extract action items (append only)
         t0 = time.monotonic()
@@ -143,7 +162,8 @@ def run_loop(config, events, deps) -> None:
         results = run_once(config, events, deps)
         if results:
             print(f"Processed {len(results)} file(s).")
-        todos.tick(config, events)   # reminders + optional digest, same process
+        todos.tick(config, events)              # reminders + optional digest
+        enrich.retry_pending(config, events)    # one re-attempt for stale enriched:false notes
         time.sleep(POLL_SECONDS)
 
 

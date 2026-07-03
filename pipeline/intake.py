@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from . import enrich
+
 AUDIO_EXT = {".m4a", ".mp3", ".wav", ".aac"}
 TEXT_EXT = {".txt", ".md"}
 
@@ -18,7 +20,7 @@ _NAME_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})-(?P<time>\d{4})\s+(?P<name>
 @dataclass
 class Item:
     path: Path
-    kind: str                 # "audio" | "text"
+    kind: str                 # "audio" | "text" | "link"
     captured: datetime
     name: str                 # human title hint from filename
     tag: str | None           # capture/routing tag from filename, if any
@@ -30,7 +32,13 @@ def _parse(path: Path) -> Item | None:
     if ext in AUDIO_EXT:
         kind, source = "audio", "voice"
     elif ext in TEXT_EXT:
-        kind, source = "text", "manual"
+        # a text capture whose body is (or contains) a URL becomes a link —
+        # enriched into a resource note instead of classified (Pass L)
+        try:
+            kind = "link" if enrich.is_link_text(path.read_text()) else "text"
+        except OSError:
+            kind = "text"
+        source = "manual"
     else:
         return None
 

@@ -336,3 +336,42 @@ classification schema; invalid JSON / schema violation / 10s timeout /
 rate-limit fall through; keyless providers are skipped silently; claude-haiku
 is the floor and stays last; all-fail → needs-review, never a guess. Keys are
 env-only: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY.
+
+## Link capture + enrichment (Pass L)
+
+A text capture containing a URL is detected as `kind=link` at intake and routed
+to `04-Resources` as a resource note — no classify LLM, no review gate (a link
+IS a resource). **The note is written unconditionally; enrichment is best-effort
+decoration.** Failure sets `enriched: false` + one quiet `enrich` event (status
+`ok`, never `failed`) — no quarantine, no ntfy alarm. YouTube uses public oEmbed
+(keyless); Instagram uses an Apify actor (`APIFY_TOKEN` env + `apify.actor_id`
+in config.json — expected to break periodically, degrades gracefully); other
+URLs use `<title>` + `og:image`.
+
+Resource note frontmatter (SCHEMA §7 + Pass-L/6 fields; the Pass 6 gallery
+consumes these unchanged):
+`type: resource, resource_type (tool|tutorial|book|movie|recipe|place|article),
+title, cover, source_url, description, status: inbox, platform (youtube|
+instagram|web), enriched (bool), enrich_attempts, enrich_last` — plus the
+universal block (`id, created, source, origin: human, meta_origin: ai`). Body:
+`## Insight` (the user's own words, verbatim), `## Ingredients`/`## Steps` for
+recipes, `## Transcript` or `## Caption` for enriched media.
+
+### `POST /api/resources/{id}/enrich`
+
+Manual re-attempt for a resource note (by frontmatter `id` in `04-Resources`).
+Re-runs enrichment, rewrites the note (bumps `enrich_attempts`, sets
+`enriched: true` on success), git-commits the vault (`api: enriched <id>`).
+`200 {"ok": true, "enriched": true}`; unknown id → 404 envelope. Notes with
+`enriched: false` also auto-retry once, 24h after the last attempt, on the
+watcher's `--loop` tick.
+
+### `GET /api/config` — enrichment block (extension)
+
+`GET /api/config` now also returns:
+```json
+"enrichment": { "apify_token": false, "apify_actor_set": false,
+                "apify_last_call": null, "youtube_keyless": true }
+```
+Booleans only — no token values (CLAUDE.md §7). `apify_last_call` = timestamp of
+the most recent Instagram `enrich` event, or null.

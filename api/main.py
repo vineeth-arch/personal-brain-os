@@ -28,7 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from pipeline import classify, config as config_mod, intake, todos as ptodos, watcher
+from pipeline import classify, config as config_mod, enrich, intake, route as proute, todos as ptodos, watcher
 
 from . import build_status, integrations, notes, service
 
@@ -383,11 +383,43 @@ def create_app(root: Path | None = None) -> FastAPI:
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return {"started": True}
 
+    @app.post("/api/resources/{note_id}/enrich")
+    def resource_enrich(note_id: str, config=Depends(require_token)):
+        folder = Path(config.vault_path) / proute.TYPE_FOLDER["resource"]
+        target = None
+        if folder.is_dir():
+            for path in folder.glob("*.md"):
+                fm, _ = notes.parse_frontmatter(path.read_text())
+                if fm.get("id") == note_id and fm.get("type") == "resource":
+                    target = path
+                    break
+        if target is None:
+            raise Envelope(
+                404, "That resource isn't in the vault.",
+                "No resource note in 04-Resources has that id.",
+                "Refresh the resource list.")
+        enriched = enrich.reenrich_note(target, config)
+        notes.git_commit_vault(config.vault_path, f"api: enriched {note_id}")
+        return {"ok": True, "enriched": enriched}
+
     # ---- config (safe subset only — key values never leave the server) --------------
 
     @app.get("/api/config")
     def get_config(config=Depends(require_token)):
-        return integrations.safe_config(config)
+        import os as _os
+        last_ig = None
+        for row in service.events_list(db_path, None, 2000, None):
+            if row["stage"] == "enrich" and "platform=instagram" in (row["message"] or ""):
+                last_ig = row["timestamp"]
+                break
+        safe = integrations.safe_config(config)
+        safe["enrichment"] = {
+            "apify_token": bool(_os.environ.get("APIFY_TOKEN")),
+            "apify_actor_set": bool((config.raw.get("apify") or {}).get("actor_id")),
+            "apify_last_call": last_ig,
+            "youtube_keyless": True,
+        }
+        return safe
 
     @app.put("/api/config")
     def put_config(body: ConfigBody, config=Depends(require_token)):

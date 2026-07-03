@@ -224,6 +224,8 @@ export function Settings() {
         </ul>
       </Card>
 
+      <EnrichmentCards />
+
       <ModelRouterCard />
 
       <Card title="Help">
@@ -275,6 +277,58 @@ function ModelRouterCard() {
           </table>
         </div>
       )}
+    </section>
+  );
+}
+
+// Enrichment status (Pass L): YouTube is keyless and always on; Instagram runs
+// through Apify (ToS-grey, expected to break — failures never lose the note).
+function EnrichmentCards() {
+  const { data } = usePolling(api.config, 60_000);
+  const e = data?.enrichment;
+  return (
+    <section className="bg-subtle border-subtle rounded-xl border p-5">
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">Link enrichment</p>
+      <div className="mt-3 space-y-4">
+        <div>
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-emphasis text-sm font-bold">YouTube</p>
+            <span className="bg-emphasis text-emphasis rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.08em]">
+              Always on
+            </span>
+          </div>
+          <p className="text-default mt-1 text-sm">
+            Title, channel, and thumbnail via public oEmbed — keyless, no setup.
+          </p>
+        </div>
+        <div className="border-subtle border-t pt-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-emphasis text-sm font-bold">Instagram · Apify</p>
+            <span
+              className={`rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.08em] ${
+                e?.apify_token && e?.apify_actor_set
+                  ? "bg-emphasis text-emphasis"
+                  : "bg-subtle text-muted"
+              }`}
+            >
+              {e?.apify_token && e?.apify_actor_set ? "Configured" : "Not configured"}
+            </span>
+          </div>
+          <p className="text-default mt-1 text-sm">
+            Caption + image via an Apify actor.{" "}
+            {e && !e.apify_token && "Set APIFY_TOKEN in the server's environment"}
+            {e && e.apify_token && !e.apify_actor_set && "Set apify.actor_id in config.json"}
+            {e?.apify_last_call && (
+              <span className="text-subtle"> Last call {new Date(e.apify_last_call).toLocaleString()}.</span>
+            )}
+          </p>
+          <p className="text-subtle mt-2 text-xs">
+            Instagram scraping is against Instagram's terms and breaks periodically — that's
+            expected. When it fails, the note is still saved and retries on its own; nothing is
+            lost.
+          </p>
+        </div>
+      </div>
     </section>
   );
 }

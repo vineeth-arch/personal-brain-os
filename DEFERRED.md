@@ -20,3 +20,8 @@
 - Integrations: per-integration retry/backoff + a real round-trip ntfy delivery receipt (test push is best-effort send, not confirmed receipt).
 - Integrations: edit the links section from the cockpit (ties into the deferred config-write settings item).
 - Integrations: cache the last successful health snapshot to disk so a cold API start renders last-known state instantly.
+- Pass L: per-platform enrichment backoff tuning + more than one auto-retry before giving up.
+- Pass L: YouTube transcript language selection beyond lang=en (auto-detect / multi-lang).
+- Pass L: richer web enrichment (readability extraction / oEmbed discovery) beyond <title>+og:image.
+- Pass B: surface provider stats as a small sparkline over time, not just cumulative counts.
+- Pass T: recurring todos (weekly/daily) — current model is one-shot due dates only.
