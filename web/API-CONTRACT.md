@@ -299,3 +299,40 @@ daily note). `week` = the day after tomorrow through +7 days. Unknown range →
 Flips the checkbox in place and git-commits the vault
 (`api: todo <id> marked done|open`). `200 {"ok": true, "done": true}`;
 unknown id → 404 envelope.
+
+## Build tracker + model router (Pass B)
+
+### `GET /api/build?fresh=1`
+
+Runs the probes in `checks.json` (cached 60s; `fresh=1` busts). Reality is the
+checklist — no manual checkboxes exist. Probe types: `file_exists`,
+`config_field_set`, `binary_runs`, `endpoint_ok`, `git_log_contains`,
+`vault_query`, `env_var_set` (booleans only, never values).
+
+```json
+{ "generated_at": "2026-07-04T09:00:00",
+  "next": { "label": "whisper.cpp installed and runnable",
+            "next_action": "brew install whisper-cpp, download the small.en model, put both paths in config.json." },
+  "items": [ { "id": "pass1", "label": "Pass 1 — pipeline core", "phase": "Build passes",
+               "done": true, "detail": "pipeline/watcher.py exists.", "next_action": null } ] }
+```
+
+`next` = the first unfinished item in manifest order (null when all done);
+every unfinished item carries one plain-English `next_action`.
+
+### `GET /api/providers`
+
+Aggregates the router's per-attempt `stage='llm'` events:
+
+```json
+{ "providers": [ { "provider": "gemini-flash", "served": 41, "fell_through": 3,
+                   "invalid_json": 2, "avg_confidence": 0.84 } ] }
+```
+
+Router rules (pipeline/llm.py): identical prompt to every provider in
+`config.classification.providers` (default gemini-flash → groq-llama-3.3-70b →
+openrouter-free → claude-haiku); responses must validate against the locked
+classification schema; invalid JSON / schema violation / 10s timeout /
+rate-limit fall through; keyless providers are skipped silently; claude-haiku
+is the floor and stays last; all-fail → needs-review, never a guess. Keys are
+env-only: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY.

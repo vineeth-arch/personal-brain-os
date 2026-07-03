@@ -3,17 +3,19 @@ import { getToken, UNAUTHORIZED_EVENT } from "./api/client";
 import { Layout } from "./components/Layout";
 import { toast, ToastRegion } from "./components/Toast";
 import { TokenGate } from "./components/TokenGate";
+import { Build } from "./screens/Build";
 import { Integrations } from "./screens/Integrations";
 import { Pipeline } from "./screens/Pipeline";
 import { Settings } from "./screens/Settings";
 import { Today } from "./screens/Today";
 import { Triage } from "./screens/Triage";
 
-export type Route = "today" | "triage" | "pipeline" | "integrations" | "settings";
+export type Route = "today" | "triage" | "pipeline" | "integrations" | "settings" | "build";
 
 function parseRoute(): Route {
   const hash = window.location.hash.replace(/^#\/?/, "");
-  if (hash === "triage" || hash === "pipeline" || hash === "integrations" || hash === "settings")
+  if (hash === "triage" || hash === "pipeline" || hash === "integrations" ||
+      hash === "settings" || hash === "build")
     return hash;
   return "today";
 }
@@ -58,6 +60,7 @@ export default function App() {
         {route === "pipeline" && <Pipeline />}
         {route === "integrations" && <Integrations />}
         {route === "settings" && <Settings />}
+        {route === "build" && <Build />}
       </Layout>
       <ToastRegion />
     </>

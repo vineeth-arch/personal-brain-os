@@ -17,6 +17,8 @@ import secrets
 import subprocess
 import sys
 import threading
+import time
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
@@ -28,7 +30,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from pipeline import classify, config as config_mod, intake, todos as ptodos, watcher
 
-from . import integrations, notes, service
+from . import build_status, integrations, notes, service
 
 log = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
@@ -91,6 +93,7 @@ def create_app(root: Path | None = None) -> FastAPI:
     app.state.run_lock = threading.Lock()
     app.state.integrations_cache = {}
     app.state.integrations_state = {}
+    app.state.build_cache = {}
 
     config_path = root / "config.json"
     db_path = root / watcher.DB_PATH
@@ -245,6 +248,55 @@ def create_app(root: Path | None = None) -> FastAPI:
             config.vault_path,
             f"api: todo {block_id} marked {'done' if done else 'open'}")
         return {"ok": True, "done": done}
+
+    @app.get("/api/build")
+    def build(fresh: int = 0, config=Depends(require_token)):
+        cache = app.state.build_cache
+        now = time.monotonic()
+        if not fresh and cache.get("payload") and now - cache.get("ts", 0) < 60:
+            return cache["payload"]
+        items = build_status.run_probes(root, config, db_path)
+        unfinished = next((i for i in items if not i["done"]), None)
+        payload = {
+            "generated_at": datetime.now().isoformat(timespec="seconds"),
+            "next": ({"label": unfinished["label"], "next_action": unfinished["next_action"]}
+                     if unfinished else None),
+            "items": items,
+        }
+        cache["ts"] = now
+        cache["payload"] = payload
+        return payload
+
+    @app.get("/api/providers")
+    def providers(config=Depends(require_token)):
+        stats: dict[str, dict] = {}
+        for row in service.events_list(db_path, None, 5000, None):
+            if row["stage"] != "llm":
+                continue
+            msg = row["message"] or ""
+            fields = dict(p.split("=", 1) for p in msg.split() if "=" in p)
+            name = fields.get("provider")
+            if not name:
+                continue
+            st = stats.setdefault(name, {"provider": name, "served": 0, "fell_through": 0,
+                                         "invalid_json": 0, "confidences": []})
+            outcome = fields.get("outcome", "")
+            if outcome == "served":
+                st["served"] += 1
+                if "confidence" in fields:
+                    st["confidences"].append(float(fields["confidence"]))
+            elif outcome in ("invalid-json", "schema"):
+                st["invalid_json"] += 1
+                st["fell_through"] += 1
+            else:
+                st["fell_through"] += 1
+        out = []
+        for st in stats.values():
+            confs = st.pop("confidences")
+            st["avg_confidence"] = round(sum(confs) / len(confs), 2) if confs else None
+            out.append(st)
+        out.sort(key=lambda s: -s["served"])
+        return {"providers": out}
 
     # ---- write routes (each git-commits the vault) ---------------------------------
 

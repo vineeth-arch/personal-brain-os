@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import todos
+from . import llm, todos
 
 # ponytail: cue-phrase heuristic as the cheap prefilter (and the no-LLM
 # fallback). Sentence starts/contains one of these action cues.
@@ -80,25 +80,16 @@ def _validate(raw: object, fallback: list[str]) -> list[TodoItem]:
     return items or [TodoItem(t, None, False) for t in fallback]
 
 
-def _haiku_complete(prompt: str, config) -> str | None:
-    """Default resolver: the same classification model (Claude Haiku). Returns
-    None when unconfigured/failed — extraction then degrades to undated items."""
-    if not getattr(config, "anthropic_key", None):
-        return None
-    try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=config.anthropic_key)
-        msg = client.messages.create(
-            model="claude-haiku-4-5", max_tokens=1024,
-            messages=[{"role": "user", "content": prompt}])
-        return msg.content[0].text.strip()
-    except Exception:
-        return None
+def _router_complete(prompt: str, config) -> str | None:
+    """Default resolver: the Pass B model router (same chain as classification).
+    None when no provider serves — extraction degrades to undated items."""
+    text, _provider, _attempts = llm.complete_text(prompt, config)
+    return text
 
 
 def resolve_items(candidates: list[str], captured: datetime, config,
                   llm_fn=None) -> list[TodoItem]:
-    llm_fn = llm_fn or _haiku_complete
+    llm_fn = llm_fn or _router_complete
     text = llm_fn(resolve_prompt(candidates, captured), config)
     if not text:
         return [TodoItem(t, None, False) for t in candidates]

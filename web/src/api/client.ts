@@ -1,6 +1,8 @@
 import type {
+  BuildResponse,
   CaptureTag,
   EngineName,
+  ProviderStat,
   TodoItem,
   TodoRange,
   ErrorEnvelope,
@@ -144,4 +146,6 @@ export const api = {
   todos: (range: TodoRange) => request<{ items: TodoItem[] }>(`/api/todos?range=${range}`),
   toggleTodo: (id: string) =>
     request<{ ok: boolean; done: boolean }>(`/api/todos/${id}/toggle`, { method: "POST" }),
+  build: (fresh = false) => request<BuildResponse>(`/api/build${fresh ? "?fresh=1" : ""}`),
+  providers: () => request<{ providers: ProviderStat[] }>("/api/providers"),
 };

@@ -142,3 +142,28 @@ export interface TodoItem {
   overdue: boolean;
   file: string;
 }
+
+// Build tracker (Pass B): live probes — reality is the checklist.
+export interface BuildItem {
+  id: string;
+  label: string;
+  phase: string;
+  done: boolean;
+  detail: string;
+  next_action: string | null;
+}
+
+export interface BuildResponse {
+  generated_at: string;
+  next: { label: string; next_action: string } | null;
+  items: BuildItem[];
+}
+
+// Model router stats (Pass B).
+export interface ProviderStat {
+  provider: string;
+  served: number;
+  fell_through: number;
+  invalid_json: number;
+  avg_confidence: number | null;
+}

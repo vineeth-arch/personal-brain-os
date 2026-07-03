@@ -195,6 +195,11 @@ export function Settings() {
               Open the operating manual ↗
             </a>
           </li>
+          <li>
+            <a href="#/build" className="text-emphasis flex min-h-11 items-center text-sm font-bold">
+              Build tracker — what's done, what's next →
+            </a>
+          </li>
         </ul>
         {!vault && (
           <p className="text-subtle mt-2 text-xs">
@@ -219,6 +224,8 @@ export function Settings() {
         </ul>
       </Card>
 
+      <ModelRouterCard />
+
       <Card title="Help">
         <p className="text-default text-sm">
           The <a href="help.html" target="_blank" rel="noreferrer" className="text-emphasis font-bold underline">operating manual</a>{" "}
@@ -227,5 +234,47 @@ export function Settings() {
         </p>
       </Card>
     </div>
+  );
+}
+
+// Model router stats (Pass B): which provider actually served, per outcome.
+function ModelRouterCard() {
+  const { data } = usePolling(api.providers, 60_000);
+  const rows = data?.providers ?? [];
+  return (
+    <section className="bg-subtle border-subtle rounded-xl border p-5">
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">Model router</p>
+      {rows.length === 0 ? (
+        <p className="text-default mt-3 text-sm">
+          No classifications routed yet. The chain runs Gemini → Groq → OpenRouter → Claude Haiku
+          (the floor); providers without a key are skipped silently.
+        </p>
+      ) : (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-subtle text-left text-[11px] font-bold uppercase tracking-[0.08em]">
+                <th className="py-1 pr-3">Provider</th>
+                <th className="py-1 pr-3">Served</th>
+                <th className="py-1 pr-3">Fell through</th>
+                <th className="py-1 pr-3">Bad JSON</th>
+                <th className="py-1">Avg conf</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.provider} className="border-subtle border-t">
+                  <td className="text-emphasis py-2 pr-3 font-semibold">{r.provider}</td>
+                  <td className="text-default py-2 pr-3">{r.served}</td>
+                  <td className="text-default py-2 pr-3">{r.fell_through}</td>
+                  <td className="text-default py-2 pr-3">{r.invalid_json}</td>
+                  <td className="text-default py-2">{r.avg_confidence ?? "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }

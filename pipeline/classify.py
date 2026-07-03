@@ -7,6 +7,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
+from . import llm
 from .errors import StageError
 
 # The 11 note TYPES (SCHEMA-REFERENCE.md §2) — a distinct vocabulary from tags.
@@ -32,6 +33,8 @@ class Classification:
     confidence: float = 1.0
     needs_review: bool = False
     routed_by: str = "tag"          # "tag" | "llm"
+    provider: str = ""              # which model served the classification
+    attempts: list = field(default_factory=list)  # llm.Attempt rows for stats
 
 
 def _spoken_tag(transcript: str) -> str | None:
@@ -53,10 +56,23 @@ def classify(item, transcript: str, config, llm_fn=None) -> Classification:
             type=TAG_TO_TYPE[tag], title=item.name, tags=[tag],
             confidence=1.0, needs_review=False, routed_by="tag")
 
-    # 2. Paid route: Claude Haiku.
-    llm_fn = llm_fn or _haiku_classify
-    data = llm_fn(transcript, config)
-    ctype = data.get("type", "").lower()
+    # 2. Paid route: the model router (Pass B). The injectable llm_fn seam is
+    # kept for hermetic tests and behaves like a single always-on provider.
+    provider = "stub"
+    attempts: list = []
+    if llm_fn is not None:
+        data = llm_fn(transcript, config)
+    else:
+        data, provider, attempts = llm.complete_json(
+            build_prompt(transcript), config, validate_classification)
+        if data is None:
+            # every provider failed → needs-review, NEVER a guess (the note
+            # parks in 00-Inbox for a human decision)
+            return Classification(
+                type="musing", title=item.name, confidence=0.0,
+                needs_review=True, routed_by="llm", provider="none",
+                attempts=attempts)
+    ctype = str(data.get("type", "")).lower()
     if ctype not in NOTE_TYPES:
         ctype = "musing"  # ponytail: unknown type from the model degrades to a safe default...
         data["confidence"] = min(float(data.get("confidence", 0)), 0.0)  # ...and is forced to review
@@ -70,17 +86,14 @@ def classify(item, transcript: str, config, llm_fn=None) -> Classification:
         confidence=confidence,
         needs_review=confidence < config.confidence_threshold,
         routed_by="llm",
+        provider=provider,
+        attempts=attempts,
     )
 
 
-def _haiku_classify(transcript: str, config) -> dict:
-    if not config.anthropic_key:
-        raise StageError("Could not classify the note.",
-                         "ANTHROPIC_API_KEY is not set, so the Haiku classifier can't run.",
-                         "export ANTHROPIC_API_KEY=... or add a #tag to route it for free.")
-    import anthropic
-    client = anthropic.Anthropic(api_key=config.anthropic_key)
-    prompt = (
+def build_prompt(transcript: str) -> str:
+    """The ONE classification prompt — identical to every provider in the chain."""
+    return (
         "Classify this captured note. Return ONLY JSON with keys: "
         'type, categories, subjects, tags, confidence, title.\n'
         f"type must be one of: {', '.join(NOTE_TYPES)}.\n"
@@ -88,18 +101,21 @@ def _haiku_classify(transcript: str, config) -> dict:
         "tags = controlled vocabulary tags. confidence = 0..1. title = a short kebab-friendly title.\n\n"
         f"NOTE:\n{transcript}"
     )
+
+
+def validate_classification(data: object) -> str | None:
+    """Schema gate every provider response must pass: locked type list,
+    confidence 0-1, non-empty title. Returns a problem string or None."""
+    if not isinstance(data, dict):
+        return "not a JSON object"
+    if str(data.get("type", "")).lower() not in NOTE_TYPES:
+        return "type not in the locked list"
     try:
-        msg = client.messages.create(
-            model="claude-haiku-4-5", max_tokens=512,
-            messages=[{"role": "user", "content": prompt}])
-        text = msg.content[0].text.strip()
-        text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
-        return json.loads(text)
-    except (json.JSONDecodeError, KeyError, IndexError) as e:
-        raise StageError("Could not classify the note.",
-                         "Haiku did not return the expected JSON shape.",
-                         "Re-run; if it recurs, add a #tag to route the note for free.") from e
-    except Exception as e:
-        raise StageError("Could not classify the note.",
-                         "The Anthropic request failed (network, quota, or bad key).",
-                         "Check ANTHROPIC_API_KEY and your connection, then re-run.") from e
+        conf = float(data.get("confidence"))
+    except (TypeError, ValueError):
+        return "confidence not a number"
+    if not (0.0 <= conf <= 1.0):
+        return "confidence outside 0..1"
+    if not str(data.get("title") or "").strip():
+        return "empty title"
+    return None

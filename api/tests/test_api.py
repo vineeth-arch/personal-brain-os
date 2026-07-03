@@ -358,3 +358,32 @@ def test_todos_ranges_and_toggle(env):
                                 capture_output=True, text=True).stdout.strip()
         assert logmsg == "api: todo 20260701090000-1 marked done"
         assert s.req("POST", "/api/todos/nope/toggle")[0] == 404
+
+
+def test_build_probes_and_providers(env):
+    root, vault, _, _ = env
+    import shutil
+    shutil.copy(Path(__file__).resolve().parents[2] / "checks.json", root / "checks.json")
+    _seed_events(root / "events.db", [
+        {"timestamp": "2026-07-01T09:00:00", "file": "/in/a.m4a", "stage": "llm", "status": "failed",
+         "message": "provider=gemini-flash outcome=invalid-json"},
+        {"timestamp": "2026-07-01T09:00:01", "file": "/in/a.m4a", "stage": "llm", "status": "ok",
+         "message": "provider=claude-haiku outcome=served confidence=0.90"},
+    ])
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/build")
+        assert code == 200
+        by_id = {i["id"]: i for i in body["items"]}
+        assert by_id["pass2"]["done"] is True                # answering proves the API runs
+        assert by_id["wire-config"]["done"] is True          # tmp config has vault_path
+        assert by_id["wire-whisper"]["done"] is False        # no binary in the tmp config
+        assert by_id["wire-whisper"]["next_action"]          # plain-English next step
+        assert by_id["wire-backlog-clear"]["done"] is True   # tmp capture inbox is empty
+        assert by_id["wire-first-capture"]["done"] is False
+        assert body["next"] is not None                      # something is unfinished
+        code, body = s.req("GET", "/api/providers")
+        stats = {p["provider"]: p for p in body["providers"]}
+        assert stats["claude-haiku"]["served"] == 1
+        assert stats["claude-haiku"]["avg_confidence"] == 0.9
+        assert stats["gemini-flash"]["fell_through"] == 1
+        assert stats["gemini-flash"]["invalid_json"] == 1

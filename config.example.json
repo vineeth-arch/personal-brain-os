@@ -18,7 +18,13 @@
     "auth_token": ""
   },
   "classification": {
-    "confidence_threshold": 0.7
+    "confidence_threshold": 0.7,
+    "providers": [
+      "gemini-flash",
+      "groq-llama-3.3-70b",
+      "openrouter-free",
+      "claude-haiku"
+    ]
   },
   "links": {
     "dex": "https://getdex.com/",
