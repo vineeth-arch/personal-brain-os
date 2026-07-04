@@ -212,10 +212,13 @@ optional `url` (link cards only), optional `meta` (presentational
 - `git` — vault repo clean/dirty + commit age; **`warn` if uncommitted > 24h**.
 - `watcher` — heartbeat file age; `problem` if missing or > 20 min.
 
-**Link cards (8)** — no health check, no badge, just `url` from the config
+**Link cards** — no health check, no badge, just `url` from the config
 `links` section (below): `obsidian` (built server-side as
-`obsidian://open?vault=<basename(vault_path)>`), `dex`, `gmail`, `gcal`,
-`caldiy`, `n8n`, `zima`, `supabase`.
+`obsidian://open?vault=<basename(vault_path)>`), then the 7 known keys
+(`dex`, `gmail`, `gcal`, `caldiy`, `n8n`, `zima`, `supabase`), **plus any
+other key present in `links`** — unknown keys render with `icon` set to the
+key itself, which the frontend draws as a lettermark tile. Keys with an empty
+URL are skipped.
 
 ### `POST /api/integrations/engine`
 
@@ -227,9 +230,11 @@ before switching to `openai`.
 
 ### `POST /api/integrations/ntfy/test`
 
-No body. Sends one push via `pipeline/errors.py::ntfy()` — a user-initiated
-self-notification (allowed under CLAUDE.md §4). `200 {"ok": true}` means "sent"
-(ntfy() never raises, so it is not a delivery receipt); unconfigured →
+No body. Attempts one real push — a user-initiated self-notification (allowed
+under CLAUDE.md §4). `200 {"ok": true}` means the ntfy server accepted the
+message (a truthful send receipt — still not proof the phone displayed it);
+the send failing (network down/blocked, wrong url) → `502` + envelope, and the
+ntfy card reports the failed test until a later one succeeds; unconfigured →
 `400` + envelope.
 
 ### config.json `links` section
@@ -249,22 +254,25 @@ The link-card URLs (everything except `obsidian`, which is derived from
 }
 ```
 
-## Config (Pass 2)
+## Config (Pass 2; editable from Settings since Pass 4)
 
 Safe settings only — **key VALUES are never returned or accepted**; the provider
-API keys live in the server's environment (CLAUDE.md §7). No frontend consumes
-this yet (Settings.tsx is read-only documentation), but the endpoint exists and
-is documented here so the contract stays honest.
+API keys live in the server's environment (CLAUDE.md §7). The Settings screen
+edits this subset live (engine with a cloud-caution confirm, confidence
+threshold, ntfy url/topic); everything else stays documentation.
 
 ### `GET /api/config`
 
 ```json
 { "engine": "whispercpp", "confidence_threshold": 0.7,
   "ntfy_url": "https://ntfy.sh", "ntfy_topic": "brain-cockpit",
+  "providers": ["gemini-flash", "groq-llama-3.3-70b", "openrouter-free", "claude-haiku"],
   "keys": { "anthropic": true, "openai": false } }
 ```
 
-`keys` are presence booleans. `api.auth_token` is never included.
+`keys` are presence booleans. `providers` is the classification fallback chain
+in order (read-only here — reordering lives in config.json).
+`api.auth_token` is never included.
 
 ### `PUT /api/config`
 

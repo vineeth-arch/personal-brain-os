@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { api } from "../api/client";
 import type { EngineName, IntegrationCard, IntegrationStatus } from "../api/types";
+import { CloudEngineConfirm } from "../components/CloudEngineConfirm";
 import { ErrorState } from "../components/ErrorState";
 import { IntegrationIcon } from "../components/IntegrationIcon";
 import { StatusBadge } from "../components/StatusBadge";
@@ -138,34 +139,14 @@ function HealthCard({
         Switch to local
       </button>
     ) : confirmCloud ? (
-      <div className="w-full">
-        <div className="bg-cal-muted border-emphasis rounded-xl border p-3 text-sm">
-          <p className="text-emphasis font-bold">Cloud transcription sends your audio to OpenAI.</p>
-          <p className="text-default mt-1">
-            Your rule: sensitive data stays local. Use as fallback only.
-          </p>
-        </div>
-        <div className="mt-3 flex gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setConfirmCloud(false);
-              onEngine("openai");
-            }}
-            disabled={busy}
-            className="bg-inverted text-inverted min-h-11 rounded-xl px-4 text-sm font-bold disabled:opacity-60"
-          >
-            Use cloud anyway
-          </button>
-          <button
-            type="button"
-            onClick={() => setConfirmCloud(false)}
-            className="border-subtle text-subtle min-h-11 rounded-xl border px-4 text-sm font-bold"
-          >
-            Keep local
-          </button>
-        </div>
-      </div>
+      <CloudEngineConfirm
+        busy={busy}
+        onConfirm={() => {
+          setConfirmCloud(false);
+          onEngine("openai");
+        }}
+        onCancel={() => setConfirmCloud(false)}
+      />
     ) : (
       <button
         type="button"

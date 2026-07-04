@@ -168,12 +168,13 @@ export interface ProviderStat {
   avg_confidence: number | null;
 }
 
-// Config (Pass 2 GET /api/config) — safe values only, never key values.
+// Config (GET/PUT /api/config) — safe values only, never key values.
 export interface AppConfig {
   engine: EngineName;
   confidence_threshold: number;
   ntfy_url: string;
   ntfy_topic: string;
+  providers: string[]; // classification chain, in fallback order (read-only)
   keys: { anthropic: boolean; openai: boolean };
   enrichment: {
     apify_token: boolean;
@@ -181,4 +182,12 @@ export interface AppConfig {
     apify_last_call: string | null;
     youtube_keyless: boolean;
   };
+}
+
+// PUT /api/config body — only the fields being changed are sent.
+export interface ConfigWrite {
+  engine?: EngineName;
+  confidence_threshold?: number;
+  ntfy_url?: string;
+  ntfy_topic?: string;
 }

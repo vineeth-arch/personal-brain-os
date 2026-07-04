@@ -3,7 +3,7 @@
 - Multi-topic splitter: auto-split a genuinely multi-topic journal/musing recording into multiple notes (needs an LLM topic-segmenter; route.py has the SPLITTABLE seam).
 - Theme toggle (light mode tokens are shipped and working; dark is hardcoded as default this pass).
 - Custom PWA install prompt/button (browser default install affordance is used for now).
-- Settings: edit server config (paths, ntfy, threshold) from the cockpit via a config-write API endpoint.
+- Settings: edit server *paths* (vault/inbox/archive/failed) from the cockpit — engine, threshold, and ntfy became editable in Pass 4; paths stay server-side.
 - Capture confirmation echoes the first line of what was heard (transcript echo) — research B1.
 - Triage cards show the AI's evidence for its guess alongside confidence — research B2.
 - Track + display AI classification accuracy over time ("94% of last 50 approved unchanged") — research B3.
@@ -15,7 +15,7 @@
 - Daily ntfy digest: status + resurfaced note + queue count (the system visits you) — research B9.
 - Optional Goblin-style micro-step breakdown for extracted todos with a "how hard does it feel?" dial — research B10.
 - Surface the trust boundary in the UI ("nothing entered your vault without you — N notes gated this month") — research B11.
-- Integrations: real config-write safety for POST /integrations/engine (atomic write + backup of config.json; validate the target engine's key/binary is present before switching) — Pass 2.
+- Integrations: keep a rolling backup copy of config.json on every write (the write is already atomic + key-validated since Pass 2/4).
 - Integrations: true per-card SSE streaming instead of one cached GET /integrations, if health checks ever grow slow.
 - Integrations: per-integration retry/backoff + a real round-trip ntfy delivery receipt (test push is best-effort send, not confirmed receipt).
 - Integrations: edit the links section from the cockpit (ties into the deferred config-write settings item).

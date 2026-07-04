@@ -16,7 +16,7 @@ import urllib.request
 from datetime import datetime
 from pathlib import Path
 
-from pipeline import errors as perrors
+from pipeline import llm as pllm
 
 log = logging.getLogger("api")
 
@@ -56,6 +56,8 @@ def safe_config(config) -> dict:
         "confidence_threshold": config.confidence_threshold,
         "ntfy_url": config.ntfy_url,
         "ntfy_topic": config.ntfy_topic,
+        "providers": list((config.raw.get("classification") or {}).get("providers")
+                          or pllm.DEFAULT_CHAIN),
         "keys": {
             "anthropic": bool(config.anthropic_key),
             "openai": bool(config.openai_key),
@@ -209,6 +211,7 @@ def _check_ntfy(config, state: dict) -> dict:
     card = {"id": "ntfy", "group": "health", "name": "ntfy push", "icon": "bell",
             "description": "Sends one push to your phone when a capture fails.",
             "meta": {"topic": config.ntfy_topic}}
+    tested = state.get("ntfy_tested")  # None | "ok" | "failed" (legacy truthy = ok)
     if not (config.ntfy_url and config.ntfy_topic):
         card.update(status="warn", badge="Not configured",
                     detail="No push destination is set.",
@@ -217,7 +220,16 @@ def _check_ntfy(config, state: dict) -> dict:
                         "cause": "ntfy.url / ntfy.topic are empty in config.json.",
                         "todo": "Fill them in and subscribe to the topic in the ntfy app.",
                     })
-    elif state.get("ntfy_tested"):
+    elif tested == "failed":
+        card.update(status="warn", badge="Test failed",
+                    detail="The last test push couldn't reach the ntfy server.",
+                    error={
+                        "what": "The test push didn't go out.",
+                        "cause": "The ntfy server couldn't be reached from this machine "
+                                 "(network down, blocked, or the url is wrong).",
+                        "todo": "Check ntfy.url and this machine's connection, then try again.",
+                    })
+    elif tested:
         card.update(status="ok", badge="Delivered",
                     detail="Test push sent — your phone should have buzzed.")
     else:
@@ -356,6 +368,15 @@ def _link_cards(config) -> list[dict]:
             cards.append({"id": key, "group": "link", "name": name, "icon": icon,
                           "description": description, "status": "unknown", "badge": None,
                           "url": url})
+    # any other configured link renders too — unknown icon keys fall back to a
+    # lettermark tile in the frontend
+    known = {key for key, _, _, _ in LINK_DEFS}
+    for key, url in links.items():
+        if key in known or not url:
+            continue
+        cards.append({"id": key, "group": "link", "name": key.replace("_", " ").title(),
+                      "icon": key, "description": "Pinned from the links section of config.json.",
+                      "status": "unknown", "badge": None, "url": str(url)})
     return cards
 
 
@@ -403,15 +424,39 @@ def bust_cache(app_state) -> None:
     app_state.integrations_cache.clear()
 
 
-def send_test_push(config) -> None:
-    """errors.ntfy silently no-ops when unconfigured — reject that case first
-    so 'sent' is truthful."""
+class PushFailed(ConfigError):
+    """The test push was attempted but the ntfy server couldn't be reached."""
+
+
+def _raw_push(url: str, topic: str, message: str, title: str) -> None:
+    """A test push that RAISES on failure — unlike pipeline errors.ntfy, whose
+    never-raise contract is load-bearing for the watcher. The user asked for a
+    receipt, so 'sent' must be truthful."""
+    req = urllib.request.Request(
+        f"{url.rstrip('/')}/{topic}", data=message.encode("utf-8"),
+        headers={"Title": title, "Priority": "high"})
+    with urllib.request.urlopen(req, timeout=10):
+        pass
+
+
+def send_test_push(config, send=None) -> None:
+    """Reject unconfigured first, then attempt one real send. `send` is the
+    injectable seam for tests (network is policy-blocked in some environments)."""
     if not (config.ntfy_url and config.ntfy_topic):
         raise ConfigError(
             "The test push didn't go out.",
             "ntfy has no url/topic set in config.json.",
             "Fill in ntfy.url and ntfy.topic, then try again.",
         )
-    perrors.ntfy(config.ntfy_url, config.ntfy_topic,
-                 "Test push from Brain Cockpit — your phone is reachable.",
-                 title="Brain Cockpit — test")
+    try:
+        (send or _raw_push)(config.ntfy_url, config.ntfy_topic,
+                            "Test push from Brain Cockpit — your phone is reachable.",
+                            "Brain Cockpit — test")
+    except Exception as e:
+        log.info("ntfy test push failed: %s", e)
+        raise PushFailed(
+            "The test push didn't go out.",
+            "The ntfy server couldn't be reached from this machine "
+            "(network down, blocked, or the url is wrong).",
+            "Check ntfy.url and this machine's connection, then try again.",
+        )

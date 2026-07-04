@@ -404,9 +404,7 @@ def create_app(root: Path | None = None) -> FastAPI:
 
     # ---- config (safe subset only — key values never leave the server) --------------
 
-    @app.get("/api/config")
-    def get_config(config=Depends(require_token)):
-        import os as _os
+    def config_payload(config) -> dict:
         last_ig = None
         for row in service.events_list(db_path, None, 2000, None):
             if row["stage"] == "enrich" and "platform=instagram" in (row["message"] or ""):
@@ -414,12 +412,16 @@ def create_app(root: Path | None = None) -> FastAPI:
                 break
         safe = integrations.safe_config(config)
         safe["enrichment"] = {
-            "apify_token": bool(_os.environ.get("APIFY_TOKEN")),
+            "apify_token": bool(os.environ.get("APIFY_TOKEN")),
             "apify_actor_set": bool((config.raw.get("apify") or {}).get("actor_id")),
             "apify_last_call": last_ig,
             "youtube_keyless": True,
         }
         return safe
+
+    @app.get("/api/config")
+    def get_config(config=Depends(require_token)):
+        return config_payload(config)
 
     @app.put("/api/config")
     def put_config(body: ConfigBody, config=Depends(require_token)):
@@ -428,7 +430,8 @@ def create_app(root: Path | None = None) -> FastAPI:
         except integrations.ConfigError as e:
             raise Envelope(400, **e.envelope)
         integrations.bust_cache(app.state)
-        return integrations.safe_config(load_config())
+        # same shape as GET, re-read so the response reflects the write
+        return config_payload(load_config())
 
     # ---- integrations ----------------------------------------------------------------
 
@@ -449,9 +452,14 @@ def create_app(root: Path | None = None) -> FastAPI:
     def ntfy_test(config=Depends(require_token)):
         try:
             integrations.send_test_push(config)
+        except integrations.PushFailed as e:
+            # the send was attempted and failed — the card must say so too
+            app.state.integrations_state["ntfy_tested"] = "failed"
+            integrations.bust_cache(app.state)
+            raise Envelope(502, **e.envelope)
         except integrations.ConfigError as e:
             raise Envelope(400, **e.envelope)
-        app.state.integrations_state["ntfy_tested"] = True
+        app.state.integrations_state["ntfy_tested"] = "ok"
         integrations.bust_cache(app.state)
         return {"ok": True}
 

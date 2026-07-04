@@ -2,6 +2,7 @@ import type {
   AppConfig,
   BuildResponse,
   CaptureTag,
+  ConfigWrite,
   EngineName,
   ProviderStat,
   TodoItem,
@@ -150,4 +151,6 @@ export const api = {
   build: (fresh = false) => request<BuildResponse>(`/api/build${fresh ? "?fresh=1" : ""}`),
   providers: () => request<{ providers: ProviderStat[] }>("/api/providers"),
   config: () => request<AppConfig>("/api/config"),
+  putConfig: (changes: ConfigWrite) =>
+    request<AppConfig>("/api/config", { method: "PUT", body: JSON.stringify(changes) }),
 };

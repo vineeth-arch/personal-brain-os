@@ -174,7 +174,45 @@ FAIL_ENVELOPE = {
 
 # ---- Integrations (Pass 4) --------------------------------------------------
 ENGINE = "whispercpp"  # module-level so the engine toggle is observable across requests
-NTFY_TESTED = False     # flips true after a successful test push (badge unknown -> ok)
+NTFY_TESTED = None      # None -> "ok" after a test push succeeds, "failed" after one fails
+
+# The editable safe-config subset (GET/PUT /api/config). Module-level so a PUT
+# from Settings is observable on the next GET, like the real API.
+CONFIG = {
+    "engine": ENGINE,
+    "confidence_threshold": 0.7,
+    "ntfy_url": "https://ntfy.sh",
+    "ntfy_topic": "brain-cockpit",
+    "providers": ["gemini-flash", "groq-llama-3.3-70b", "openrouter-free", "claude-haiku"],
+    "keys": {"anthropic": True, "openai": not MODE_INT_DEGRADED},
+    "enrichment": {
+        "apify_token": not MODE_INT_DEGRADED,
+        "apify_actor_set": not MODE_INT_DEGRADED,
+        "apify_last_call": None if MODE_EMPTY else iso(now - timedelta(hours=6)),
+        "youtube_keyless": True,
+    },
+}
+
+PROVIDERS = [] if MODE_EMPTY else [
+    {"provider": "gemini-flash", "served": 41, "fell_through": 3, "invalid_json": 2, "avg_confidence": 0.84},
+    {"provider": "groq-llama-3.3-70b", "served": 2, "fell_through": 1, "invalid_json": 0, "avg_confidence": 0.71},
+    {"provider": "claude-haiku", "served": 1, "fell_through": 0, "invalid_json": 0, "avg_confidence": 0.9},
+]
+
+BUILD_ITEMS = [
+    {"id": "pass1", "label": "Pass 1 — pipeline core", "phase": "Build passes",
+     "done": True, "detail": "pipeline/watcher.py exists.", "next_action": None},
+    {"id": "wire-whisper", "label": "whisper.cpp installed and runnable", "phase": "Wiring",
+     "done": not MODE_INT_DEGRADED, "detail": "Probe of the configured binary.",
+     "next_action": None if not MODE_INT_DEGRADED
+     else "brew install whisper-cpp, download the small.en model, put both paths in config.json."},
+]
+
+TODO_ITEMS = [] if MODE_EMPTY else [
+    {"id": "20260703140000-1", "task": "call the dentist", "due": date.today().isoformat(),
+     "time": "14:00", "done": False, "overdue": False,
+     "file": f"06-Todos/{date.today().isoformat()}.md"},
+]
 
 LINK_CARDS = [
     {"id": "obsidian", "group": "link", "name": "Obsidian", "icon": "obsidian",
@@ -201,6 +239,10 @@ LINK_CARDS = [
     {"id": "supabase", "group": "link", "name": "Supabase", "icon": "database",
      "description": "Outreach cockpit database console.", "status": "unknown", "badge": None,
      "url": "https://app.supabase.com/project/_"},
+    # an unknown links key — exercises the frontend's lettermark icon fallback
+    {"id": "notion", "group": "link", "name": "Notion", "icon": "notion",
+     "description": "Pinned from the links section of config.json.", "status": "unknown",
+     "badge": None, "url": "https://www.notion.so/"},
 ]
 
 
@@ -248,16 +290,26 @@ def _integration_cards():
         "meta": {"key_present": True},
     }
 
-    ntfy_ok = NTFY_TESTED
     ntfy = {
         "id": "ntfy", "group": "health", "name": "ntfy push", "icon": "bell",
         "description": "Sends one push to your phone when a capture fails.",
-        "status": "ok" if ntfy_ok else "unknown",
-        "badge": "Delivered" if ntfy_ok else "Untested",
-        "detail": ("Test push delivered — your phone is reachable." if ntfy_ok
-                   else "Configured for topic \u201cbrain-cockpit\u201d. Send a test push to confirm your phone receives it."),
-        "meta": {"topic": "brain-cockpit"},
+        "meta": {"topic": CONFIG["ntfy_topic"]},
     }
+    if NTFY_TESTED == "failed":
+        ntfy.update(status="warn", badge="Test failed",
+                    detail="The last test push couldn't reach the ntfy server.",
+                    error={
+                        "what": "The test push didn't go out.",
+                        "cause": "The ntfy server couldn't be reached from this machine "
+                                 "(network down, blocked, or the url is wrong).",
+                        "todo": "Check ntfy.url and this machine's connection, then try again."})
+    elif NTFY_TESTED == "ok":
+        ntfy.update(status="ok", badge="Delivered",
+                    detail="Test push sent \u2014 your phone should have buzzed.")
+    else:
+        ntfy.update(status="unknown", badge="Untested",
+                    detail="Configured for topic \u201cbrain-cockpit\u201d. "
+                           "Send a test push to confirm your phone receives it.")
 
     vault = {
         "id": "vault-sync", "group": "health", "name": "Vault sync", "icon": "folder-sync",
@@ -313,7 +365,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -379,6 +431,46 @@ class Handler(BaseHTTPRequestHandler):
                     "fresh": params.get("fresh") == "1",
                     "cards": _integration_cards(),
                 })
+            if path == "/api/config":
+                return self._send(200, {**CONFIG, "engine": ENGINE})
+            if path == "/api/providers":
+                return self._send(200, {"providers": PROVIDERS})
+            if path == "/api/build":
+                unfinished = next((i for i in BUILD_ITEMS if not i["done"]), None)
+                return self._send(200, {
+                    "generated_at": iso(datetime.now()),
+                    "next": ({"label": unfinished["label"], "next_action": unfinished["next_action"]}
+                             if unfinished else None),
+                    "items": BUILD_ITEMS,
+                })
+            if path == "/api/todos":
+                return self._send(200, {"items": TODO_ITEMS})
+
+        if method == "PUT":
+            if path == "/api/config":
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                try:
+                    changes = json.loads(body or b"{}")
+                except json.JSONDecodeError:
+                    changes = {}
+                engine = changes.get("engine")
+                if engine is not None:
+                    if engine not in ("whispercpp", "openai"):
+                        return self._send(400, {"error": {
+                            "what": "Couldn't switch the transcription engine.",
+                            "cause": "The request didn't name a known engine (whispercpp or openai).",
+                            "todo": "Pick one of the two engines and try again."}})
+                    if engine == "openai" and not CONFIG["keys"]["openai"]:
+                        return self._send(400, {"error": {
+                            "what": "Can't switch to cloud transcription.",
+                            "cause": "OPENAI_API_KEY is not set on the server, so the OpenAI engine can't run.",
+                            "todo": "export OPENAI_API_KEY=... in the server's shell, or stay on whispercpp."}})
+                    ENGINE = engine
+                for field in ("confidence_threshold", "ntfy_url", "ntfy_topic"):
+                    if changes.get(field) is not None:
+                        CONFIG[field] = changes[field]
+                print("PUT CONFIG", changes)
+                return self._send(200, {**CONFIG, "engine": ENGINE})
 
         if method == "POST":
             if path == "/api/capture":
@@ -406,17 +498,25 @@ class Handler(BaseHTTPRequestHandler):
                         "what": "Couldn't switch the transcription engine.",
                         "cause": "The request didn't name a known engine (whispercpp or openai).",
                         "todo": "Pick one of the two engines and try again."}})
+                if engine == "openai" and not CONFIG["keys"]["openai"]:
+                    return self._send(400, {"error": {
+                        "what": "Can't switch to cloud transcription.",
+                        "cause": "OPENAI_API_KEY is not set on the server, so the OpenAI engine can't run.",
+                        "todo": "export OPENAI_API_KEY=... in the server's shell, or stay on whispercpp."}})
                 ENGINE = engine
                 print("SET ENGINE", engine)
                 return self._send(200, {"ok": True, "engine": engine})
             if path == "/api/integrations/ntfy/test":
                 print("NTFY TEST")
                 if MODE_INT_DEGRADED:
-                    return self._send(400, {"error": {
+                    # the send was attempted and failed — card shows the warn state
+                    NTFY_TESTED = "failed"
+                    return self._send(502, {"error": {
                         "what": "The test push didn't go out.",
-                        "cause": "ntfy has no url/topic set in config.json.",
-                        "todo": "Fill in ntfy.url and ntfy.topic, then try again."}})
-                NTFY_TESTED = True
+                        "cause": "The ntfy server couldn't be reached from this machine "
+                                 "(network down, blocked, or the url is wrong).",
+                        "todo": "Check ntfy.url and this machine's connection, then try again."}})
+                NTFY_TESTED = "ok"
                 return self._send(200, {"ok": True})
             if path == "/api/run":
                 print("RUN NOW")
@@ -433,6 +533,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         self._route("POST")
+
+    def do_PUT(self):
+        self._route("PUT")
 
     def log_message(self, fmt, *args):  # quieter default logging
         sys.stderr.write("mock-api: %s\n" % (fmt % args))
