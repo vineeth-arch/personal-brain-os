@@ -191,3 +191,30 @@ export interface ConfigWrite {
   ntfy_url?: string;
   ntfy_topic?: string;
 }
+
+// Backup (Pass 5): git-commit the vault + copy events.db to backups/.
+export interface BackupResult {
+  ok: boolean;
+  at: string;
+  vault_committed: boolean;
+  events_db_copied: boolean;
+}
+
+export interface BackupStatus {
+  last_backup: string | null; // newest events-*.db copy, null = never
+  last_vault_commit: string | null;
+}
+
+// Self-check (Pass 5): the boot-time structural check, re-run live.
+export interface SelfCheckItem {
+  id: string;
+  label: string;
+  ok: boolean;
+  detail: string;
+}
+
+export interface SelfCheckResponse {
+  ok: boolean;
+  problems: ErrorEnvelope[];
+  checks: SelfCheckItem[];
+}

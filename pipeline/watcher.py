@@ -25,6 +25,8 @@ POLL_SECONDS = 5 * 60
 BATCH_SIZE = 25
 DB_PATH = Path("events.db")
 HEARTBEAT_PATH = Path(".watcher-heartbeat")
+RETRY_ATTEMPTS = 3          # total tries for a transient failure before quarantine
+RETRY_BASE_SECONDS = 2      # backoff: 2s, then 4s, between tries
 
 
 @dataclass
@@ -35,6 +37,7 @@ class Deps:
     extract_llm: object = None        # llm_fn(prompt, config) -> str; None = real Haiku
     enrich_fetch: object = None       # fetch(url, data=, timeout=) -> bytes; None = real HTTP
     enrich_router: object = None      # router(prompt, config, validate) -> (data, provider, attempts)
+    sleep: object = time.sleep        # retry backoff seam (tests inject a recorder)
 
 
 @dataclass
@@ -53,13 +56,32 @@ def _transcribe(item, deps: Deps) -> str:
     return deps.transcriber.transcribe(item.path)
 
 
+def _transcribe_with_retry(item, deps: Deps) -> str:
+    """Retry policy: transient failures (network, 5xx, rate limits) get
+    RETRY_ATTEMPTS tries with exponential backoff BEFORE quarantine; permanent
+    ones (bad audio, missing binary, bad key) escape on the first try.
+    Transcription runs before any vault write, so retrying it is side-effect
+    free — which is exactly why the retry lives here and not around the whole
+    file."""
+    for attempt in range(1, RETRY_ATTEMPTS + 1):
+        try:
+            return _transcribe(item, deps)
+        except errors.StageError as e:
+            e.attempts = attempt
+            if not e.transient or attempt == RETRY_ATTEMPTS:
+                raise
+            deps.sleep(RETRY_BASE_SECONDS * 2 ** (attempt - 1))
+    raise AssertionError("unreachable")
+
+
 def process_file(item, config, events: EventLog, deps: Deps) -> Result:
     fkey = str(item.path)
     res = Result(name=item.path.name)
     try:
-        # Stage 2 — transcribe (text skips inside _transcribe)
+        # Stage 2 — transcribe (text skips inside _transcribe); transient
+        # failures are retried with backoff before they can reach quarantine
         t0 = time.monotonic()
-        transcript = _transcribe(item, deps)
+        transcript = _transcribe_with_retry(item, deps)
         events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000))
 
         if item.kind == "link":
@@ -120,20 +142,36 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
         return res
 
     except errors.StageError as e:
-        return _fail(item, config, events, res, e.what, e.plain(), stage_msg=e.what)
+        # the envelope must say which kind of failure this was and how many
+        # tries were made — fold it into the cause, in plain English
+        if e.transient:
+            e.cause += (f" The pipeline tried {e.attempts} times, waiting longer between "
+                        "each try, before setting the file aside.")
+        else:
+            e.cause += " The pipeline didn't retry — this kind of failure doesn't fix itself."
+        return _fail(item, config, events, res, e.what, e.plain(),
+                     kind="transient" if e.transient else "permanent", attempts=e.attempts)
     except Exception as e:  # unknown failure — still plain-English, still keep going
         what = "Something went wrong processing this file."
-        plain = (f"What happened: {what}\nLikely cause: an unexpected error "
-                 f"({type(e).__name__}).\nWhat to do: check events.db for detail, then re-run.")
-        return _fail(item, config, events, res, what, plain, stage_msg=str(e))
+        plain = (f"What happened: {what}\nLikely cause: an unexpected error the pipeline "
+                 "doesn't recognise. The pipeline didn't retry — this kind of failure "
+                 "doesn't fix itself.\nWhat to do: open the event's technical detail, "
+                 "fix what it names, then retry from the Pipeline screen.")
+        # the exception type is technical detail — it goes in the event message
+        # (behind the disclosure), never in the plain-English parts
+        return _fail(item, config, events, res, what, plain, detail=f"{type(e).__name__}: {e}")
 
 
-def _fail(item, config, events, res: Result, what: str, plain: str, stage_msg: str) -> Result:
+def _fail(item, config, events, res: Result, what: str, plain: str,
+          kind: str = "permanent", attempts: int = 1, detail: str = "") -> Result:
     fkey = str(item.path)
     # The source may already be quarantined if it moved; guard on existence.
     if item.path.exists():
         errors.quarantine(item.path, config.failed_path)
-    events.log(fkey, "pipeline", "failed", message=what, plain_english_error=plain)
+    message = f"{what} kind={kind} attempts={attempts}"
+    if detail:
+        message += f" — {detail}"
+    events.log(fkey, "pipeline", "failed", message=message, plain_english_error=plain)
     errors.ntfy(config.ntfy_url, config.ntfy_topic, plain, title="Brain Cockpit — file failed")
     events.append_capture_log(f"❌ {item.path.name} — {what}")
     res.status, res.error = "failed", what

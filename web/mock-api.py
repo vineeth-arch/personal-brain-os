@@ -445,6 +445,34 @@ class Handler(BaseHTTPRequestHandler):
                 })
             if path == "/api/todos":
                 return self._send(200, {"items": TODO_ITEMS})
+            if path == "/api/selfcheck":
+                return self._send(200, {
+                    "ok": not MODE_INT_DEGRADED,
+                    "problems": [] if not MODE_INT_DEGRADED else [{
+                        "what": "The vault folder can't be used.",
+                        "cause": "vault_path in config.json points to a folder that "
+                                 "doesn't exist or isn't writable.",
+                        "todo": "Create the folder or fix vault_path in config.json."}],
+                    "checks": [
+                        {"id": "config", "label": "config.json readable", "ok": True,
+                         "detail": "Parsed."},
+                        {"id": "path-vault", "label": "vault folder writable",
+                         "ok": not MODE_INT_DEGRADED,
+                         "detail": "/vault" if not MODE_INT_DEGRADED
+                         else "/vault is missing or not writable."},
+                        {"id": "events-db", "label": "events.db opens", "ok": True,
+                         "detail": "Opens fine."},
+                        {"id": "whisper", "label": "whisper.cpp configured",
+                         "ok": not MODE_INT_DEGRADED,
+                         "detail": "Binary path set." if not MODE_INT_DEGRADED
+                         else "No binary path yet — transcription can't run."},
+                    ],
+                })
+            if path == "/api/backup":
+                return self._send(200, {
+                    "last_backup": None if MODE_EMPTY else iso(now - timedelta(hours=20)),
+                    "last_vault_commit": None if MODE_EMPTY else iso(now - timedelta(hours=2)),
+                })
 
         if method == "PUT":
             if path == "/api/config":
@@ -521,6 +549,10 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/run":
                 print("RUN NOW")
                 return self._send(202, {"started": True})
+            if path == "/api/backup":
+                print("BACKUP NOW")
+                return self._send(200, {"ok": True, "at": iso(datetime.now()),
+                                        "vault_committed": True, "events_db_copied": True})
 
         return self._send(404, {"error": {
             "what": "The server doesn't know that request.",

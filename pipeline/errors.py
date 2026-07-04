@@ -8,12 +8,20 @@ from pathlib import Path
 
 
 class StageError(Exception):
-    """A stage failure with the three user-facing parts."""
+    """A stage failure with the three user-facing parts.
 
-    def __init__(self, what: str, cause: str, todo: str):
+    `transient` classifies the failure for the retry policy: True for things
+    that fix themselves (network blips, rate limits, 5xx), False for things
+    that don't (bad audio, missing binaries, bad keys) — permanent failures
+    quarantine immediately, transient ones get retried first. `attempts` is
+    stamped by the retry loop before the error escapes."""
+
+    def __init__(self, what: str, cause: str, todo: str, transient: bool = False):
         self.what = what
         self.cause = cause
         self.todo = todo
+        self.transient = transient
+        self.attempts = 1
         super().__init__(f"{what} — {cause} — {todo}")
 
     def plain(self) -> str:

@@ -145,9 +145,11 @@ def _tick(config, events, now: datetime) -> None:
                         f"Due now: {todo.task}", title="Brain Cockpit — reminder")
             events.mark_reminder(todo.block_id)
 
-    # 2. optional daily digest (config todos.digest = true): first tick at/after
-    # 08:00 Kolkata each day. Overdue items persist in every digest until done —
-    # nothing silently expires.
+    # 2. optional UNIFIED morning digest (config todos.digest = true): first
+    # tick at/after 08:00 Kolkata each day. ONE push merges the todo agenda
+    # with yesterday's pipeline summary — never several notifications.
+    # Overdue items persist in every digest until done — nothing silently
+    # expires.
     digest_on = bool(((config.raw.get("todos") or {}).get("digest")))
     if not digest_on or now.hour < 8:
         return
@@ -157,10 +159,19 @@ def _tick(config, events, now: datetime) -> None:
     today = now.date()
     due_today = [t for t in todos if not t.done and in_range(t, "today", today)]
     overdue = [t for t in todos if in_range(t, "overdue", today)]
-    if not due_today and not overdue:
+    stats = events.digest_stats(today - timedelta(days=1))
+    quiet_pipeline = not (stats["captured"] or stats["needs_review"] or stats["failed"])
+    if not due_today and not overdue and quiet_pipeline:
         events.mark_reminder(digest_key)  # nothing to say today; don't re-check
         return
     lines = []
+    if not quiet_pipeline:
+        summary = [f"{stats['captured']} captured yesterday"]
+        if stats["needs_review"]:
+            summary.append(f"{stats['needs_review']} waiting for review")
+        if stats["failed"]:
+            summary.append(f"{stats['failed']} failed")
+        lines.append(" · ".join(summary))
     if overdue:
         lines.append("Overdue:")
         lines += [f"• {t.task} (was {t.due})" for t in overdue]

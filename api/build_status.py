@@ -57,8 +57,9 @@ def _probe_binary_runs(root: Path, item: dict, config, _db):
         return ok, ("The binary runs." if ok else f"The binary exited with code {proc.returncode}.")
     except FileNotFoundError:
         return False, f"{binary} doesn't exist on this machine."
-    except Exception as e:
-        return False, f"The binary couldn't be run ({type(e).__name__})."
+    except Exception:
+        log.exception("binary probe failed for %s", binary)
+        return False, "The binary couldn't be run — see the server log for detail."
 
 
 def _probe_env_var_set(root: Path, item: dict, *_):

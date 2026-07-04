@@ -19,6 +19,66 @@ function fmtTime(iso: string): string {
     : d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
+function agoLabel(iso: string | null): string {
+  if (!iso) return "never";
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "never";
+  const hours = Math.floor((Date.now() - then) / 3_600_000);
+  if (hours < 1) return "under an hour ago";
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)} days ago`;
+}
+
+// Backup (Pass 5): one button = git-commit the vault + copy events.db aside.
+// Neutral styling — "Run now" owns this screen's single accent.
+function BackupCard() {
+  const { data, refetch } = usePolling(api.backupStatus, 60_000);
+  const [busy, setBusy] = useState(false);
+
+  const backUpNow = async () => {
+    setBusy(true);
+    try {
+      const result = await api.backup();
+      toast(
+        result.vault_committed
+          ? "Backed up — vault committed" +
+              (result.events_db_copied ? " and the event log copied aside." : ".")
+          : "Backup ran, but the vault isn't a git repository — nothing was committed.",
+        result.vault_committed ? "ok" : "error",
+      );
+      refetch();
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(envelope ? `${envelope.what} ${envelope.todo}` : "The backup didn't run.", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="bg-subtle border-subtle rounded-xl border p-5">
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">Backup</p>
+      <p className="text-default mt-2 text-sm">
+        Commits every note change to the vault's git history and copies the event log aside.
+      </p>
+      {data && (
+        <p className="text-subtle mt-1 text-sm">
+          Last backup {agoLabel(data.last_backup)} · last vault commit{" "}
+          {agoLabel(data.last_vault_commit)}.
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={backUpNow}
+        disabled={busy}
+        className="border-emphasis text-emphasis mt-4 min-h-11 rounded-xl border px-5 text-sm font-bold disabled:opacity-60"
+      >
+        {busy ? "Backing up…" : "Back up now"}
+      </button>
+    </section>
+  );
+}
+
 function StatBlock({ label, value }: { label: string; value: string | number }) {
   return (
     <div className="bg-subtle rounded-xl p-4">
@@ -184,6 +244,8 @@ export function Pipeline() {
           </div>
         </section>
       )}
+
+      <BackupCard />
 
       <section>
         <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">Event log</p>

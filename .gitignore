@@ -18,3 +18,6 @@ web/dist/
 
 # Watcher runtime heartbeat (liveness only, disposable)
 .watcher-heartbeat
+
+# Manual backups (events.db copies — disposable, vault is the truth)
+backups/

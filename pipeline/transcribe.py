@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
+import urllib.error
 import urllib.request
 import uuid
 from abc import ABC, abstractmethod
@@ -84,10 +85,31 @@ class OpenAITranscriber(Transcriber):
             import json
             with urllib.request.urlopen(req, timeout=120) as resp:
                 return json.loads(resp.read())["text"].strip()
+        except urllib.error.HTTPError as e:
+            # 408/429/5xx fix themselves — retry; other 4xx (bad key, bad
+            # audio) never do — quarantine immediately.
+            if e.code in (408, 429) or e.code >= 500:
+                raise StageError("Could not transcribe the recording.",
+                                 "OpenAI's transcription service is temporarily unavailable "
+                                 "(it answered with a server error or a rate limit).",
+                                 "Nothing to fix — it will be retried automatically.",
+                                 transient=True) from e
+            raise StageError("Could not transcribe the recording.",
+                             "OpenAI rejected the request — the key may be wrong or the "
+                             "audio in a format it doesn't accept.",
+                             "Check OPENAI_API_KEY, or re-export the audio and drop it "
+                             "back in the inbox.") from e
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            raise StageError("Could not transcribe the recording.",
+                             "The OpenAI transcription service couldn't be reached "
+                             "(network down or very slow).",
+                             "Check this machine's connection — it will be retried "
+                             "automatically.",
+                             transient=True) from e
         except Exception as e:
             raise StageError("Could not transcribe the recording.",
-                             "The OpenAI transcription request failed (network, quota, or bad key).",
-                             "Check OPENAI_API_KEY and your connection, then re-run.") from e
+                             "OpenAI answered in a way the pipeline didn't understand.",
+                             "Try again; if it keeps happening, check the pipeline log.") from e
 
     @staticmethod
     def _multipart(boundary: str, audio_path: Path) -> bytes:

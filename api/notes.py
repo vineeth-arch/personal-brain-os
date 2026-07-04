@@ -61,21 +61,25 @@ def _restamp(text: str, new_type: str, new_status: str) -> str:
 
 # ---- git --------------------------------------------------------------------
 
-def git_commit_vault(vault: Path, message: str) -> None:
+def git_commit_vault(vault: Path, message: str) -> bool:
     """Commit the vault after an API write. A git hiccup never fails the request
-    (the watcher's never-abort precedent) — the write itself succeeded."""
+    (the watcher's never-abort precedent) — the write itself succeeded.
+    Returns True when a commit was actually made (the backup endpoint reports
+    this truthfully)."""
     try:
         inside = subprocess.run(
             ["git", "-C", str(vault), "rev-parse", "--is-inside-work-tree"],
             capture_output=True, text=True)
         if inside.returncode != 0:
             log.info("vault is not a git repo — skipping commit (%s)", message)
-            return
+            return False
         subprocess.run(["git", "-C", str(vault), "add", "-A"], check=True, capture_output=True)
         subprocess.run(["git", "-C", str(vault), "commit", "-m", message, "--allow-empty"],
                        check=True, capture_output=True)
+        return True
     except Exception:
         log.exception("vault git commit failed (%s)", message)
+        return False
 
 
 # ---- review queue -----------------------------------------------------------

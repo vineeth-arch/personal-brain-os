@@ -1,10 +1,13 @@
 import type {
   AppConfig,
+  BackupResult,
+  BackupStatus,
   BuildResponse,
   CaptureTag,
   ConfigWrite,
   EngineName,
   ProviderStat,
+  SelfCheckResponse,
   TodoItem,
   TodoRange,
   ErrorEnvelope,
@@ -24,6 +27,29 @@ export const DEFAULT_API_BASE = "http://127.0.0.1:8000";
 
 // Fired when the server rejects the token so App can swap to the connect screen.
 export const UNAUTHORIZED_EVENT = "cockpit:unauthorized";
+
+// Connectivity store (Pass 5): flips offline on any network-level failure and
+// back on any response from the server — even an error status proves the
+// server is reachable. OfflineBanner subscribes (same module-level idiom as
+// the toast store). Distinct from error states: screens keep their stale data
+// while the banner explains why nothing is updating.
+let offline = false;
+const offlineListeners = new Set<() => void>();
+
+function setOffline(value: boolean) {
+  if (offline === value) return;
+  offline = value;
+  offlineListeners.forEach((l) => l());
+}
+
+export function subscribeOffline(cb: () => void): () => void {
+  offlineListeners.add(cb);
+  return () => offlineListeners.delete(cb);
+}
+
+export function isOffline(): boolean {
+  return offline;
+}
 
 export function getApiBase(): string {
   return localStorage.getItem(BASE_KEY) || DEFAULT_API_BASE;
@@ -69,7 +95,7 @@ const UNAUTHORIZED_ENVELOPE: ErrorEnvelope = {
 function genericEnvelope(status: number): ErrorEnvelope {
   return {
     what: "The server couldn't complete that request.",
-    cause: `It answered with an unexpected error (HTTP ${status}).`,
+    cause: `It answered with an unexpected error (error ${status}).`,
     todo: "Try again; if it keeps happening, check the pipeline logs.",
   };
 }
@@ -88,8 +114,10 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       },
     });
   } catch (e) {
+    setOffline(true);
     throw new ApiError(NETWORK_ENVELOPE, 0, String(e));
   }
+  setOffline(false); // any answer — even an error — means the server is reachable
 
   if (res.ok) {
     return (await res.json()) as T;
@@ -153,4 +181,7 @@ export const api = {
   config: () => request<AppConfig>("/api/config"),
   putConfig: (changes: ConfigWrite) =>
     request<AppConfig>("/api/config", { method: "PUT", body: JSON.stringify(changes) }),
+  backup: () => request<BackupResult>("/api/backup", { method: "POST" }),
+  backupStatus: () => request<BackupStatus>("/api/backup"),
+  selfcheck: () => request<SelfCheckResponse>("/api/selfcheck"),
 };

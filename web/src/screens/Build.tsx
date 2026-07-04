@@ -2,6 +2,52 @@ import { api } from "../api/client";
 import { ErrorState } from "../components/ErrorState";
 import { usePolling } from "../hooks/usePolling";
 
+// The same structural check the server runs before it agrees to boot
+// (GET /api/selfcheck), re-run live — paths can vanish after startup.
+function SelfCheckSection() {
+  const { data } = usePolling(api.selfcheck, 60_000);
+  if (!data) return null;
+  return (
+    <section>
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+        Server self-check
+      </p>
+      {data.problems.length > 0 && (
+        <div className="bg-cal-muted border-emphasis mt-3 rounded-xl border p-4 text-sm">
+          <p className="text-emphasis font-bold">
+            The server found {data.problems.length} problem
+            {data.problems.length === 1 ? "" : "s"} it would refuse to restart with:
+          </p>
+          <ol className="text-default mt-2 list-decimal space-y-1 pl-5">
+            {data.problems.map((p) => (
+              <li key={p.what + p.cause}>
+                {p.what} {p.cause} <span className="text-subtle">→ {p.todo}</span>
+              </li>
+            ))}
+          </ol>
+        </div>
+      )}
+      <ul className="mt-3 space-y-2">
+        {data.checks.map((c) => (
+          <li key={c.id} className="flex items-baseline gap-2 text-sm">
+            <span
+              aria-hidden="true"
+              className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+                c.ok ? "bg-inverted" : "border-emphasis border-2 bg-transparent"
+              }`}
+            />
+            <span className={`font-semibold ${c.ok ? "text-emphasis" : "text-default"}`}>
+              {c.label}
+              <span className="sr-only">{c.ok ? " — ok" : " — needs attention"}</span>
+            </span>
+            <span className="text-subtle text-xs">{c.detail}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 // The build tracker: reality IS the checklist — every tick is a live probe,
 // there are no manual checkboxes anywhere. The single accent on this screen
 // is the header's "next thing" card (all-done → calm tonal, Today-hero style).
@@ -53,6 +99,8 @@ export function Build() {
           </h2>
         </section>
       )}
+
+      <SelfCheckSection />
 
       {phases.map((phase) => (
         <section key={phase.name}>

@@ -129,3 +129,67 @@ def test_reminder_fire_once(vault, tmp_path, monkeypatch):
     digests = [p for p in pushes if "Overdue" in p]
     assert len(digests) == 1 and "dentist" in digests[0]  # still listed until done
     events.close()
+
+
+def test_unified_digest_single_push_with_pipeline_summary(vault, tmp_path, monkeypatch):
+    """Pass 5: ONE 8am push carries both the todo agenda and yesterday's
+    pipeline summary — never two notifications."""
+    config = make_config(vault)
+    extract.extract("I need to call the dentist tomorrow 2pm.", "20260701143000",
+                    CAPTURED, config, llm_fn=resolving_llm)  # due 2026-07-02
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    # yesterday (2026-07-01): two captures archived ok, one failure
+    for f in ("a.m4a", "b.m4a"):
+        events.conn.execute(
+            "INSERT INTO events (timestamp, file, stage, status) VALUES (?,?,?,?)",
+            ("2026-07-01T09:00:00", f"/in/{f}", "archive", "ok"))
+    events.conn.execute(
+        "INSERT INTO events (timestamp, file, stage, status, message) VALUES (?,?,?,?,?)",
+        ("2026-07-01T10:00:00", "/in/c.m4a", "pipeline", "failed", "boom"))
+    events.conn.commit()
+
+    pushes = []
+    monkeypatch.setattr(todos.errors, "ntfy",
+                        lambda url, topic, msg, title="": pushes.append(msg))
+    digest_morning = datetime(2026, 7, 2, 8, 5, tzinfo=todos.TZ)
+    todos.tick(config, events, now=digest_morning)
+    todos.tick(config, events, now=digest_morning + timedelta(hours=2))  # fire-once
+    assert len(pushes) == 1                        # ONE notification, never several
+    digest = pushes[0]
+    assert "2 captured yesterday" in digest
+    assert "1 failed" in digest
+    assert "Today:" in digest and "dentist" in digest
+    events.close()
+
+
+def test_digest_pipeline_summary_only(vault, tmp_path, monkeypatch):
+    """No todos at all — the digest still reports yesterday's pipeline work."""
+    config = make_config(vault)
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    events.conn.execute(
+        "INSERT INTO events (timestamp, file, stage, status) VALUES (?,?,?,?)",
+        ("2026-07-01T09:00:00", "/in/a.m4a", "archive", "ok"))
+    events.conn.commit()
+    pushes = []
+    monkeypatch.setattr(todos.errors, "ntfy",
+                        lambda url, topic, msg, title="": pushes.append(msg))
+    todos.tick(config, events, now=datetime(2026, 7, 2, 8, 5, tzinfo=todos.TZ))
+    assert len(pushes) == 1
+    assert "1 captured yesterday" in pushes[0]
+    assert "Today:" not in pushes[0]
+    events.close()
+
+
+def test_digest_silent_when_nothing_happened(vault, tmp_path, monkeypatch):
+    """Quiet pipeline + no todos → no push, and the key is marked so the day
+    isn't re-checked."""
+    config = make_config(vault)
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    pushes = []
+    monkeypatch.setattr(todos.errors, "ntfy",
+                        lambda url, topic, msg, title="": pushes.append(msg))
+    now = datetime(2026, 7, 2, 8, 5, tzinfo=todos.TZ)
+    todos.tick(config, events, now=now)
+    assert pushes == []
+    assert events.reminder_fired("digest-2026-07-02")
+    events.close()

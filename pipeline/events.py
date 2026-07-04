@@ -66,15 +66,15 @@ class EventLog:
         cur = self.conn.execute(f"SELECT COUNT(*) FROM events WHERE {where}", params)
         return cur.fetchone()[0]
 
-    def write_status(self, pending: int) -> None:
-        today = date.today().isoformat()
-        # processed today = distinct files that reached the archive stage ok today
+    def _captured_on(self, day: date) -> int:
+        """Distinct files that reached the archive stage ok on that day."""
         cur = self.conn.execute(
             "SELECT COUNT(DISTINCT file) FROM events WHERE stage='archive' AND status='ok' "
-            "AND timestamp LIKE ?", (today + "%",))
-        processed_today = cur.fetchone()[0]
-        needs_review = self._count("status='needs_review'")
-        # failed: latest failure per file with its reason
+            "AND timestamp LIKE ?", (day.isoformat() + "%",))
+        return cur.fetchone()[0]
+
+    def _failed_latest(self) -> list[tuple[str, str]]:
+        """Latest failure per file with its reason."""
         cur = self.conn.execute(
             "SELECT file, message FROM events WHERE status='failed' ORDER BY id DESC")
         seen, failed_rows = set(), []
@@ -82,6 +82,22 @@ class EventLog:
             if f not in seen:
                 seen.add(f)
                 failed_rows.append((f, msg))
+        return failed_rows
+
+    def digest_stats(self, day: date) -> dict:
+        """The pipeline half of the morning digest: captures on `day`, plus
+        the current needs-review and failed counts (same semantics as
+        write_status / GET /api/status)."""
+        return {
+            "captured": self._captured_on(day),
+            "needs_review": self._count("status='needs_review'"),
+            "failed": len(self._failed_latest()),
+        }
+
+    def write_status(self, pending: int) -> None:
+        processed_today = self._captured_on(date.today())
+        needs_review = self._count("status='needs_review'")
+        failed_rows = self._failed_latest()
         lines = [
             "# Pipeline Status",
             "",

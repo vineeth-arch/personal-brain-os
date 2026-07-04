@@ -282,6 +282,41 @@ preserving unknown keys (`links`, paths, `api`). Rejects `engine: "openai"`
 when `OPENAI_API_KEY` is missing (400 + envelope). Returns the same shape as
 `GET`. `POST /api/integrations/engine` shares this validated writer.
 
+## Hardening (Pass 5)
+
+### `GET /api/selfcheck`
+
+The same structural check the server runs before it agrees to boot (config
+readable, folders writable, events.db opens), re-run live, plus informational
+booleans (auth token set, whisper configured, ntfy configured, a model key
+present) for the Build screen.
+
+```json
+{ "ok": true, "problems": [],
+  "checks": [ { "id": "path-vault", "label": "vault folder writable",
+                "ok": true, "detail": "/path/to/vault" } ] }
+```
+
+`problems` is a list of `{what,cause,todo}` envelopes — non-empty means the
+server would refuse to restart in this state (at boot, these print as a
+numbered list and the process exits).
+
+### `POST /api/backup`
+
+Git-commits the vault (`api: manual backup`) and copies `events.db` to
+`backups/events-<stamp>.db` (a live-safe sqlite backup, not a raw file copy).
+
+`200 {"ok": true, "at": "<iso>", "vault_committed": true, "events_db_copied": true}`
+
+`vault_committed` is false when the vault isn't a git repository;
+`events_db_copied` is false when there's no events.db yet.
+
+### `GET /api/backup`
+
+`{"last_backup": "<iso>|null", "last_vault_commit": "<iso>|null"}` — newest
+`backups/` copy and the vault's HEAD commit time. A dedicated route (not part
+of `/api/status`) so the 20-second status poll never shells out to git.
+
 ## Todos (Pass T)
 
 Todos are Obsidian Tasks-compatible checkbox lines in `06-Todos/<date>.md`:

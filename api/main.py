@@ -30,7 +30,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from pipeline import classify, config as config_mod, enrich, intake, route as proute, todos as ptodos, watcher
 
-from . import build_status, integrations, notes, service
+from . import build_status, integrations, notes, selfcheck, service, watchdog
 
 log = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
@@ -57,11 +57,11 @@ def _generic_envelope(status: int) -> dict:
     if status == 405:
         return {"error": {
             "what": "That request used the wrong method.",
-            "cause": "The route exists but not for this HTTP verb.",
+            "cause": "The route exists but not for this kind of request.",
             "todo": "Check API-CONTRACT.md for the route's method."}}
     return {"error": {
         "what": "The server couldn't complete that request.",
-        "cause": f"It hit an unexpected condition (HTTP {status}).",
+        "cause": f"It hit an unexpected condition (error {status}).",
         "todo": "Try again; if it keeps happening, check the server log."}}
 
 
@@ -87,6 +87,16 @@ class ConfigBody(BaseModel):
 
 def create_app(root: Path | None = None) -> FastAPI:
     root = Path(root or DEFAULT_ROOT)
+
+    # Startup self-check (Pass 5): refuse to boot on structural problems and
+    # print exactly what to fix. Softer conditions (no whisper binary, no ntfy)
+    # never block the boot — they're Integrations-card material.
+    report = selfcheck.run(root)
+    if not report["ok"]:
+        message = selfcheck.refusal_message(report["problems"])
+        log.error("%s", message)
+        raise SystemExit(message)
+
     app = FastAPI(title="Brain Cockpit API", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.root = root
     app.state.run_proc = None
@@ -158,7 +168,7 @@ def create_app(root: Path | None = None) -> FastAPI:
         return JSONResponse({"error": {
             "what": "The server hit an unexpected error.",
             "cause": "A bug in the API, not your pipeline or your notes.",
-            "todo": "Try again; if it repeats, check the server log for the traceback."}},
+            "todo": "Try again; if it repeats, check the server log for the technical detail."}},
             status_code=500)
 
     # ---- read routes -------------------------------------------------------------
@@ -433,6 +443,52 @@ def create_app(root: Path | None = None) -> FastAPI:
         # same shape as GET, re-read so the response reflects the write
         return config_payload(load_config())
 
+    # ---- selfcheck + backup (Pass 5) ---------------------------------------------------
+
+    @app.get("/api/selfcheck")
+    def selfcheck_route(config=Depends(require_token)):
+        # re-run live: paths can vanish after boot (disk unmounted mid-flight)
+        return selfcheck.run(root)
+
+    backups_dir = root / "backups"
+
+    @app.post("/api/backup")
+    def backup(config=Depends(require_token)):
+        committed = notes.git_commit_vault(config.vault_path, "api: manual backup")
+        copied = False
+        if db_path.exists():
+            backups_dir.mkdir(exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            dest = backups_dir / f"events-{stamp}.db"
+            import sqlite3
+            src = sqlite3.connect(db_path)
+            try:
+                dst = sqlite3.connect(dest)
+                try:
+                    src.backup(dst)  # safe against a concurrently-writing watcher
+                finally:
+                    dst.close()
+            finally:
+                src.close()
+            copied = True
+        return {"ok": True, "at": datetime.now().isoformat(timespec="seconds"),
+                "vault_committed": committed, "events_db_copied": copied}
+
+    @app.get("/api/backup")
+    def backup_status(config=Depends(require_token)):
+        last_backup = None
+        if backups_dir.is_dir():
+            copies = sorted(backups_dir.glob("events-*.db"))
+            if copies:
+                last_backup = datetime.fromtimestamp(
+                    copies[-1].stat().st_mtime).isoformat(timespec="seconds")
+        last_commit = None
+        head = subprocess.run(["git", "-C", str(config.vault_path), "log", "-1", "--format=%cI"],
+                              capture_output=True, text=True)
+        if head.returncode == 0 and head.stdout.strip():
+            last_commit = head.stdout.strip()
+        return {"last_backup": last_backup, "last_vault_commit": last_commit}
+
     # ---- integrations ----------------------------------------------------------------
 
     @app.get("/api/integrations")
@@ -476,8 +532,18 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "Build it with: cd web && npm ci && npm run build — then restart.\n",
                 status_code=200)
 
+    # Watchdog (Pass 5): notices a stopped --loop and pushes once per 6h window.
+    app.state.watchdog_thread = watchdog.start(
+        db_path, heartbeat_path, lambda: config_mod.load(config_path))
+
     return app
 
 
-app = create_app()
+def __getattr__(name: str):
+    # `uvicorn api.main:app` resolves the app lazily (PEP 562), so the startup
+    # self-check runs — and can refuse with its numbered list — at serve time,
+    # while `from api.main import create_app` (tests) never trips it.
+    if name == "app":
+        return create_app()
+    raise AttributeError(name)
 

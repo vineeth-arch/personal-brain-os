@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { Route } from "../App";
+import { OfflineBanner } from "./OfflineBanner";
 
 const TABS: { route: Route; label: string }[] = [
   { route: "today", label: "Today" },
@@ -15,6 +16,7 @@ interface Props {
 export function Layout({ route, children }: Props) {
   return (
     <div className="mx-auto flex min-h-dvh max-w-2xl flex-col">
+      <OfflineBanner />
       <header className="flex items-start justify-between px-5 pt-6">
         <div>
           <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
