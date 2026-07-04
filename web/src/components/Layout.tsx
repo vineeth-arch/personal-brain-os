@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import type { Route } from "../App";
 import { OfflineBanner } from "./OfflineBanner";
+import { ThemeToggle } from "./ThemeToggle";
 
 const TABS: { route: Route; label: string }[] = [
   { route: "today", label: "Today" },
@@ -27,6 +28,7 @@ export function Layout({ route, children }: Props) {
           </h1>
         </div>
         <div className="mt-1 flex gap-2">
+          <ThemeToggle />
           <a
             href="#/integrations"
             aria-label="Integrations"
