@@ -232,12 +232,19 @@ def valid_tag(tag: str | None) -> bool:
 # ---- resurface ----------------------------------------------------------------
 
 def resurface(vault: Path) -> dict | None:
-    """One deterministic pick per day from the wiki (musings/learnings/insights
-    all live in 02-Wiki per route.TYPE_FOLDER)."""
-    wiki = vault / route.TYPE_FOLDER["musing"]
-    if not wiki.is_dir():
-        return None
-    candidates = sorted(p for p in wiki.glob("*.md") if p.read_text().startswith("---\n"))
+    """One deterministic pick per day from the knowledge folders (musing →
+    02-Musings, learning → 03-Learnings, insight → wiki/, per
+    route.TYPE_FOLDER). The merged candidate list is sorted folder-then-date
+    (not globally date-interleaved) — stable and deterministic, which is all
+    the daily pick needs."""
+    folders = [vault / route.TYPE_FOLDER[t] for t in ("musing", "learning", "insight")]
+    candidates = sorted(
+        p
+        for folder in folders
+        if folder.is_dir()
+        for p in folder.glob("*.md")
+        if p.read_text().startswith("---\n")
+    )
     if not candidates:
         return None
     pick = random.Random(date.today().toordinal()).choice(candidates)

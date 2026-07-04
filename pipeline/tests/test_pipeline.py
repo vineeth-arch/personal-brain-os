@@ -93,8 +93,8 @@ def test_end_to_end(vault_env):
     # wav → spoken #journal → 01-Journal, type journal.
     assert len(_notes_of_type(config.vault_path, "01-Journal", "journal")) == 1
 
-    # plain.md (no tag) → stub Haiku → 02-Wiki, type learning, AI-added metadata.
-    learn = _notes_of_type(config.vault_path, "02-Wiki", "learning")
+    # plain.md (no tag) → stub Haiku → 03-Learnings, type learning, AI-added metadata.
+    learn = _notes_of_type(config.vault_path, "03-Learnings", "learning")
     assert len(learn) == 1
     assert _fm(learn[0])["meta_origin"] == "ai"
 

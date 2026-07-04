@@ -151,7 +151,7 @@ RESURFACED = (
     else {
         "id": "20260214093000",
         "title": "constraints-beat-aspirations",
-        "file": "02-Wiki/2026-02-14-constraints-beat-aspirations.md",
+        "file": "wiki/2026-02-14-constraints-beat-aspirations.md",
         "excerpt": (
             "A banned-words list changes writing faster than a tone-of-voice deck. "
             "Negative rules are checkable in the moment; aspirations require taste "
@@ -171,6 +171,14 @@ FAIL_ENVELOPE = {
 }
 
 
+
+# Note type → folder, mirroring pipeline/route.py TYPE_FOLDER (keep in sync).
+TYPE_FOLDER = {
+    "journal": "01-Journal", "musing": "02-Musings", "learning": "03-Learnings",
+    "insight": "wiki", "resource": "04-Resources", "project": "05-Projects",
+    "todo": "06-Todos", "person": "07-People", "reflection": "08-Reflections",
+    "decision": "09-Decisions", "principle": "10-Principles",
+}
 
 # ---- Integrations (Pass 4) --------------------------------------------------
 ENGINE = "whispercpp"  # module-level so the engine toggle is observable across requests
@@ -506,11 +514,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(201, {"id": "20260703061500", "status": "captured"})
             if path.startswith("/api/review/") and path.endswith("/approve"):
                 note_id = path.split("/")[3]
-                print("APPROVE", note_id, self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                print("APPROVE", note_id, raw)
+                try:
+                    approved_type = json.loads(raw or b"{}").get("type", "learning")
+                except json.JSONDecodeError:
+                    approved_type = "learning"
+                # mirror pipeline/route.py TYPE_FOLDER so the mock echoes a
+                # realistic destination for the type actually approved
+                folder = TYPE_FOLDER.get(approved_type, "00-Inbox")
                 for item in list(REVIEW_ITEMS):
                     if item["id"] == note_id:
                         REVIEW_ITEMS.remove(item)
-                return self._send(200, {"ok": True, "moved_to": "02-Wiki/approved-note.md"})
+                return self._send(200, {"ok": True, "moved_to": f"{folder}/approved-note.md"})
             if path.startswith("/api/failed/") and path.endswith("/retry"):
                 print("RETRY", path.split("/")[3])
                 FAILED_ITEMS.clear()

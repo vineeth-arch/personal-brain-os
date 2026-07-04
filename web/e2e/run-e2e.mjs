@@ -39,7 +39,8 @@ function loadPlaywright() {
 // ---- temp server root ---------------------------------------------------------
 function makeRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-e2e-"));
-  for (const d of ["vault/00-Inbox", "vault/02-Wiki", "inbox", "archive", "failed"]) {
+  for (const d of ["vault/00-Inbox", "vault/02-Musings", "vault/03-Learnings", "vault/wiki",
+                   "inbox", "archive", "failed"]) {
     fs.mkdirSync(path.join(root, d), { recursive: true });
   }
   const vault = path.join(root, "vault");

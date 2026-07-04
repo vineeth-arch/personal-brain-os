@@ -8,7 +8,7 @@
 
 * **Fixed `id`** on every note: an immutable timestamp `YYYYMMDDHHmmss`. **All links and typed edges point to the `id`, never to a title or path.** Rename/move freely; links never break.  
 * **`origin: human | ai`** on every note: provenance. You can NEVER reconstruct later what was AI-written vs yours. Set it at creation.  
-* **`raw/` vs `wiki/`** ownership boundary: `raw/` \= immutable sources (never edit); `wiki/` \= your synthesis. The human/agentic firewall.
+* **`raw/` vs `wiki/`** folders: `raw/` is user-managed and outside the pipeline's numbered scheme — the pipeline never reads or writes it; it holds immutable sources you place there yourself, never edited. `wiki/` also sits outside the numbered scheme, but the pipeline **does** write to it — it is the real destination folder for `insight`-type notes (atomic synthesis, one idea per note). The human/agentic firewall is the **`origin: human | ai`** field (the first non-negotiable above), NOT the folder: `wiki/` can hold both human- and AI-authored insight notes, told apart by frontmatter.
 
 ## **2\. UNIVERSAL FRONTMATTER (every note, all domains)**
 
@@ -55,9 +55,9 @@ Use these relation types in `wiki/` notes; each edge points to a fixed `id`: `su
 
 ## **7\. PER-DOMAIN SCHEMAS (extra frontmatter on top of universal)**
 
-### **Knowledge / insight (`wiki/`, `02`, `03`)**
+### **Knowledge notes (musing → `02-Musings`, learning → `03-Learnings`, insight → `wiki/`)**
 
-Atomic (one idea), **your own words**, with a `derived-from` edge to its source. No extra required fields.
+Atomic (one idea), **your own words**, with a `derived-from` edge to its source. No extra required fields. All three share the same lifecycle (`active → archived`, §6) and are the three folders the daily resurfacing pick samples from.
 
 ### **Resource (`04-Resources/*`)**
 
@@ -126,4 +126,23 @@ Body: `## Context` · `## Needs` · `## Interaction log` (append-only, dated) ·
 
 * Note files: `YYYY-MM-DD-kebab-title.md` (the `id` in frontmatter is the durable handle; the filename is for humans).  
 * Daily notes: `01-Journal/YYYY-MM-DD.md`. Todos: `06-Todos/YYYY-MM-DD.md`. Reflections: `08-Reflections/YYYY-MM-DD-weekly-reflection.md`.
+
+**Type → folder** (mirrors `pipeline/route.py` `TYPE_FOLDER` exactly — **keep the two in sync**; any change here or there must change both in the same commit):
+
+| Type | Folder |
+| ----- | ----- |
+| *(any note below the confidence threshold — parked for review)* | `00-Inbox` |
+| journal | `01-Journal` |
+| musing | `02-Musings` |
+| learning | `03-Learnings` |
+| resource | `04-Resources` |
+| project | `05-Projects` |
+| todo | `06-Todos` |
+| person | `07-People` |
+| reflection | `08-Reflections` |
+| decision | `09-Decisions` |
+| principle | `10-Principles` |
+| insight | `wiki/` |
+
+`raw/` is user-managed and outside this table — the pipeline never writes there.
 

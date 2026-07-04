@@ -7,10 +7,16 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# Note type → vault folder (confirmed layout). learning/insight/musing share the wiki.
+# Note type → vault folder. musing/learning each get their own folder;
+# insight goes to wiki/ — a user-managed top-level folder (beside the numbered
+# folders, not nested under raw/) that IS a real pipeline write destination.
+# raw/ stays entirely user-managed; the pipeline never writes there.
+# Keep this dict in sync with the type→folder table in SCHEMA-REFERENCE.md §9.
 TYPE_FOLDER = {
     "journal": "01-Journal",
-    "learning": "02-Wiki", "insight": "02-Wiki", "musing": "02-Wiki",
+    "musing": "02-Musings",
+    "learning": "03-Learnings",
+    "insight": "wiki",
     "resource": "04-Resources",
     "project": "05-Projects",
     "todo": "06-Todos",

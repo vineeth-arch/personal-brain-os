@@ -87,7 +87,7 @@ affordances: [Approve] echoes `suggested_type` back; a chip tap sends the
 chosen type. The API rewrites the note's `type`/`status` frontmatter and moves
 the file per `route.TYPE_FOLDER`.
 
-`200 {"ok": true, "moved_to": "02-Wiki/2026-07-03-note-title.md"}`
+`200 {"ok": true, "moved_to": "03-Learnings/2026-07-03-note-title.md"}`
 
 ### `POST /api/capture`
 
@@ -154,7 +154,7 @@ captured if any file completed the archive stage ok that day (same source as
 ```json
 { "note": {
   "id": "20260101090000", "title": "note-title",
-  "file": "02-Wiki/2026-01-01-note-title.md",
+  "file": "02-Musings/2026-01-01-note-title.md",
   "excerpt": "…", "type": "musing", "created": "2026-01-01"
 } }
 ```

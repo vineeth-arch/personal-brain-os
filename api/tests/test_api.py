@@ -92,7 +92,9 @@ def env(tmp_path):
     for d in (vault, inbox, archive, failed):
         d.mkdir()
     (vault / "00-Inbox").mkdir()
-    (vault / "02-Wiki").mkdir()
+    (vault / "02-Musings").mkdir()
+    (vault / "03-Learnings").mkdir()
+    (vault / "wiki").mkdir()
     subprocess.run(["git", "-C", str(vault), "init", "-q"], check=True)
     subprocess.run(["git", "-C", str(vault), "config", "user.email", "t@t"], check=True)
     subprocess.run(["git", "-C", str(vault), "config", "user.name", "t"], check=True)
@@ -171,8 +173,8 @@ def test_approve_write_path(env):
     with Server(root) as s:
         code, body = s.req("POST", "/api/review/20260701090000/approve", {"type": "learning"})
         assert code == 200
-        assert body["moved_to"] == "02-Wiki/2026-07-01-walk.md"
-        moved = vault / "02-Wiki" / "2026-07-01-walk.md"
+        assert body["moved_to"] == "03-Learnings/2026-07-01-walk.md"
+        moved = vault / "03-Learnings" / "2026-07-01-walk.md"
         assert moved.exists() and not (vault / "00-Inbox" / "2026-07-01-walk.md").exists()
         text = moved.read_text()
         assert "type: learning" in text and "status: active" in text
@@ -273,12 +275,20 @@ def test_streak_rule(env):
 def test_resurfaced_deterministic_and_null(env):
     root, vault, _, _ = env
     with Server(root) as s:
-        assert s.req("GET", "/api/resurfaced")[1]["note"] is None  # empty wiki
-        _note(vault / "02-Wiki" / "2026-02-14-idea.md", "20260214093000", "insight", "active",
+        assert s.req("GET", "/api/resurfaced")[1]["note"] is None  # nothing to resurface
+        # one note in each of the three knowledge folders — resurface() must
+        # glob across all three, not just one
+        _note(vault / "wiki" / "2026-02-14-idea.md", "20260214093000", "insight", "active",
               "First paragraph here.\n\nSecond.")
+        _note(vault / "02-Musings" / "2026-02-15-hunch.md", "20260215093000", "musing", "active",
+              "A musing.")
+        _note(vault / "03-Learnings" / "2026-02-16-fact.md", "20260216093000", "learning", "active",
+              "A learning.")
         first = s.req("GET", "/api/resurfaced")[1]["note"]
-        assert first["id"] == "20260214093000" and first["title"] == "idea"
+        assert first["id"] in {"20260214093000", "20260215093000", "20260216093000"}
         assert s.req("GET", "/api/resurfaced")[1]["note"]["id"] == first["id"]  # stable within a day
+        # the pick can come from any of the three folders (deterministic per day)
+        assert first["file"].split("/")[0] in {"wiki", "02-Musings", "03-Learnings"}
 
 
 def test_run_conflict(env, monkeypatch):
