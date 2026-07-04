@@ -1,0 +1,50 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.innsaeit.cockpit-api</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO__/.venv/bin/uvicorn</string>
+        <string>api.main:app</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8000</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>__REPO__</string>
+
+    <!-- API keys are env-only (CLAUDE.md §7). launchd agents don't read your
+         shell profile, so the keys you use must be listed here. install.sh
+         copies the values from your current shell at install time. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>ANTHROPIC_API_KEY</key>
+        <string>__ANTHROPIC_API_KEY__</string>
+        <key>GEMINI_API_KEY</key>
+        <string>__GEMINI_API_KEY__</string>
+        <key>GROQ_API_KEY</key>
+        <string>__GROQ_API_KEY__</string>
+        <key>OPENROUTER_API_KEY</key>
+        <string>__OPENROUTER_API_KEY__</string>
+        <key>OPENAI_API_KEY</key>
+        <string>__OPENAI_API_KEY__</string>
+        <key>APIFY_TOKEN</key>
+        <string>__APIFY_TOKEN__</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>__HOME__/Library/Logs/cockpit-api.log</string>
+    <key>StandardErrorPath</key>
+    <string>__HOME__/Library/Logs/cockpit-api.log</string>
+</dict>
+</plist>

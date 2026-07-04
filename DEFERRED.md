@@ -25,3 +25,4 @@
 - Pass L: richer web enrichment (readability extraction / oEmbed discovery) beyond <title>+og:image.
 - Pass B: surface provider stats as a small sparkline over time, not just cumulative counts.
 - Pass T: recurring todos (weekly/daily) — current model is one-shot due dates only.
+- Pass 10: a live `url_ok` probe type for the reachable-from-internet milestone (GET deploy.public_url from the server) — manual config-field check for now, per the pass spec.

@@ -1,0 +1,46 @@
+# Brain Cockpit on any Linux box (Pi 5, NAS, old laptop).
+#   1. mkdir data && cp config.example.json data/config.json  (fill it in —
+#      use container paths: /vault, /inbox; whisper model under /data/models)
+#   2. cp .env.example .env and put the API keys there (env-only, never in config)
+#   3. docker compose up -d --build
+# Optional profiles:
+#   docker compose --profile sync up -d      # + syncthing sharing the vault
+#   docker compose --profile tunnel up -d    # + cloudflared (TUNNEL_TOKEN in .env)
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      # ANTHROPIC_API_KEY / GEMINI_API_KEY / … — keys live here only
+      - path: .env
+        required: false
+    volumes:
+      - ./data:/data # config.json, events.db, heartbeat, backups/, models/
+      - ${VAULT_DIR:-./vault}:/vault # the Obsidian vault (the only source of truth)
+      - ${INBOX_DIR:-./CaptureInbox}:/inbox # where new captures land
+
+  # optional: syncthing keeps the vault in sync with your other machines
+  syncthing:
+    image: syncthing/syncthing:1
+    profiles: ["sync"]
+    restart: unless-stopped
+    environment:
+      - PUID=1000
+      - PGID=1000
+    volumes:
+      - ${VAULT_DIR:-./vault}:/var/syncthing/vault
+      - ./data/syncthing:/var/syncthing/config
+    ports:
+      - "8384:8384" # syncthing admin UI
+      - "22000:22000" # sync protocol
+
+  # optional: cloudflared exposes the cockpit at your hostname (see DEPLOY.md)
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    profiles: ["tunnel"]
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${TUNNEL_TOKEN}

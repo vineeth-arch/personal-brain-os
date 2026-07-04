@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+*.pyc
+web/node_modules
+web/dist
+*.db
+config.json
+.env
+.watcher-heartbeat
+backups
+docs

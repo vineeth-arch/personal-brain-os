@@ -46,13 +46,21 @@ def _probe_config_field_set(root: Path, item: dict, config, _db):
 
 
 def _probe_binary_runs(root: Path, item: dict, config, _db):
-    if config is None:
-        return False, "config.json doesn't exist yet."
-    binary = _dotted(config.raw, item["config_field"]) or ""
-    if not binary:
-        return False, "No binary path in config.json yet."
+    # two shapes: {"config_field": "..."} runs the binary configured in
+    # config.json; {"binary": "launchctl", "args": [...]} runs a literal
+    # binary — used by the deployment milestones, degrading gracefully on
+    # machines that don't have it (FileNotFoundError below).
+    if item.get("binary"):
+        binary = item["binary"]
+    else:
+        if config is None:
+            return False, "config.json doesn't exist yet."
+        binary = _dotted(config.raw, item["config_field"]) or ""
+        if not binary:
+            return False, "No binary path in config.json yet."
+    args = item.get("args") or ["--help"]
     try:
-        proc = subprocess.run([binary, "--help"], capture_output=True, timeout=PROBE_TIMEOUT)
+        proc = subprocess.run([binary, *args], capture_output=True, timeout=PROBE_TIMEOUT)
         ok = proc.returncode == 0
         return ok, ("The binary runs." if ok else f"The binary exited with code {proc.returncode}.")
     except FileNotFoundError:
