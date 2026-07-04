@@ -17,6 +17,12 @@ import type {
   NoteType,
   ResurfacedNote,
   ReviewItem,
+  Resource,
+  ResourceDetail,
+  ResourceStatus,
+  SampleCount,
+  SampleScope,
+  SamplePurgeResult,
   Status,
   Streak,
 } from "./types";
@@ -184,4 +190,39 @@ export const api = {
   backup: () => request<BackupResult>("/api/backup", { method: "POST" }),
   backupStatus: () => request<BackupStatus>("/api/backup"),
   selfcheck: () => request<SelfCheckResponse>("/api/selfcheck"),
+
+  // ---- Resource OS (Pass 6) ----
+  resources: (params: {
+    category?: string;
+    status?: string;
+    q?: string;
+    has_insight?: boolean;
+    sort?: string;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.category) qs.set("category", params.category);
+    if (params.status) qs.set("status", params.status);
+    if (params.q) qs.set("q", params.q);
+    if (params.has_insight) qs.set("has_insight", "true");
+    if (params.sort) qs.set("sort", params.sort);
+    const suffix = qs.toString() ? `?${qs}` : "";
+    return request<{ items: Resource[] }>(`/api/resources${suffix}`);
+  },
+  resource: (id: string) => request<ResourceDetail>(`/api/resources/${encodeURIComponent(id)}`),
+  setResourceStatus: (id: string, status: ResourceStatus) =>
+    request<Resource>(`/api/resources/${encodeURIComponent(id)}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status }),
+    }),
+  setResourceInsight: (id: string, text: string) =>
+    request<Resource>(`/api/resources/${encodeURIComponent(id)}/insight`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
+  sampleCount: (olderThan: SampleScope) =>
+    request<SampleCount>(`/api/resources/sample/count?older_than=${olderThan}`),
+  deleteSample: (olderThan: SampleScope) =>
+    request<SamplePurgeResult>(`/api/resources/sample?older_than=${olderThan}`, {
+      method: "DELETE",
+    }),
 };

@@ -26,3 +26,8 @@
 - Pass B: surface provider stats as a small sparkline over time, not just cumulative counts.
 - Pass T: recurring todos (weekly/daily) — current model is one-shot due dates only.
 - Pass 10: a live `url_ok` probe type for the reachable-from-internet milestone (GET deploy.public_url from the server) — manual config-field check for now, per the pass spec.
+- Pass 6: resource rating (schema `rating` 1–7) capture + display in the drawer — status lifecycle and insight shipped, rating not surfaced this pass.
+- Pass 6: real cover images via `attachments/` (book covers / posters) — seed uses remote picsum placeholders; the card already falls back to a category-initial tile.
+- Pass 6: resource type-extras in the drawer (author / where_to_watch / ingredients / map_url) — stored in frontmatter by the seed, only description is shown for now.
+- Pass 6: server-side resource filtering is live + tested, but the dashboard filters the fetched list client-side (snappy at current scale) — switch to server params if the library grows large.
+- Pass 6: insight edit history / a per-section origin stamp — the human-origin guarantee currently rides the note-level `origin` firewall (AI never writes `## Insight`).

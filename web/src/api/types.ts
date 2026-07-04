@@ -218,3 +218,59 @@ export interface SelfCheckResponse {
   problems: ErrorEnvelope[];
   checks: SelfCheckItem[];
 }
+
+// Resource OS (Pass 6). The resource status lifecycle, verbatim from
+// SCHEMA-REFERENCE.md §6 (and api/notes.py RESOURCE_LIFECYCLE). The status
+// segmented control + the "advance to next step" button read from this order.
+export const RESOURCE_STATUSES = [
+  "inbox",
+  "to-consume",
+  "consumed",
+  "referenced",
+  "archived",
+] as const;
+export type ResourceStatus = (typeof RESOURCE_STATUSES)[number];
+
+// A card in the gallery. `category` is the note's resource_type (lowercase per
+// schema); the UI Title-cases it. `url` is the schema's source_url, exposed for
+// the deep-link-out. `insight` is the '## Insight' body section (null = none).
+export interface Resource {
+  id: string;
+  title: string;
+  category: string;
+  status: ResourceStatus;
+  cover: string | null;
+  url: string | null;
+  created: string; // YYYY-MM-DD
+  sample: boolean;
+  file: string; // vault-relative, for the obsidian:// deep link
+  has_insight: boolean;
+  insight: string | null;
+}
+
+export interface ResourceSection {
+  heading: string;
+  text: string;
+}
+
+// GET /resources/{id} — the drawer's full detail.
+export interface ResourceDetail extends Resource {
+  description: string | null;
+  author: string | null;
+  rating: string | null;
+  sections: ResourceSection[];
+}
+
+export type SampleScope = "1d" | "1w" | "1m" | "all";
+
+export interface SampleCount {
+  count: number;
+  scope: SampleScope;
+}
+
+export interface SamplePurgeResult {
+  removed: number;
+  titles: string[];
+  scope: SampleScope;
+  message: string;
+}

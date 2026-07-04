@@ -85,6 +85,14 @@ class ConfigBody(BaseModel):
     ntfy_url: str | None = None
 
 
+class StatusBody(BaseModel):
+    status: str
+
+
+class InsightBody(BaseModel):
+    text: str
+
+
 def create_app(root: Path | None = None) -> FastAPI:
     root = Path(root or DEFAULT_ROOT)
 
@@ -411,6 +419,98 @@ def create_app(root: Path | None = None) -> FastAPI:
         enriched = enrich.reenrich_note(target, config)
         notes.git_commit_vault(config.vault_path, f"api: enriched {note_id}")
         return {"ok": True, "enriched": enriched}
+
+    # ---- Resource OS (Pass 6) --------------------------------------------------------
+    # Reads/writes 04-Resources. Every mutation git-commits the vault. Insight
+    # lives in a '## Insight' body section carrying the human-origin guarantee.
+
+    RESOURCE_SORTS = ("created", "oldest", "title")
+
+    @app.get("/api/resources")
+    def resources_list(category: str | None = None, status: str | None = None,
+                       q: str | None = None, has_insight: bool | None = None,
+                       sort: str = "created", config=Depends(require_token)):
+        if sort not in RESOURCE_SORTS:
+            raise Envelope(
+                400, "That's not a sort the resource list knows.",
+                f"'{sort}' isn't one of created, oldest, title.",
+                "Use one of the three sort values, or omit it for newest-first.")
+        return {"items": notes.list_resources(
+            config.vault_path, category=category, status=status, q=q,
+            has_insight=has_insight, sort=sort)}
+
+    # 'sample' routes are declared before '/{note_id}' so the literal path wins.
+    @app.get("/api/resources/sample/count")
+    def sample_count(older_than: str = "all", config=Depends(require_token)):
+        if older_than not in notes.SAMPLE_SCOPES:
+            raise Envelope(
+                400, "That's not a cleanup scope the server knows.",
+                f"'{older_than}' isn't one of 1d, 1w, 1m, all.",
+                "Pick one of the four scopes.")
+        matching = notes.sample_matching(config.vault_path, older_than)
+        return {"count": len(matching), "scope": older_than}
+
+    @app.delete("/api/resources/sample")
+    def sample_purge(older_than: str = "all", config=Depends(require_token)):
+        if older_than not in notes.SAMPLE_SCOPES:
+            raise Envelope(
+                400, "That's not a cleanup scope the server knows.",
+                f"'{older_than}' isn't one of 1d, 1w, 1m, all.",
+                "Pick one of the four scopes.")
+        vault = config.vault_path
+        targets = notes.sample_matching(vault, older_than)  # sample:true ONLY
+        titles = notes.sample_titles(targets)
+        n = len(targets)
+        # Commit BEFORE deleting so the whole purge is one `git revert` away.
+        notes.git_commit_vault(vault, f"pre-purge: {n} sample notes, scope={older_than}")
+        for path in targets:
+            path.unlink()
+        if n:
+            notes.git_commit_vault(vault, f"api: purged {n} sample notes (scope={older_than})")
+        scope_phrase = {"1d": "older than a day", "1w": "older than a week",
+                        "1m": "older than a month", "all": "of any age"}[older_than]
+        message = (
+            f"Removed {n} sample note{'' if n == 1 else 's'} {scope_phrase}. "
+            "Your real notes were never touched, and the vault was git-committed first."
+            if n else
+            f"No sample notes {scope_phrase} to remove. Nothing was changed.")
+        return {"removed": n, "titles": titles, "scope": older_than, "message": message}
+
+    @app.get("/api/resources/{note_id}")
+    def resource_detail(note_id: str, config=Depends(require_token)):
+        detail = notes.resource_detail(config.vault_path, note_id)
+        if detail is None:
+            raise Envelope(
+                404, "That resource isn't in the vault.",
+                "No resource note in 04-Resources has that id.",
+                "Refresh the resource list.")
+        return detail
+
+    @app.post("/api/resources/{note_id}/status")
+    def resource_status(note_id: str, body: StatusBody, config=Depends(require_token)):
+        if body.status not in notes.RESOURCE_LIFECYCLE:
+            raise Envelope(
+                400, "That's not a resource status the vault knows.",
+                f"'{body.status}' isn't one of {', '.join(notes.RESOURCE_LIFECYCLE)} "
+                "(SCHEMA-REFERENCE.md §6).",
+                "Advance to one of the lifecycle statuses.")
+        try:
+            return notes.set_resource_status(config.vault_path, note_id, body.status)
+        except LookupError:
+            raise Envelope(
+                404, "That resource isn't in the vault.",
+                "No resource note in 04-Resources has that id.",
+                "Refresh the resource list.")
+
+    @app.post("/api/resources/{note_id}/insight")
+    def resource_insight(note_id: str, body: InsightBody, config=Depends(require_token)):
+        try:
+            return notes.set_resource_insight(config.vault_path, note_id, body.text)
+        except LookupError:
+            raise Envelope(
+                404, "That resource isn't in the vault.",
+                "No resource note in 04-Resources has that id.",
+                "Refresh the resource list.")
 
     # ---- config (safe subset only — key values never leave the server) --------------
 
