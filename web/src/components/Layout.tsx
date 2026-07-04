@@ -5,6 +5,7 @@ import { ThemeToggle } from "./ThemeToggle";
 
 const TABS: { route: Route; label: string }[] = [
   { route: "today", label: "Today" },
+  { route: "resources", label: "Resources" },
   { route: "triage", label: "Triage" },
   { route: "pipeline", label: "Pipeline" },
 ];

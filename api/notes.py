@@ -14,7 +14,7 @@ import re
 import sqlite3
 import subprocess
 import tempfile
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from pipeline import classify, route
@@ -258,3 +258,276 @@ def resurface(vault: Path) -> dict | None:
         "type": fm.get("type", "musing"),
         "created": fm.get("created", ""),
     }
+
+
+# ---- resources (Pass 6) -----------------------------------------------------
+# The Resource OS reads/writes 04-Resources notes. Insight lives in a body
+# '## Insight' section (not the schema's frontmatter field) so it can carry the
+# human-origin guarantee and hold a couple of sentences — see the pass plan.
+
+RESOURCES_FOLDER = route.TYPE_FOLDER["resource"]  # "04-Resources"
+
+# Resource status lifecycle, verbatim from SCHEMA-REFERENCE.md §6. The single
+# source the /status advance validates against and the UI reads back.
+RESOURCE_LIFECYCLE = ["inbox", "to-consume", "consumed", "referenced", "archived"]
+
+# older_than scope → age in days (None = no age bound, the whole sample set).
+SAMPLE_SCOPES: dict[str, int | None] = {"1d": 1, "1w": 7, "1m": 30, "all": None}
+
+_INSIGHT_HEADING = "## insight"
+
+
+def _parse_date(value: str) -> date | None:
+    try:
+        return date.fromisoformat(value[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def _note_title(path: Path, fm: dict[str, str]) -> str:
+    """Frontmatter title wins; fall back to the human filename sans date prefix."""
+    return fm.get("title") or _DATE_PREFIX_RE.sub("", path.stem)
+
+
+def _insight_text(body: str) -> str:
+    """Text under a '## Insight' H2, up to the next H2 or EOF. '' when absent/blank."""
+    out: list[str] = []
+    capturing = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.lower() == _INSIGHT_HEADING:
+            capturing = True
+            continue
+        if capturing and stripped.startswith("## "):
+            break
+        if capturing:
+            out.append(line)
+    return "\n".join(out).strip()
+
+
+def _sections(body: str) -> list[dict[str, str]]:
+    """Body → ordered [{heading, text}] split on H2s. Text before the first H2
+    is returned under heading '' (only when it's non-empty)."""
+    sections: list[dict[str, str]] = []
+    heading = ""
+    buf: list[str] = []
+
+    def flush() -> None:
+        text = "\n".join(buf).strip()
+        if heading or text:
+            sections.append({"heading": heading, "text": text})
+
+    for line in body.splitlines():
+        if line.strip().startswith("## "):
+            flush()
+            heading = line.strip()[3:].strip()
+            buf = []
+        else:
+            buf.append(line)
+    flush()
+    return sections
+
+
+def set_insight_section(body: str, text: str) -> str:
+    """Return the body with its '## Insight' section appended or replaced; empty
+    text removes it. Result is stripped (no leading/trailing blank lines) — the
+    writer re-adds the single blank line after the frontmatter."""
+    kept: list[str] = []
+    skipping = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.lower() == _INSIGHT_HEADING:
+            skipping = True
+            continue
+        if skipping and stripped.startswith("## "):
+            skipping = False
+        if not skipping:
+            kept.append(line)
+    base = "\n".join(kept).strip()
+    text = text.strip()
+    if not text:
+        return base
+    block = f"## Insight\n{text}"
+    return f"{base}\n\n{block}" if base else block
+
+
+def _split_note(text: str) -> tuple[str, str] | None:
+    """(frontmatter_block, body) or None when there's no frontmatter. The block
+    is the raw text between the '---' fences (no fences, keeps inner newlines)."""
+    if not text.startswith("---\n"):
+        return None
+    parts = text.split("---\n", 2)
+    if len(parts) < 3:
+        return None
+    return parts[1], parts[2]
+
+
+def _compose_note(fm_block: str, body: str) -> str:
+    return "---\n" + fm_block.rstrip("\n") + "\n---\n\n" + body.strip() + "\n"
+
+
+def _ensure_origin_human(fm_block: str) -> str:
+    """The insight is the human's words — origin stays 'human', never flips to
+    'ai' (SCHEMA §1 firewall + §7 'never overwritten by AI')."""
+    lines = fm_block.splitlines()
+    if any(line.startswith("origin:") for line in lines):
+        lines = ["origin: human" if line.startswith("origin:") else line for line in lines]
+    else:
+        lines.append("origin: human")
+    return "\n".join(lines)
+
+
+def _stamp_field(fm_block: str, key: str, value: str) -> str:
+    """Set a column-0 scalar frontmatter field, appending it if absent."""
+    lines = fm_block.splitlines()
+    out: list[str] = []
+    found = False
+    for line in lines:
+        if line.startswith(f"{key}:"):
+            out.append(f"{key}: {value}")
+            found = True
+        else:
+            out.append(line)
+    if not found:
+        out.append(f"{key}: {value}")
+    return "\n".join(out)
+
+
+def _resource_summary(vault: Path, path: Path, fm: dict[str, str], body: str) -> dict:
+    insight = _insight_text(body)
+    return {
+        "id": fm.get("id", ""),
+        "title": _note_title(path, fm),
+        "category": fm.get("resource_type", ""),
+        "status": fm.get("status", "inbox"),
+        "cover": fm.get("cover") or None,
+        "url": fm.get("source_url") or None,
+        "created": fm.get("created", ""),
+        "sample": fm.get("sample", "").lower() == "true",
+        "file": str(path.relative_to(vault)),
+        "has_insight": bool(insight),
+        "insight": insight or None,
+    }
+
+
+def _resource_notes(vault: Path):
+    """Yield (path, fm, body) for every resource-type note in 04-Resources."""
+    folder = vault / RESOURCES_FOLDER
+    if not folder.is_dir():
+        return
+    for path in sorted(folder.glob("*.md")):
+        fm, body = parse_frontmatter(path.read_text())
+        if fm.get("type") == "resource":
+            yield path, fm, body
+
+
+def find_resource(vault: Path, note_id: str) -> Path | None:
+    for path, fm, _ in _resource_notes(vault):
+        if fm.get("id") == note_id:
+            return path
+    return None
+
+
+def list_resources(vault: Path, *, category: str | None = None, status: str | None = None,
+                   q: str | None = None, has_insight: bool | None = None,
+                   sort: str = "created") -> list[dict]:
+    items: list[dict] = []
+    for path, fm, body in _resource_notes(vault):
+        item = _resource_summary(vault, path, fm, body)
+        if category and item["category"].lower() != category.lower():
+            continue
+        if status and item["status"] != status:
+            continue
+        if q and q.lower() not in item["title"].lower():
+            continue
+        if has_insight is not None and item["has_insight"] != has_insight:
+            continue
+        items.append(item)
+    if sort == "title":
+        items.sort(key=lambda i: i["title"].lower())
+    elif sort == "oldest":
+        items.sort(key=lambda i: i["created"])
+    else:  # "created" — newest first (default)
+        items.sort(key=lambda i: i["created"], reverse=True)
+    return items
+
+
+def resource_detail(vault: Path, note_id: str) -> dict | None:
+    path = find_resource(vault, note_id)
+    if path is None:
+        return None
+    fm, body = parse_frontmatter(path.read_text())
+    detail = _resource_summary(vault, path, fm, body)
+    detail["description"] = fm.get("description") or None
+    detail["author"] = fm.get("author") or None
+    detail["rating"] = fm.get("rating") or None
+    detail["sections"] = _sections(body)
+    return detail
+
+
+def set_resource_status(vault: Path, note_id: str, new_status: str) -> dict:
+    """Restamp the status line (keeps type); stamp a 'consumed' date when the
+    note reaches 'consumed'. Commits. Raises LookupError if the id isn't a
+    resource. Caller validates new_status against RESOURCE_LIFECYCLE first."""
+    path = find_resource(vault, note_id)
+    if path is None:
+        raise LookupError(note_id)
+    text = path.read_text()
+    fm, _ = parse_frontmatter(text)
+    new_text = _restamp(text, fm.get("type", "resource"), new_status)
+    if new_status == "consumed":
+        split = _split_note(new_text)
+        if split is not None:
+            fm_block, body = split
+            new_text = _compose_note(_stamp_field(fm_block, "consumed", date.today().isoformat()), body)
+    path.write_text(new_text)
+    git_commit_vault(vault, f"api: resource {note_id} → {new_status}")
+    fm2, body2 = parse_frontmatter(path.read_text())
+    return _resource_summary(vault, path, fm2, body2)
+
+
+def set_resource_insight(vault: Path, note_id: str, text: str) -> dict:
+    """Append/replace the '## Insight' section with the human's words; keep
+    origin human; commit. Raises LookupError if the id isn't a resource."""
+    path = find_resource(vault, note_id)
+    if path is None:
+        raise LookupError(note_id)
+    split = _split_note(path.read_text())
+    if split is None:
+        raise LookupError(note_id)
+    fm_block, body = split
+    path.write_text(_compose_note(_ensure_origin_human(fm_block), set_insight_section(body, text)))
+    git_commit_vault(vault, f"api: insight on {note_id}")
+    fm2, body2 = parse_frontmatter(path.read_text())
+    return _resource_summary(vault, path, fm2, body2)
+
+
+# ---- sample-data purge (safety-critical) ------------------------------------
+# The ONLY thing the purge may target is a note whose frontmatter has exactly
+# sample: true. A note without that flag can never be deleted here, whatever its
+# age. older_than filters WITHIN the sample set by created date.
+
+def sample_matching(vault: Path, scope: str) -> list[Path]:
+    """Resource notes with sample:true whose created date is old enough for the
+    scope. scope 'all' → every sample note (no age bound)."""
+    days = SAMPLE_SCOPES[scope]
+    cutoff = None if days is None else date.today() - timedelta(days=days)
+    out: list[Path] = []
+    for path, fm, _ in _resource_notes(vault):
+        if fm.get("sample", "").lower() != "true":
+            continue
+        if cutoff is None:
+            out.append(path)
+            continue
+        created = _parse_date(fm.get("created", ""))
+        if created is not None and created <= cutoff:
+            out.append(path)
+    return out
+
+
+def sample_titles(paths: list[Path]) -> list[str]:
+    titles: list[str] = []
+    for path in paths:
+        fm, _ = parse_frontmatter(path.read_text())
+        titles.append(_note_title(path, fm))
+    return titles
