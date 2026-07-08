@@ -274,6 +274,16 @@ RESOURCE_LIFECYCLE = ["inbox", "to-consume", "consumed", "referenced", "archived
 # older_than scope → age in days (None = no age bound, the whole sample set).
 SAMPLE_SCOPES: dict[str, int | None] = {"1d": 1, "1w": 7, "1m": 30, "all": None}
 
+# Per-type extra frontmatter fields, verbatim from SCHEMA-REFERENCE.md §7 "Type
+# extras": book: author; movie: where_to_watch, runtime; tutorial: steps,
+# tools_mentioned, transcript; recipe: ingredients, steps; place: map_url,
+# best_time. Read generically off every note — a field simply comes back None
+# when that note's resource_type doesn't carry it.
+RESOURCE_EXTRA_FIELDS = [
+    "author", "where_to_watch", "runtime", "ingredients", "steps",
+    "tools_mentioned", "transcript", "map_url", "best_time",
+]
+
 _INSIGHT_HEADING = "## insight"
 
 
@@ -459,8 +469,9 @@ def resource_detail(vault: Path, note_id: str) -> dict | None:
     fm, body = parse_frontmatter(path.read_text())
     detail = _resource_summary(vault, path, fm, body)
     detail["description"] = fm.get("description") or None
-    detail["author"] = fm.get("author") or None
     detail["rating"] = fm.get("rating") or None
+    for key in RESOURCE_EXTRA_FIELDS:
+        detail[key] = fm.get(key) or None
     detail["sections"] = _sections(body)
     return detail
 

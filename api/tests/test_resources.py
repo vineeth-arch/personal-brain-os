@@ -17,7 +17,8 @@ from api.tests.test_api import Server, env  # noqa: F401
 
 def _write_resource(folder: Path, note_id: str, *, rt: str, status: str, title: str,
                     sample: bool, created: str, insight: str | None = None,
-                    url: str = "https://example.com/x", description: str = "A thing worth keeping.") -> None:
+                    url: str = "https://example.com/x", description: str = "A thing worth keeping.",
+                    extra: dict[str, str] | None = None) -> None:
     folder.mkdir(parents=True, exist_ok=True)
     lines = [
         "---",
@@ -33,6 +34,8 @@ def _write_resource(folder: Path, note_id: str, *, rt: str, status: str, title: 
         f"cover: https://picsum.photos/seed/{note_id}/400/560",
         f"source_url: {url}",
     ]
+    for key, value in (extra or {}).items():
+        lines.append(f"{key}: {value}")
     if sample:
         lines.append("sample: true")
     lines += ["categories: []", "subjects: []", "tags: []", "---", ""]
@@ -132,6 +135,54 @@ def test_resource_detail_and_404(env):
         assert "Insight" in headings
         code, body = s.req("GET", "/api/resources/99999999999999")
         assert code == 404 and set(body["error"]) == {"what", "cause", "todo"}
+
+
+def test_resource_detail_exposes_type_extras_per_category(env):
+    """SCHEMA-REFERENCE.md §7 'Type extras' — each resource_type carries a
+    different extra-field set; the detail endpoint must surface whichever
+    fields THAT note's frontmatter actually has, and null the rest."""
+    tmp, vault, *_ = env
+    res = vault / "04-Resources"
+    _write_resource(res, "20260601120000", rt="book", status="inbox",
+                    title="Designing Brand Identity", sample=True, created="2026-06-01",
+                    extra={"author": "Alina Wheeler"})
+    _write_resource(res, "20260602120000", rt="movie", status="inbox",
+                    title="Blade Runner 2049", sample=True, created="2026-06-02",
+                    extra={"where_to_watch": "Netflix", "runtime": "164 min"})
+    _write_resource(res, "20260603120000", rt="recipe", status="inbox",
+                    title="Shakshuka", sample=True, created="2026-06-03",
+                    extra={"ingredients": "eggs, tomato, peppers", "steps": "soften, simmer, nest eggs"})
+    _write_resource(res, "20260604120000", rt="place", status="inbox",
+                    title="Alserkal Avenue", sample=True, created="2026-06-04",
+                    extra={"map_url": "https://maps.google.com/?q=Alserkal", "best_time": "Thursday evenings"})
+    _write_resource(res, "20260605120000", rt="tutorial", status="inbox",
+                    title="Advanced Figma Auto Layout", sample=True, created="2026-06-05",
+                    extra={"tools_mentioned": "auto layout, constraints", "transcript": "Welcome to the talk..."})
+
+    with Server(tmp) as s:
+        _, book = s.req("GET", "/api/resources/20260601120000")
+        assert book["author"] == "Alina Wheeler"
+        assert book["where_to_watch"] is None and book["ingredients"] is None
+
+        _, movie = s.req("GET", "/api/resources/20260602120000")
+        assert movie["where_to_watch"] == "Netflix" and movie["runtime"] == "164 min"
+        assert movie["author"] is None
+
+        _, recipe = s.req("GET", "/api/resources/20260603120000")
+        assert recipe["ingredients"] == "eggs, tomato, peppers"
+        assert recipe["steps"] == "soften, simmer, nest eggs"
+
+        _, place = s.req("GET", "/api/resources/20260604120000")
+        assert place["map_url"] == "https://maps.google.com/?q=Alserkal"
+        assert place["best_time"] == "Thursday evenings"
+
+        _, tutorial = s.req("GET", "/api/resources/20260605120000")
+        assert tutorial["tools_mentioned"] == "auto layout, constraints"
+        assert tutorial["transcript"] == "Welcome to the talk..."
+
+        # the list endpoint stays lean — extras are detail-only
+        _, listing = s.req("GET", "/api/resources")
+        assert "author" not in listing["items"][0]
 
 
 # ---- writes: status advance + insight --------------------------------------

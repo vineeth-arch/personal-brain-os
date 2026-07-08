@@ -256,8 +256,20 @@ export interface ResourceSection {
 // GET /resources/{id} — the drawer's full detail.
 export interface ResourceDetail extends Resource {
   description: string | null;
-  author: string | null;
   rating: string | null;
+  // Per-type extras (SCHEMA-REFERENCE.md §7 "Type extras"): each is non-null
+  // only when the resource's category actually carries it — book: author;
+  // movie: where_to_watch, runtime; recipe: ingredients, steps; tutorial:
+  // steps, tools_mentioned, transcript; place: map_url, best_time.
+  author: string | null;
+  where_to_watch: string | null;
+  runtime: string | null;
+  ingredients: string | null;
+  steps: string | null;
+  tools_mentioned: string | null;
+  transcript: string | null;
+  map_url: string | null;
+  best_time: string | null;
   sections: ResourceSection[];
 }
 

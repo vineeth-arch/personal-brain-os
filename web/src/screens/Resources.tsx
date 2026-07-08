@@ -41,6 +41,39 @@ function ageDays(created: string): number {
   return (Date.now() - d.getTime()) / 86_400_000;
 }
 
+// Per-category schema fields (SCHEMA-REFERENCE.md §7 "Type extras"), drawn
+// from whichever of ResourceDetail's extra fields that category's frontmatter
+// actually carries. Transcript is deliberately excluded — it can run long, so
+// it gets its own collapsible instead of a meta row (see the drawer).
+function detailRows(d: ResourceDetail): { label: string; value: string }[] {
+  const rows: { label: string; value: string }[] = [];
+  const push = (label: string, value: string | null) => {
+    if (value) rows.push({ label, value });
+  };
+  switch (d.category) {
+    case "book":
+      push("Author", d.author);
+      break;
+    case "movie":
+      push("Where to watch", d.where_to_watch);
+      push("Runtime", d.runtime);
+      break;
+    case "recipe":
+      push("Ingredients", d.ingredients);
+      push("Steps", d.steps);
+      break;
+    case "tutorial":
+      push("Tools mentioned", d.tools_mentioned);
+      push("Steps", d.steps);
+      break;
+    case "place":
+      push("Best time", d.best_time);
+      break;
+  }
+  push("Rating", d.rating ? `${d.rating}/7` : null);
+  return rows;
+}
+
 // ---- URL-backed filter state ------------------------------------------------
 // Filters live in the hash query (#/resources?category=book&status=…&q=…&
 // insight=1) so the view is shareable and survives refresh. Internal changes
@@ -321,6 +354,30 @@ function Drawer({
           <p className="text-default px-5 text-sm">{detail.description}</p>
         )}
 
+        {/* Type-specific schema fields — different columns for different
+            resource categories (SCHEMA-REFERENCE.md §7 "Type extras"). */}
+        {detail && detailRows(detail).length > 0 && (
+          <dl className="mt-3 space-y-2 px-5 text-sm">
+            {detailRows(detail).map((row) => (
+              <div key={row.label}>
+                <dt className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+                  {row.label}
+                </dt>
+                <dd className="text-default mt-0.5">{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
+
+        {detail?.transcript && (
+          <details className="mt-3 px-5">
+            <summary className="text-muted cursor-pointer text-xs font-semibold">
+              Transcript
+            </summary>
+            <p className="text-subtle mt-2 whitespace-pre-wrap text-xs">{detail.transcript}</p>
+          </details>
+        )}
+
         <div className="flex flex-wrap gap-2 p-5">
           {current.url && (
             <a
@@ -330,6 +387,16 @@ function Drawer({
               className="border-emphasis text-emphasis flex min-h-11 items-center rounded-xl border px-4 text-sm font-bold"
             >
               Open source ↗
+            </a>
+          )}
+          {detail?.map_url && (
+            <a
+              href={detail.map_url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="border-emphasis text-emphasis flex min-h-11 items-center rounded-xl border px-4 text-sm font-bold"
+            >
+              Open map ↗
             </a>
           )}
           {obsidianLink && (
