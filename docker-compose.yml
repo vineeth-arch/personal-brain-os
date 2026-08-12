@@ -6,6 +6,7 @@
 # Optional profiles:
 #   docker compose --profile sync up -d      # + syncthing sharing the vault
 #   docker compose --profile tunnel up -d    # + cloudflared (TUNNEL_TOKEN in .env)
+#   docker compose --profile proxy up -d     # + caddy HTTPS on your domain (DOMAIN in .env)
 services:
   app:
     build: .
@@ -35,6 +36,23 @@ services:
     ports:
       - "8384:8384" # syncthing admin UI
       - "22000:22000" # sync protocol
+
+  # optional: caddy terminates HTTPS with automatic Let's Encrypt certificates.
+  # Point your domain's DNS at the server, set DOMAIN in .env, and use the
+  # proxy profile — the VPS path in GO-LIVE.md. (Alternative: tunnel profile.)
+  caddy:
+    image: caddy:2
+    profiles: ["proxy"]
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy/data:/data
+      - ./data/caddy/config:/config
 
   # optional: cloudflared exposes the cockpit at your hostname (see DEPLOY.md)
   cloudflared:

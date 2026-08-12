@@ -42,6 +42,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY api/ api/
 COPY pipeline/ pipeline/
 COPY checks.json config.example.json ./
+COPY scripts/bootstrap.py scripts/bootstrap.py
 COPY --from=whisper /src/build/bin/whisper-cli /usr/local/bin/whisper-cli
 COPY --from=web /web/dist web/dist
 COPY docker/entrypoint.sh /entrypoint.sh

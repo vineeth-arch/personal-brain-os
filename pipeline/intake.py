@@ -9,7 +9,7 @@ from pathlib import Path
 
 from . import enrich
 
-AUDIO_EXT = {".m4a", ".mp3", ".wav", ".aac"}
+AUDIO_EXT = {".m4a", ".mp3", ".wav", ".aac", ".opus", ".ogg", ".oga", ".flac"}
 TEXT_EXT = {".txt", ".md"}
 
 # "2026-07-03-0900 morning walk #idea"  (time, name, tag all after the date are optional)
