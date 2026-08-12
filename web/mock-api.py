@@ -222,6 +222,45 @@ TODO_ITEMS = [] if MODE_EMPTY else [
      "file": f"06-Todos/{date.today().isoformat()}.md"},
 ]
 
+# Pass 7 — one person per lifecycle state, including an `unset` note (written
+# before cadences existed) so the set-up prompt is reachable in the mock too.
+PEOPLE = [] if MODE_EMPTY else [
+    {"id": "20260101090002", "name": "Grace Hopper",
+     "file": "07-People/2026-01-01-grace-hopper.md", "relationship": "collaborator",
+     "company": "Example Co", "warmth_stage": "conversing", "cadence_days": 7,
+     "last_contact": (date.today() - timedelta(days=12)).isoformat(),
+     "days_since_contact": 12, "days_overdue": 5, "status": "cold", "unset": False,
+     "dex_deeplink": "https://getdex.com/contacts/d2"},
+    {"id": "20260101090001", "name": "Ada Lovelace",
+     "file": "07-People/2026-01-01-ada-lovelace.md", "relationship": "friend",
+     "company": "", "warmth_stage": "warm", "cadence_days": 14,
+     "last_contact": (date.today() - timedelta(days=2)).isoformat(),
+     "days_since_contact": 2, "days_overdue": 0, "status": "active", "unset": False,
+     "dex_deeplink": None},
+    {"id": "20260101090003", "name": "Alan Turing",
+     "file": "07-People/2026-01-01-alan-turing.md", "relationship": "collaborator",
+     "company": "NPL", "warmth_stage": "identified", "cadence_days": 7,
+     "last_contact": (date.today() - timedelta(days=60)).isoformat(),
+     "days_since_contact": 60, "days_overdue": 53, "status": "dormant", "unset": False,
+     "dex_deeplink": None},
+    {"id": "20250601090000", "name": "old-friend",
+     "file": "07-People/2025-06-01-old-friend.md", "relationship": "", "company": "",
+     "warmth_stage": "", "cadence_days": None, "last_contact": None,
+     "days_since_contact": None, "days_overdue": None, "status": "unset", "unset": True,
+     "dex_deeplink": None},
+]
+
+WARMTH_STAGES = ["identified", "researched", "engaging", "conversing", "warm", "ready"]
+
+PERSON_DETAIL_EXTRA = {
+    "sections": {"Context": "Met at a workshop in Zurich.",
+                 "Needs": "An intro to the compiler people.",
+                 "Next action": "Send the notation draft."},
+    "interactions": ["2026-01-02 — first call", "2026-03-14 — coffee"],
+    "channels": "{whatsapp: , email: g@example.com, linkedin: }",
+    "dex_id": "d2", "created": "2026-01-01", "origin": "human",
+}
+
 LINK_CARDS = [
     {"id": "obsidian", "group": "link", "name": "Obsidian", "icon": "obsidian",
      "description": "Open your vault in Obsidian.", "status": "unknown", "badge": None,
@@ -453,6 +492,22 @@ class Handler(BaseHTTPRequestHandler):
                 })
             if path == "/api/todos":
                 return self._send(200, {"items": TODO_ITEMS})
+            if path == "/api/people":
+                q = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=", 1) for p in q.split("&") if "=" in p)
+                wanted = params.get("filter", "all")
+                items = ([p for p in PEOPLE if p["status"] == wanted]
+                         if wanted != "all" else PEOPLE)
+                return self._send(200, {"items": items})
+            if path.startswith("/api/people/"):
+                pid = path.rsplit("/", 1)[-1]
+                person = next((p for p in PEOPLE if p["id"] == pid), None)
+                if person is None:
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in your vault.",
+                        "cause": "The note was renamed, moved, or the id is unknown.",
+                        "todo": "Go back to the People list and open them again."}})
+                return self._send(200, {**person, **PERSON_DETAIL_EXTRA})
             if path == "/api/selfcheck":
                 return self._send(200, {
                     "ok": not MODE_INT_DEGRADED,
@@ -508,7 +563,57 @@ class Handler(BaseHTTPRequestHandler):
                 print("PUT CONFIG", changes)
                 return self._send(200, {**CONFIG, "engine": ENGINE})
 
+        if method == "PATCH":
+            if path.startswith("/api/people/"):
+                pid = path.rsplit("/", 1)[-1]
+                person = next((p for p in PEOPLE if p["id"] == pid), None)
+                if person is None:
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in your vault anymore.",
+                        "cause": "The note was renamed, moved, or the id is unknown.",
+                        "todo": "Refresh the People list."}})
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                changes = json.loads(raw or b"{}")
+                if not changes:
+                    return self._send(400, {"error": {
+                        "what": "There was nothing to change.",
+                        "cause": "The request didn't set a cadence or a warmth stage.",
+                        "todo": "Pick a value in the drawer and save again."}})
+                cadence = changes.get("cadence_days")
+                if cadence is not None:
+                    if not isinstance(cadence, int) or cadence <= 0:
+                        return self._send(400, {"error": {
+                            "what": "That change doesn't fit the vault's schema.",
+                            "cause": "cadence_days must be a whole number of days above zero.",
+                            "todo": "Pick a value offered in the drawer and try again."}})
+                    person["cadence_days"] = cadence
+                warmth = changes.get("warmth_stage")
+                if warmth is not None:
+                    if warmth not in WARMTH_STAGES:
+                        return self._send(400, {"error": {
+                            "what": "That change doesn't fit the vault's schema.",
+                            "cause": "warmth_stage must be one of: " + ", ".join(WARMTH_STAGES),
+                            "todo": "Pick a value offered in the drawer and try again."}})
+                    person["warmth_stage"] = warmth
+                return self._send(200, person)
+
         if method == "POST":
+            if path == "/api/people/sync":
+                return self._send(200, {
+                    "ok": True, "created": 1, "updated": 2, "unchanged": 4, "skipped": 0,
+                    "message": "Pulled your Dex contacts: 1 new, 2 updated, "
+                               "4 already up to date."})
+            if path.startswith("/api/people/") and path.endswith("/log-contact"):
+                pid = path.split("/")[3]
+                person = next((p for p in PEOPLE if p["id"] == pid), None)
+                if person is None:
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in your vault anymore.",
+                        "cause": "The note was renamed, moved, or the id is unknown.",
+                        "todo": "Refresh the People list."}})
+                person.update(status="active", days_since_contact=0, days_overdue=0,
+                              last_contact=date.today().isoformat())
+                return self._send(200, person)
             if path == "/api/capture":
                 print("CAPTURE", self.rfile.read(int(self.headers.get("Content-Length", 0))))
                 return self._send(201, {"id": "20260703061500", "status": "captured"})
@@ -584,6 +689,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         self._route("PUT")
+
+    def do_PATCH(self):
+        self._route("PATCH")
 
     def log_message(self, fmt, *args):  # quieter default logging
         sys.stderr.write("mock-api: %s\n" % (fmt % args))

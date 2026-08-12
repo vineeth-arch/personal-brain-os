@@ -28,7 +28,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from pipeline import classify, config as config_mod, enrich, intake, route as proute, todos as ptodos, watcher
+from pipeline import (classify, config as config_mod, dex, enrich, intake, route as proute,
+                      todos as ptodos, watcher)
+from pipeline.errors import StageError
 
 from . import build_status, integrations, notes, selfcheck, service, watchdog
 
@@ -91,6 +93,14 @@ class StatusBody(BaseModel):
 
 class InsightBody(BaseModel):
     text: str
+
+
+class PersonPatchBody(BaseModel):
+    # No `status` here on purpose: the lifecycle is computed from
+    # last_contact + cadence_days, so a hand-set status would be overwritten
+    # the moment anything re-reads the note. Change the cadence instead.
+    cadence_days: int | None = None
+    warmth_stage: str | None = None
 
 
 def create_app(root: Path | None = None) -> FastAPI:
@@ -266,6 +276,74 @@ def create_app(root: Path | None = None) -> FastAPI:
             config.vault_path,
             f"api: todo {block_id} marked {'done' if done else 'open'}")
         return {"ok": True, "done": done}
+
+    # ---- people (Pass 7) ------------------------------------------------------------
+    # 'sync' is declared before '/{note_id}' so the literal path wins.
+
+    @app.get("/api/people")
+    def people_list(filter: str = "all", config=Depends(require_token)):
+        if filter not in notes.PEOPLE_FILTERS:
+            raise Envelope(
+                400, "That isn't a way to filter your people.",
+                f"'{filter}' isn't one of {', '.join(notes.PEOPLE_FILTERS)}.",
+                "Pick one of the filter chips and try again.")
+        return {"items": notes.list_people(config.vault_path, filter=filter)}
+
+    @app.post("/api/people/sync")
+    def people_sync(config=Depends(require_token)):
+        try:
+            # events=None on purpose: EventLog's connection belongs to the
+            # watcher's thread, and API handlers run in a threadpool.
+            result = dex.sync(config)
+        except StageError as e:
+            raise Envelope(502 if e.transient else 400, e.what, e.cause, e.todo)
+        payload = result.as_dict()
+        payload["ok"] = True
+        payload["message"] = (
+            f"Pulled your Dex contacts: {result.created} new, {result.updated} updated, "
+            f"{result.unchanged} already up to date.")
+        return payload
+
+    @app.get("/api/people/{note_id}")
+    def person_detail(note_id: str, config=Depends(require_token)):
+        detail = notes.person_detail(config.vault_path, note_id)
+        if detail is None:
+            raise Envelope(
+                404, "That person isn't in your vault.",
+                "The note was renamed, moved out of 07-People, or the id is unknown.",
+                "Go back to the People list and open them again.")
+        return detail
+
+    @app.post("/api/people/{note_id}/log-contact")
+    def people_log_contact(note_id: str, config=Depends(require_token)):
+        try:
+            return notes.log_contact(config.vault_path, note_id)
+        except LookupError:
+            raise Envelope(
+                404, "That person isn't in your vault anymore.",
+                "The note was renamed, moved out of 07-People, or the id is unknown.",
+                "Refresh the People list.")
+
+    @app.patch("/api/people/{note_id}")
+    def people_patch(note_id: str, body: PersonPatchBody, config=Depends(require_token)):
+        changes = body.model_dump(exclude_none=True)
+        if not changes:
+            raise Envelope(
+                400, "There was nothing to change.",
+                "The request didn't set a cadence or a warmth stage.",
+                "Pick a value in the drawer and save again.")
+        try:
+            return notes.update_person(config.vault_path, note_id, changes)
+        except LookupError:
+            raise Envelope(
+                404, "That person isn't in your vault anymore.",
+                "The note was renamed, moved out of 07-People, or the id is unknown.",
+                "Refresh the People list.")
+        except ValueError as e:
+            raise Envelope(
+                400, "That change doesn't fit the vault's schema.",
+                str(e),
+                "Pick one of the values offered in the drawer and try again.")
 
     @app.get("/api/build")
     def build(fresh: int = 0, config=Depends(require_token)):

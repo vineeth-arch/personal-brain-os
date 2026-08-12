@@ -5,6 +5,7 @@ import { toast, ToastRegion } from "./components/Toast";
 import { TokenGate } from "./components/TokenGate";
 import { Build } from "./screens/Build";
 import { Integrations } from "./screens/Integrations";
+import { People } from "./screens/People";
 import { Pipeline } from "./screens/Pipeline";
 import { Resources } from "./screens/Resources";
 import { Settings } from "./screens/Settings";
@@ -16,6 +17,7 @@ export type Route =
   | "resources"
   | "triage"
   | "pipeline"
+  | "people"
   | "integrations"
   | "settings"
   | "build";
@@ -25,7 +27,8 @@ function parseRoute(): Route {
   // hash query (#/resources?category=…), which must not defeat route matching.
   const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
   if (hash === "resources" || hash === "triage" || hash === "pipeline" ||
-      hash === "integrations" || hash === "settings" || hash === "build")
+      hash === "people" || hash === "integrations" || hash === "settings" ||
+      hash === "build")
     return hash;
   return "today";
 }
@@ -69,6 +72,7 @@ export default function App() {
         {route === "resources" && <Resources />}
         {route === "triage" && <Triage />}
         {route === "pipeline" && <Pipeline />}
+        {route === "people" && <People />}
         {route === "integrations" && <Integrations />}
         {route === "settings" && <Settings />}
         {route === "build" && <Build />}

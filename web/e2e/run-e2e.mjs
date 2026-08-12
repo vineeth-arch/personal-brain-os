@@ -36,14 +36,54 @@ function loadPlaywright() {
   }
 }
 
+// The repo's venv when there is one, otherwise whatever uvicorn is on PATH —
+// CI images and containers install into the system Python.
+function uvicornBin() {
+  const venv = path.join(repo, ".venv", "bin", "uvicorn");
+  if (fs.existsSync(venv)) return venv;
+  return execSync("command -v uvicorn").toString().trim();
+}
+
+// ---- seeds ----------------------------------------------------------------------
+function daysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
+function personNote(id, name, lastContact, cadence) {
+  return [
+    "---", `id: ${id}`, "type: person", `name: ${name}`, "created: 2026-01-01",
+    "source: manual", "origin: human", "status: active", "relationship: collaborator",
+    "company: Example Co", "channels: {whatsapp: , email: , linkedin: }",
+    "warmth_stage: conversing", `cadence_days: ${cadence}`, `last_contact: ${lastContact}`,
+    "---", "",
+    "## Context", "Met at a workshop.", "",
+    "## Needs", "An intro.", "",
+    "## Interaction log", "- 2026-01-02 — first call", "",
+    "## Next action", "Follow up.", "",
+  ].join("\n");
+}
+
+function seedPeople(vault) {
+  const folder = path.join(vault, "07-People");
+  // one comfortably inside its cadence; one past it but not yet at the 3x
+  // dormant threshold, so it lands in the going-cold group
+  fs.writeFileSync(path.join(folder, "2026-01-01-ada-lovelace.md"),
+    personNote("20260101090001", "Ada Lovelace", daysAgo(2), 14));
+  fs.writeFileSync(path.join(folder, "2026-01-01-grace-hopper.md"),
+    personNote("20260101090002", "Grace Hopper", daysAgo(12), 7));
+}
+
 // ---- temp server root ---------------------------------------------------------
 function makeRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-e2e-"));
   for (const d of ["vault/00-Inbox", "vault/02-Musings", "vault/03-Learnings", "vault/wiki",
-                   "inbox", "archive", "failed"]) {
+                   "vault/07-People", "inbox", "archive", "failed"]) {
     fs.mkdirSync(path.join(root, d), { recursive: true });
   }
   const vault = path.join(root, "vault");
+  seedPeople(vault);
   execSync(`git -C "${vault}" init -q && git -C "${vault}" config user.email t@t && git -C "${vault}" config user.name t`);
   fs.writeFileSync(
     path.join(root, "config.json"),
@@ -83,7 +123,7 @@ if (!fs.existsSync(dist)) {
 }
 
 const root = makeRoot();
-const uvicorn = spawn(path.join(repo, ".venv", "bin", "uvicorn"),
+const uvicorn = spawn(uvicornBin(),
   ["api.main:app", "--host", "127.0.0.1", "--port", String(PORT)],
   {
     cwd: repo,
@@ -138,6 +178,30 @@ try {
   const saved2 = JSON.parse(fs.readFileSync(path.join(root, "config.json"), "utf8"));
   assert.equal(saved2.transcription.engine, "whispercpp");
   console.log("✓ Toggled back to local whisper.cpp");
+
+  // ---- 5. People (Pass 7): grouping + log-contact moves a person ---------------
+  await page.goto(`${BASE}/#/people`);
+  const cold = page.locator("section", { hasText: "Going cold" }).first();
+  await cold.getByText("1 person is past their cadence").waitFor();
+  const graceCard = page.locator("li", { hasText: "Grace Hopper" });
+  await graceCard.getByText("12 days since contact").waitFor();
+  console.log("✓ People groups a lapsed contact under Going cold with a day count");
+
+  await graceCard.getByRole("button", { name: "Log contact" }).click();
+  await page.getByText("Logged contact with Grace Hopper.").waitFor();
+  await page.locator("li", { hasText: "Grace Hopper" }).getByText("Contacted today").waitFor();
+  await cold.getByText("Nobody's slipping").waitFor();
+  console.log("✓ Log contact moves them out of Going cold and resets the day count");
+
+  // the vault, not the screen, is the source of truth — check the note on disk
+  const graceNote = fs.readFileSync(
+    path.join(root, "vault", "07-People", "2026-01-01-grace-hopper.md"), "utf8");
+  const today = new Date().toISOString().slice(0, 10);
+  assert.ok(graceNote.includes(`last_contact: ${today}`), "last_contact was not stamped");
+  assert.ok(graceNote.includes(`- ${today} — contact logged`), "interaction log not appended");
+  assert.ok(graceNote.includes("- 2026-01-02 — first call"), "existing history was lost");
+  assert.ok(graceNote.includes("Met at a workshop."), "the owner's prose was touched");
+  console.log("✓ The note on disk gained the stamp and kept its history and prose");
 
   console.log("\nE2E: all checks passed.");
 } catch (err) {

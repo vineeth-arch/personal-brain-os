@@ -5,7 +5,12 @@ import type {
   BuildResponse,
   CaptureTag,
   ConfigWrite,
+  DexSyncResult,
   EngineName,
+  PeopleFilter,
+  Person,
+  PersonDetail,
+  PersonPatch,
   ProviderStat,
   SelfCheckResponse,
   TodoItem,
@@ -219,6 +224,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text }),
     }),
+  // ---- Relationship OS (Pass 7) ----
+  people: (filter: PeopleFilter = "all") =>
+    request<{ items: Person[] }>(`/api/people?filter=${filter}`),
+  person: (id: string) => request<PersonDetail>(`/api/people/${encodeURIComponent(id)}`),
+  logContact: (id: string) =>
+    request<Person>(`/api/people/${encodeURIComponent(id)}/log-contact`, { method: "POST" }),
+  patchPerson: (id: string, changes: PersonPatch) =>
+    request<Person>(`/api/people/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(changes),
+    }),
+  syncDex: () => request<DexSyncResult>("/api/people/sync", { method: "POST" }),
+
   sampleCount: (olderThan: SampleScope) =>
     request<SampleCount>(`/api/resources/sample/count?older_than=${olderThan}`),
   deleteSample: (olderThan: SampleScope) =>

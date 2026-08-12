@@ -274,3 +274,67 @@ export interface SamplePurgeResult {
   scope: SampleScope;
   message: string;
 }
+
+// ---- Relationship OS (Pass 7) ----
+
+// The lifecycle from SCHEMA-REFERENCE.md §6, plus `unset` — which is not a
+// stored status but the app's word for "this note predates the cadence fields",
+// so the UI can ask for them instead of inventing a threshold.
+export const PERSON_STATUSES = ["active", "cold", "dormant"] as const;
+export type PersonStatus = (typeof PERSON_STATUSES)[number];
+export type PersonLifecycle = PersonStatus | "unset";
+
+// The warm-up ladder (SCHEMA-REFERENCE.md §7), in order.
+export const WARMTH_STAGES = [
+  "identified",
+  "researched",
+  "engaging",
+  "conversing",
+  "warm",
+  "ready",
+] as const;
+export type WarmthStage = (typeof WARMTH_STAGES)[number];
+
+export interface Person {
+  id: string;
+  name: string;
+  file: string; // vault-relative, for the obsidian:// deep link
+  relationship: string;
+  company: string;
+  warmth_stage: string;
+  cadence_days: number | null;
+  last_contact: string | null; // YYYY-MM-DD
+  days_since_contact: number | null;
+  days_overdue: number | null;
+  status: PersonLifecycle;
+  unset: boolean;
+  dex_deeplink: string | null;
+}
+
+// GET /people/{id} — the drawer's full detail. `sections` is the body keyed by
+// H2 heading (Context / Needs / Next action); `interactions` is the dated
+// append-only log, oldest first.
+export interface PersonDetail extends Person {
+  sections: Record<string, string>;
+  interactions: string[];
+  channels: string;
+  dex_id: string | null;
+  created: string;
+  origin: string;
+}
+
+export type PeopleFilter = "all" | PersonStatus | "unset";
+
+export interface PersonPatch {
+  cadence_days?: number;
+  warmth_stage?: WarmthStage;
+}
+
+export interface DexSyncResult {
+  ok: boolean;
+  created: number;
+  updated: number;
+  unchanged: number;
+  skipped: number;
+  message: string;
+}

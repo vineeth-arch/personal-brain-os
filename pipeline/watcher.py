@@ -17,7 +17,8 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import archive, classify as classify_mod, config as config_mod, enrich, errors, extract, intake, route, todos
+from . import (archive, classify as classify_mod, config as config_mod, dex, enrich, errors,
+               extract, intake, route, todos)
 from .events import EventLog
 from .transcribe import Transcriber, build_backup_transcriber, build_transcriber
 
@@ -228,6 +229,7 @@ def run_loop(config, events, deps) -> None:
             print(f"Processed {len(results)} file(s).")
         todos.tick(config, events)              # reminders + optional digest
         enrich.retry_pending(config, events)    # one re-attempt for stale enriched:false notes
+        dex.tick(config, events)                # nightly contact pull, when enabled
         time.sleep(POLL_SECONDS)
 
 

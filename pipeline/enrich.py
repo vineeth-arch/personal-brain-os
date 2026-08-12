@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from . import llm, route
+from . import llm, notefm, route
 
 HTTP_TIMEOUT = 10
 APIFY_TIMEOUT = 60
@@ -282,18 +282,7 @@ def route_link(item, user_text: str, enr: Enrichment, structured: dict,
 
 # ---- frontmatter round-trip for retry ---------------------------------------
 
-def _parse_note(text: str) -> tuple[dict, str]:
-    if not text.startswith("---\n"):
-        return {}, text
-    parts = text.split("---\n", 2)
-    if len(parts) < 3:
-        return {}, text
-    fm = {}
-    for line in parts[1].splitlines():
-        if ":" in line and not line.startswith((" ", "\t")):
-            k, _, v = line.partition(":")
-            fm[k.strip()] = v.strip()
-    return fm, parts[2]
+_parse_note = notefm.parse_frontmatter
 
 
 def _insight_from_body(body: str) -> str:

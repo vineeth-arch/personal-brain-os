@@ -360,6 +360,67 @@ Flips the checkbox in place and git-commits the vault
 (`api: todo <id> marked done|open`). `200 {"ok": true, "done": true}`;
 unknown id → 404 envelope.
 
+## Relationship OS (Pass 7)
+
+`07-People` notes, per SCHEMA-REFERENCE.md §7. The lifecycle is **computed**, not
+read from the note: `cold` once more days have passed than `cadence_days`,
+`dormant` past 3× that, `active` inside it, and `unset` when the note has no
+cadence or no `last_contact` (a note written before these fields — it renders
+with a set-up prompt, never a guessed threshold). Every write also stamps
+`status:` in the file so Obsidian Bases sees the same answer.
+
+### `GET /api/people?filter=all|active|cold|dormant|unset`
+
+```json
+{ "items": [ {
+  "id": "20260101090002", "name": "Grace Hopper",
+  "file": "07-People/2026-01-01-grace-hopper.md",
+  "relationship": "collaborator", "company": "Example Co",
+  "warmth_stage": "conversing", "cadence_days": 7,
+  "last_contact": "2026-07-31", "days_since_contact": 12, "days_overdue": 5,
+  "status": "cold", "unset": false, "dex_deeplink": "https://getdex.com/c/d1"
+} ] }
+```
+
+Sorted most-overdue first, `unset` notes last. Unknown filter → 400 envelope. A
+missing `07-People` folder is `{"items": []}`, not an error.
+
+### `GET /api/people/{id}`
+
+The list shape plus `sections` (body H2 → text: Context / Needs / Next action),
+`interactions` (the dated `## Interaction log` lines, oldest first), `channels`,
+`dex_id`, `created`, `origin`. Unknown id → 404 envelope.
+
+### `POST /api/people/{id}/log-contact`
+
+Stamps `last_contact` to today, appends one dated line to `## Interaction log`,
+git-commits (`api: logged contact <id>`). Returns the person's new list shape.
+
+### `PATCH /api/people/{id}`
+
+Body may set `cadence_days` (whole number > 0) and/or `warmth_stage` (one of
+`identified researched engaging conversing warm ready`). Git-commits
+(`api: person <id> updated`) and returns the new list shape. `status` is **not**
+settable — it's computed, so a hand-set value would be contradicted by the next
+read; park a relationship by widening its cadence instead. Empty body or a value
+outside the schema → 400 envelope; unknown id → 404.
+
+### `POST /api/people/sync`
+
+Pulls contacts from Dex into `07-People`. **One-way** — the app never writes to
+Dex (drop-Dex test: the markdown archive stands alone).
+
+`200 {"ok": true, "created": 2, "updated": 1, "unchanged": 9, "skipped": 0, "message": "…"}`
+
+New notes carry `origin: ai`, `source: dex`. Existing notes get only `dex_id`,
+`dex_deeplink`, `last_contact` (which never moves backwards) and one idempotent
+dated line in the interaction log — the owner's prose is never edited. The vault
+is committed *before* the batch (`pre-dex-sync`) and after (`dex: sync …`), so an
+import is one revert away. `DEX_API_KEY` is env-only; missing key → 400 envelope,
+Dex unreachable/rate-limited → 502 envelope. `config.json → dex` holds
+`sync_daily`, `base_url`, `deeplink_base`; with `sync_daily: true` the watcher's
+`--loop` tick also runs it once a day after 03:00.
+
 ## Build tracker + model router (Pass B)
 
 ### `GET /api/build?fresh=1`

@@ -30,3 +30,7 @@
 - Pass 6: resource type-extras in the drawer (author / where_to_watch / ingredients / map_url) — stored in frontmatter by the seed, only description is shown for now.
 - Pass 6: server-side resource filtering is live + tested, but the dashboard filters the fetched list client-side (snappy at current scale) — switch to server params if the library grows large.
 - Pass 6: insight edit history / a per-section origin stamp — the human-origin guarantee currently rides the note-level `origin` firewall (AI never writes `## Insight`).
+- Pass 7: Dex write-back — enriched summaries into the Dex Description field + CardDAV propagation to the phone (this pass is pull-only; the vault never writes to Dex).
+- Pass 7: morning engine — rank "who to reconnect with" + ntfy push + one-tap drafts in your voice (drafts only; nothing auto-sends, CLAUDE.md §4).
+- Pass 7: warm-up engine — PDL firmographic enrichment + dossiers advancing the warmth ladder; the `warmth_stage` field is set by hand for now.
+- Pass 7: a manual "park this relationship" override — status is computed from cadence today, so parking someone means widening their cadence rather than hand-setting dormant.

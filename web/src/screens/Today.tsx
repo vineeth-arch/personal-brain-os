@@ -360,6 +360,41 @@ function Skeleton() {
   );
 }
 
+// The screens that don't earn a bottom tab but shouldn't be hidden either:
+// reached from here and from Settings' deep-links card. Deliberately plain
+// rows — this block is a signpost, not a second navigation bar.
+const JUMP_TO: { route: string; label: string; blurb: string }[] = [
+  { route: "people", label: "People", blurb: "Who's going cold" },
+  { route: "decisions", label: "Decisions", blurb: "Open bets and your calibration" },
+  { route: "query", label: "Ask your notes", blurb: "Search and get a cited answer" },
+];
+
+function JumpTo() {
+  return (
+    <section>
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">Jump to</p>
+      <ul className="mt-2">
+        {JUMP_TO.map((item) => (
+          <li key={item.route} className="border-subtle border-t first:border-t-0">
+            <a
+              href={`#/${item.route}`}
+              className="flex min-h-12 items-center justify-between gap-3 py-2"
+            >
+              <span className="min-w-0">
+                <span className="text-emphasis block text-sm font-bold">{item.label}</span>
+                <span className="text-subtle block truncate text-xs">{item.blurb}</span>
+              </span>
+              <span aria-hidden="true" className="text-subtle text-sm">
+                →
+              </span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export function Today() {
   const status = usePolling(api.status, 30_000);
   const streak = usePolling(api.streak);
@@ -379,6 +414,7 @@ export function Today() {
     <div className="space-y-8">
       {status.data && <HeroCard status={status.data} />}
       <Agenda />
+      <JumpTo />
       {streak.data && <StreakDots streak={streak.data} />}
       {status.data && <Resurfaced vault={status.data.vault} />}
       <QuickCapture />

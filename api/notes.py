@@ -17,9 +17,17 @@ import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from pipeline import classify, route
+from pipeline import classify, notefm, people, relationships as rel, route
+# The frontmatter primitives live in the pipeline package (dex.py and search.py
+# need them too, and imports only run api → pipeline). Re-exported here under
+# their original names so this module's call sites read unchanged.
+from pipeline.notefm import parse_frontmatter  # noqa: F401  (re-export)
 
 log = logging.getLogger("api")
+
+_split_note = notefm.split_note
+_compose_note = notefm.compose_note
+_stamp_field = notefm.stamp_field
 
 _CONFIDENCE_RE = re.compile(r"confidence=([0-9.]+)")
 _DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
@@ -28,22 +36,8 @@ EXCERPT_CHARS = 300
 
 
 # ---- frontmatter ------------------------------------------------------------
-
-def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
-    """Flat top-level keys only (list values are indented and skipped), matching
-    the format route.build_frontmatter writes."""
-    if not text.startswith("---\n"):
-        return {}, text
-    parts = text.split("---\n", 2)
-    if len(parts) < 3:
-        return {}, text
-    fm: dict[str, str] = {}
-    for line in parts[1].splitlines():
-        if ":" in line and not line.startswith((" ", "\t")):
-            k, _, v = line.partition(":")
-            fm[k.strip()] = v.strip()
-    return fm, parts[2]
-
+# parse_frontmatter / _split_note / _compose_note / _stamp_field are the
+# pipeline.notefm primitives, bound at the top of this module.
 
 def _restamp(text: str, new_type: str, new_status: str) -> str:
     """Rewrite only the column-0 type:/status: lines inside the frontmatter block."""
@@ -351,21 +345,6 @@ def set_insight_section(body: str, text: str) -> str:
     return f"{base}\n\n{block}" if base else block
 
 
-def _split_note(text: str) -> tuple[str, str] | None:
-    """(frontmatter_block, body) or None when there's no frontmatter. The block
-    is the raw text between the '---' fences (no fences, keeps inner newlines)."""
-    if not text.startswith("---\n"):
-        return None
-    parts = text.split("---\n", 2)
-    if len(parts) < 3:
-        return None
-    return parts[1], parts[2]
-
-
-def _compose_note(fm_block: str, body: str) -> str:
-    return "---\n" + fm_block.rstrip("\n") + "\n---\n\n" + body.strip() + "\n"
-
-
 def _ensure_origin_human(fm_block: str) -> str:
     """The insight is the human's words — origin stays 'human', never flips to
     'ai' (SCHEMA §1 firewall + §7 'never overwritten by AI')."""
@@ -375,22 +354,6 @@ def _ensure_origin_human(fm_block: str) -> str:
     else:
         lines.append("origin: human")
     return "\n".join(lines)
-
-
-def _stamp_field(fm_block: str, key: str, value: str) -> str:
-    """Set a column-0 scalar frontmatter field, appending it if absent."""
-    lines = fm_block.splitlines()
-    out: list[str] = []
-    found = False
-    for line in lines:
-        if line.startswith(f"{key}:"):
-            out.append(f"{key}: {value}")
-            found = True
-        else:
-            out.append(line)
-    if not found:
-        out.append(f"{key}: {value}")
-    return "\n".join(out)
 
 
 def _resource_summary(vault: Path, path: Path, fm: dict[str, str], body: str) -> dict:
@@ -531,3 +494,129 @@ def sample_titles(paths: list[Path]) -> list[str]:
         fm, _ = parse_frontmatter(path.read_text())
         titles.append(_note_title(path, fm))
     return titles
+
+
+# ---- people (Pass 7) ---------------------------------------------------------
+# 07-People notes. Reads join the stored frontmatter with the computed lifecycle
+# (pipeline.relationships); writes touch named fields and append to the
+# interaction log, never the owner's prose.
+
+PEOPLE_FILTERS = ["all", *rel.PERSON_STATUSES, rel.UNSET]
+
+
+def _person_summary(vault: Path, path: Path, fm: dict[str, str], today: date) -> dict:
+    computed = rel.classify_person(fm, today)
+    return {
+        "id": fm.get("id", ""),
+        "name": people.person_name(path, fm),
+        "file": str(path.relative_to(vault)),
+        "relationship": fm.get("relationship", ""),
+        "company": fm.get("company", ""),
+        "warmth_stage": fm.get("warmth_stage", ""),
+        "cadence_days": rel.parse_cadence(fm.get("cadence_days")),
+        "last_contact": fm.get("last_contact", "") or None,
+        "days_since_contact": rel.days_since_contact(fm, today),
+        "days_overdue": rel.days_overdue(fm, today),
+        "status": computed,
+        # `unset` isn't a lifecycle state — it means this note predates the
+        # cadence fields, so the UI asks for them instead of showing a number.
+        "unset": computed == rel.UNSET,
+        "dex_deeplink": fm.get("dex_deeplink", "") or None,
+    }
+
+
+def list_people(vault: Path, *, filter: str = "all", today: date | None = None) -> list[dict]:
+    today = today or date.today()
+    items = [_person_summary(vault, path, fm, today)
+             for path, fm, _ in people.person_notes(vault)]
+    if filter != "all":
+        items = [i for i in items if i["status"] == filter]
+    # most overdue first: the people about to slip are the reason to open this
+    # screen at all. Unset notes sort last — they're a setup chore, not a nudge.
+    items.sort(key=lambda i: (i["unset"], -(i["days_overdue"] or 0), i["name"].lower()))
+    return items
+
+
+def person_detail(vault: Path, note_id: str, today: date | None = None) -> dict | None:
+    today = today or date.today()
+    for path, fm, body in people.person_notes(vault):
+        if fm.get("id") != note_id:
+            continue
+        summary = _person_summary(vault, path, fm, today)
+        summary.update({
+            "sections": people.sections(body),
+            "interactions": people.interaction_log(body),
+            "channels": fm.get("channels", ""),
+            "dex_id": fm.get("dex_id", "") or None,
+            "created": fm.get("created", ""),
+            "origin": fm.get("origin", ""),
+        })
+        return summary
+    return None
+
+
+def log_contact(vault: Path, note_id: str, today: date | None = None) -> dict:
+    """Stamp last_contact to today and add one dated line to the interaction
+    log. Raises LookupError when the id is unknown."""
+    today = today or date.today()
+    path = people.find_person(vault, note_id)
+    if path is None:
+        raise LookupError(note_id)
+    text = path.read_text()
+    split = _split_note(text)
+    if split is None:
+        raise LookupError(note_id)
+    fm_block, body = split
+    fm, _ = parse_frontmatter(text)
+
+    stamp = today.isoformat()
+    fm_block = _stamp_field(fm_block, "last_contact", stamp)
+    fm["last_contact"] = stamp
+    fm_block = people.stamp_status(fm_block, fm, today)
+    body = people.append_interaction(body, f"- {stamp} — contact logged")
+    path.write_text(_compose_note(fm_block, body))
+
+    git_commit_vault(vault, f"api: logged contact {note_id}")
+    return _person_summary(vault, path, parse_frontmatter(path.read_text())[0], today)
+
+
+def update_person(vault: Path, note_id: str, changes: dict, today: date | None = None) -> dict:
+    """Set cadence_days / warmth_stage. Raises LookupError for an unknown id,
+    ValueError (with the allowed set) for a bad value.
+
+    `status` is deliberately not settable: it's computed from last_contact +
+    cadence_days, so accepting a hand-set value would mean writing something
+    the next read contradicts. Parking a relationship = a longer cadence."""
+    today = today or date.today()
+    path = people.find_person(vault, note_id)
+    if path is None:
+        raise LookupError(note_id)
+
+    cadence = changes.get("cadence_days")
+    if cadence is not None and rel.parse_cadence(cadence) is None:
+        raise ValueError("cadence_days must be a whole number of days above zero")
+    warmth = changes.get("warmth_stage")
+    if warmth is not None and warmth not in rel.WARMTH_STAGES:
+        raise ValueError("warmth_stage must be one of: " + ", ".join(rel.WARMTH_STAGES))
+
+    text = path.read_text()
+    split = _split_note(text)
+    if split is None:
+        raise LookupError(note_id)
+    fm_block, body = split
+
+    if cadence is not None:
+        fm_block = _stamp_field(fm_block, "cadence_days", str(rel.parse_cadence(cadence)))
+    if warmth is not None:
+        fm_block = _stamp_field(fm_block, "warmth_stage", warmth)
+    # These edits are the owner's, typed in the cockpit — the note is theirs.
+    fm_block = _ensure_origin_human(fm_block)
+    # A cadence edit can change the lifecycle, so re-stamp status from the new
+    # values: the file always agrees with what the screen shows.
+    merged = dict(parse_frontmatter(_compose_note(fm_block, body))[0])
+    fm_block = people.stamp_status(fm_block, merged, today)
+    path.write_text(_compose_note(fm_block, body))
+
+    git_commit_vault(vault, f"api: person {note_id} updated")
+    fm, _ = parse_frontmatter(path.read_text())
+    return _person_summary(vault, path, fm, today)
