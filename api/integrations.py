@@ -65,6 +65,8 @@ def safe_config(config) -> dict:
         "ntfy_topic": config.ntfy_topic,
         "providers": list((config.raw.get("classification") or {}).get("providers")
                           or pllm.DEFAULT_CHAIN),
+        # the /query chain falls back to the classification one when unset
+        "query_providers": pllm.chain(config, "query"),
         "keys": {
             "anthropic": bool(config.anthropic_key),
             "openai": bool(config.openai_key),

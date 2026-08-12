@@ -477,14 +477,29 @@ function PipelineSettingsCard({ onSaved }: { onSaved: () => void }) {
 // Model router stats (Pass B): which provider actually served, per outcome.
 function ModelRouterCard() {
   const { data } = usePolling(api.providers, 60_000);
+  const config = usePolling(api.config, 60_000);
   const rows = data?.providers ?? [];
+  const classifyChain = config.data?.providers ?? [];
+  const queryChain = config.data?.query_providers ?? [];
   return (
     <section className="bg-subtle border-subtle rounded-xl border p-5">
       <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">Model router</p>
+      {(classifyChain.length > 0 || queryChain.length > 0) && (
+        <dl className="mt-3 text-sm">
+          <dt className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+            Classifying
+          </dt>
+          <dd className="text-default mt-0.5">{classifyChain.join(" → ")}</dd>
+          <dt className="text-subtle mt-2 text-[11px] font-bold uppercase tracking-[0.08em]">
+            Answering /query
+          </dt>
+          <dd className="text-default mt-0.5">{queryChain.join(" → ")}</dd>
+        </dl>
+      )}
       {rows.length === 0 ? (
         <p className="text-default mt-3 text-sm">
-          No classifications routed yet. The chain runs Gemini → Groq → OpenRouter → Claude Haiku
-          (the floor); providers without a key are skipped silently.
+          Nothing routed yet. Each chain is tried in order and ends at Claude Haiku (the
+          floor); providers without a key are skipped silently. Reorder them in config.json.
         </p>
       ) : (
         <div className="mt-3 overflow-x-auto">

@@ -268,6 +268,37 @@ try {
   assert.ok(/\nbrier:\s*\n/.test(hireNote), `brier should be blank, not 0: ${hireNote}`);
   console.log("✓ A decision with no stated probability resolves but stays unscored");
 
+  // ---- 7. /query (Pass 9): retrieval, citation links, honest refusal ----------
+  // No provider keys are set in this environment, so the model chain can't
+  // answer — which is exactly the path worth proving in the real app: the
+  // search still finds the notes, the three-part message explains itself, and
+  // nothing is invented to fill the gap.
+  await page.goto(`${BASE}/#/query`);
+  await page.getByRole("button", { name: "Rebuild index" }).click();
+  await page.getByText(/Reindexed \d+ notes?\./).waitFor();
+  console.log("✓ Query rebuilds the search index from the vault");
+
+  await page.getByRole("searchbox", { name: "Ask your notes a question" })
+    .fill("what did I decide about the launch");
+  await page.getByRole("button", { name: "Ask" }).click();
+  await page.getByText("I couldn't find a confident answer in your notes.").waitFor();
+  await page.getByText("Likely cause:").waitFor();
+  await page.getByText("What to do:").waitFor();
+  console.log("✓ With no model available it says so in three parts, inventing nothing");
+
+  const source = page.locator("li", { hasText: "09-Decisions/2026-01-01-launch.md" }).first();
+  await source.waitFor();
+  const openLink = source.getByRole("link", { name: /Open/ });
+  const href = await openLink.getAttribute("href");
+  assert.ok(href.startsWith("obsidian://open?vault="), `citation link is wrong: ${href}`);
+  assert.ok(href.includes("09-Decisions"), `citation link lost the path: ${href}`);
+  assert.ok(!href.includes(".md"), `citation link kept the extension: ${href}`);
+  console.log("✓ Retrieved notes render with a working obsidian:// citation link");
+
+  // the question is shareable via the hash
+  assert.ok(page.url().includes("q=what%20did%20I%20decide"), `q= not in ${page.url()}`);
+  console.log("✓ The question survives in the URL");
+
   console.log("\nE2E: all checks passed.");
 } catch (err) {
   failed = true;

@@ -19,13 +19,15 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import (archive, classify as classify_mod, config as config_mod, decisions, dex, enrich,
-               errors, extract, intake, route, todos)
+               errors, extract, intake, route, search, todos)
 from .events import EventLog
 from .transcribe import Transcriber, build_backup_transcriber, build_transcriber
 
 POLL_SECONDS = 5 * 60
 BATCH_SIZE = 25
 DB_PATH = Path("events.db")
+# Derived, disposable full-text index — never events.db. See pipeline/search.py.
+SEARCH_DB_PATH = Path("search.db")
 HEARTBEAT_PATH = Path(".watcher-heartbeat")
 RETRY_ATTEMPTS = 3          # total tries for a transient failure before quarantine
 RETRY_BASE_SECONDS = 2      # backoff: 2s, then 4s, between tries
@@ -254,6 +256,7 @@ def run_loop(config, events, deps) -> None:
         todos.tick(config, events)              # reminders + optional digest
         enrich.retry_pending(config, events)    # one re-attempt for stale enriched:false notes
         dex.tick(config, events)                # nightly contact pull, when enabled
+        search.tick(config, events, SEARCH_DB_PATH)   # incremental /query reindex
         time.sleep(POLL_SECONDS)
 
 

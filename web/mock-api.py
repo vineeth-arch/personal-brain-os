@@ -192,6 +192,7 @@ CONFIG = {
     "ntfy_url": "https://ntfy.sh",
     "ntfy_topic": "brain-cockpit",
     "providers": ["gemini-flash", "groq-llama-3.3-70b", "openrouter-free", "claude-haiku"],
+    "query_providers": ["openai-mini", "claude-haiku"],
     "keys": {"anthropic": True, "openai": not MODE_INT_DEGRADED},
     "enrichment": {
         "apify_token": not MODE_INT_DEGRADED,
@@ -251,6 +252,15 @@ PEOPLE = [] if MODE_EMPTY else [
 ]
 
 WARMTH_STAGES = ["identified", "researched", "engaging", "conversing", "warm", "ready"]
+
+QUERY_SOURCES = [
+    {"id": "20260101100001", "title": "The launch slips past October",
+     "file": "09-Decisions/2026-01-01-launch.md", "type": "decision",
+     "snippet": "… the vendor is the long pole …"},
+    {"id": "20260201090000", "title": "SQLite FTS5",
+     "file": "03-Learnings/2026-02-01-sqlite.md", "type": "learning",
+     "snippet": "… ships with the standard library build …"},
+]
 
 # Pass 8 — a scoreable open bet, one with no stated probability (resolves but
 # never plots), and enough resolved history for the chart to have a shape.
@@ -541,6 +551,9 @@ class Handler(BaseHTTPRequestHandler):
                 })
             if path == "/api/todos":
                 return self._send(200, {"items": TODO_ITEMS})
+            if path == "/api/query/status":
+                return self._send(200, {"indexed": 0 if MODE_EMPTY else 42,
+                                        "folders": ["01-Journal", "02-Musings", "wiki"]})
             if path == "/api/decisions":
                 return self._send(200, {"items": DECISIONS, "calibration": _calibration()})
             if path == "/api/people":
@@ -678,6 +691,34 @@ class Handler(BaseHTTPRequestHandler):
                     # no stated probability = nothing to score, and never a 0
                     brier=None if p is None else round((p / 100 - (1 if outcome else 0)) ** 2, 4))
                 return self._send(200, decision)
+            if path == "/api/query/reindex":
+                return self._send(200, {"ok": True, "indexed": 0 if MODE_EMPTY else 42,
+                                        "took_ms": 180})
+            if path == "/api/query":
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                question = (json.loads(raw or b"{}").get("question") or "").strip()
+                if not question:
+                    return self._send(400, {"error": {
+                        "what": "There was no question to answer.",
+                        "cause": "The request arrived with an empty question.",
+                        "todo": "Type what you want to know and ask again."}})
+                # "nothing" exercises the honest-refusal path — worth being able
+                # to see in the mock, since it's a first-class result
+                if MODE_EMPTY or "nothing" in question.lower():
+                    return self._send(200, {
+                        "found": False, "answer": None, "confident": False, "provider": None,
+                        "sources": [] if MODE_EMPTY else QUERY_SOURCES,
+                        "message": {
+                            "what": "I couldn't find a confident answer in your notes.",
+                            "cause": "Nothing in your notes matched those words.",
+                            "todo": "Try rephrasing the question, or open the notes below "
+                                    "and read them directly in Obsidian."}})
+                return self._send(200, {
+                    "found": True,
+                    "answer": "You gave it 70% at the time, and the vendor was the long "
+                              "pole [[20260101100001]].",
+                    "confident": True, "provider": "openai-mini",
+                    "sources": QUERY_SOURCES, "message": None})
             if path == "/api/people/sync":
                 return self._send(200, {
                     "ok": True, "created": 1, "updated": 2, "unchanged": 4, "skipped": 0,

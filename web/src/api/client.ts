@@ -10,6 +10,8 @@ import type {
   DexSyncResult,
   EngineName,
   ProcessGrade,
+  QueryAnswer,
+  ReindexResult,
   PeopleFilter,
   Person,
   PersonDetail,
@@ -239,6 +241,14 @@ export const api = {
       body: JSON.stringify(changes),
     }),
   syncDex: () => request<DexSyncResult>("/api/people/sync", { method: "POST" }),
+
+  // ---- /query (Pass 9) ----
+  ask: (question: string) =>
+    request<QueryAnswer>("/api/query", {
+      method: "POST",
+      body: JSON.stringify({ question }),
+    }),
+  reindex: () => request<ReindexResult>("/api/query/reindex", { method: "POST" }),
 
   // ---- Decision journal (Pass 8) ----
   decisions: () => request<DecisionsResponse>("/api/decisions"),

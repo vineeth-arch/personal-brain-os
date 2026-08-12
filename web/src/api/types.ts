@@ -175,6 +175,7 @@ export interface AppConfig {
   ntfy_url: string;
   ntfy_topic: string;
   providers: string[]; // classification chain, in fallback order (read-only)
+  query_providers: string[]; // /query chain; falls back to the classification one
   keys: { anthropic: boolean; openai: boolean };
   enrichment: {
     apify_token: boolean;
@@ -389,3 +390,34 @@ export interface DecisionsResponse {
 
 export const PROCESS_GRADES = [1, 2, 3, 4, 5] as const;
 export type ProcessGrade = (typeof PROCESS_GRADES)[number];
+
+// ---- /query (Pass 9) ----
+
+// A note the search returned. `file` is vault-relative, for the obsidian://
+// citation chip.
+export interface QuerySource {
+  id: string;
+  title: string;
+  file: string;
+  type: string;
+  snippet: string;
+}
+
+// `found: false` is a normal, useful answer — the model either had nothing to
+// go on or couldn't answer without citing something that wasn't retrieved. In
+// that case `message` carries the three-part explanation and `sources` still
+// holds whatever the search did find, so the reader can go look themselves.
+export interface QueryAnswer {
+  found: boolean;
+  answer: string | null;
+  confident: boolean;
+  provider: string | null;
+  sources: QuerySource[];
+  message: ErrorEnvelope | null;
+}
+
+export interface ReindexResult {
+  ok: boolean;
+  indexed: number;
+  took_ms: number;
+}

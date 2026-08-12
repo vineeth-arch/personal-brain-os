@@ -26,10 +26,13 @@ TIMEOUT = 10
 DEFAULT_CHAIN = ["gemini-flash", "groq-llama-3.3-70b", "openrouter-free", "claude-haiku"]
 FLOOR = "claude-haiku"
 
+OPENAI_MODEL = "gpt-4o-mini"        # the low-cost tier; one line to re-point
+
 ENV_KEYS = {
     "gemini-flash": "GEMINI_API_KEY",
     "groq-llama-3.3-70b": "GROQ_API_KEY",
     "openrouter-free": "OPENROUTER_API_KEY",
+    "openai-mini": "OPENAI_API_KEY",
     "claude-haiku": "ANTHROPIC_API_KEY",
 }
 
@@ -84,6 +87,11 @@ def _call_openrouter(prompt: str, key: str) -> str:
                               "meta-llama/llama-3.3-70b-instruct:free", prompt, key)
 
 
+def _call_openai_mini(prompt: str, key: str) -> str:
+    return _call_openai_style("https://api.openai.com/v1/chat/completions",
+                              OPENAI_MODEL, prompt, key)
+
+
 def _call_claude(prompt: str, key: str) -> str:
     import anthropic
     client = anthropic.Anthropic(api_key=key)
@@ -97,15 +105,22 @@ PROVIDERS = {
     "gemini-flash": _call_gemini,
     "groq-llama-3.3-70b": _call_groq,
     "openrouter-free": _call_openrouter,
+    "openai-mini": _call_openai_mini,
     "claude-haiku": _call_claude,
 }
 
 
 # ---- the chain ------------------------------------------------------------------
 
-def chain(config) -> list[str]:
-    configured = ((config.raw.get("classification") or {}).get("providers")
-                  if getattr(config, "raw", None) else None) or DEFAULT_CHAIN
+def chain(config, section: str = "classification") -> list[str]:
+    """The provider order for a job. `section` names the config block: 'query'
+    falls back to the classification chain when it isn't configured separately,
+    so a vault that never touches config.json still gets a working answerer."""
+    raw = getattr(config, "raw", None) or {}
+    configured = (raw.get(section) or {}).get("providers")
+    if not configured and section != "classification":
+        configured = (raw.get("classification") or {}).get("providers")
+    configured = configured or DEFAULT_CHAIN
     known = [p for p in configured if p in PROVIDERS and p != FLOOR]
     return known + [FLOOR]   # the floor stays last, always present
 
@@ -114,12 +129,13 @@ def _strip_fences(text: str) -> str:
     return re.sub(r"^```(?:json)?|```$", "", text.strip(), flags=re.MULTILINE).strip()
 
 
-def complete_json(prompt: str, config, validate_fn) -> tuple[dict | None, str | None, list[Attempt]]:
+def complete_json(prompt: str, config, validate_fn, section: str = "classification",
+                  ) -> tuple[dict | None, str | None, list[Attempt]]:
     """Run the chain until a provider returns schema-valid JSON. validate_fn
     returns an error string or None. Returns (data, provider, attempts);
     data None = every provider failed → the caller must go to needs-review."""
     attempts: list[Attempt] = []
-    for name in chain(config):
+    for name in chain(config, section):
         key = os.environ.get(ENV_KEYS[name], "")
         if not key:
             continue  # keyless providers are skipped silently — no attempt row
@@ -151,10 +167,11 @@ def complete_json(prompt: str, config, validate_fn) -> tuple[dict | None, str | 
     return None, None, attempts
 
 
-def complete_text(prompt: str, config) -> tuple[str | None, str | None, list[Attempt]]:
+def complete_text(prompt: str, config, section: str = "classification",
+                  ) -> tuple[str | None, str | None, list[Attempt]]:
     """Same chain, raw text out (the caller validates) — used by extraction."""
     attempts: list[Attempt] = []
-    for name in chain(config):
+    for name in chain(config, section):
         key = os.environ.get(ENV_KEYS[name], "")
         if not key:
             continue

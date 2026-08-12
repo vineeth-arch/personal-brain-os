@@ -100,3 +100,57 @@ def test_floor_stays_last():
     config = make_config(["claude-haiku", "gemini-flash"])   # user put the floor first
     assert llm.chain(config)[-1] == "claude-haiku"
     assert llm.chain(config).count("claude-haiku") == 1
+
+
+# ---- section chains + the OpenAI provider (Pass 9) ---------------------------------
+
+def cfg(raw):
+    return SimpleNamespace(raw=raw)
+
+
+def test_query_section_falls_back_to_the_classification_chain():
+    """A vault that never configures a query chain still gets a working
+    answerer — it borrows the one already proven for classification."""
+    config = cfg({"classification": {"providers": ["groq-llama-3.3-70b"]}})
+    assert llm.chain(config, "query") == ["groq-llama-3.3-70b", "claude-haiku"]
+
+
+def test_query_section_wins_when_it_is_configured():
+    config = cfg({"classification": {"providers": ["groq-llama-3.3-70b"]},
+                  "query": {"providers": ["openai-mini"]}})
+    assert llm.chain(config, "query") == ["openai-mini", "claude-haiku"]
+    # …and the classification chain is untouched by it
+    assert llm.chain(config) == ["groq-llama-3.3-70b", "claude-haiku"]
+
+
+def test_with_nothing_configured_both_sections_get_the_default_chain():
+    assert llm.chain(cfg({}), "query") == llm.DEFAULT_CHAIN
+    assert llm.chain(cfg({})) == llm.DEFAULT_CHAIN
+
+
+def test_the_floor_stays_last_even_when_listed_first():
+    config = cfg({"query": {"providers": ["claude-haiku", "openai-mini"]}})
+    assert llm.chain(config, "query") == ["openai-mini", "claude-haiku"]
+
+
+def test_unknown_provider_names_are_dropped():
+    config = cfg({"query": {"providers": ["openai-mini", "gpt-9-imaginary"]}})
+    assert llm.chain(config, "query") == ["openai-mini", "claude-haiku"]
+
+
+def test_openai_mini_posts_to_the_chat_completions_endpoint(monkeypatch):
+    seen = {}
+
+    def fake_post(url, payload, headers):
+        seen.update(url=url, payload=payload, headers=headers)
+        return {"choices": [{"message": {"content": "hello"}}]}
+
+    monkeypatch.setattr(llm, "_post_json", fake_post)
+    assert llm.PROVIDERS["openai-mini"]("a prompt", "sk-test") == "hello"
+    assert seen["url"] == "https://api.openai.com/v1/chat/completions"
+    assert seen["payload"]["model"] == llm.OPENAI_MODEL
+    assert seen["headers"]["Authorization"] == "Bearer sk-test"
+
+
+def test_openai_mini_reads_its_key_from_the_environment_only():
+    assert llm.ENV_KEYS["openai-mini"] == "OPENAI_API_KEY"

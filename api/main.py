@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from pipeline import (classify, config as config_mod, dex, enrich, intake, route as proute,
-                      todos as ptodos, watcher)
+                      search, todos as ptodos, watcher)
 from pipeline.errors import StageError
 
 from . import build_status, integrations, notes, selfcheck, service, watchdog
@@ -95,6 +95,10 @@ class InsightBody(BaseModel):
     text: str
 
 
+class QueryBody(BaseModel):
+    question: str
+
+
 class ResolveBody(BaseModel):
     outcome: bool
     process_grade: int
@@ -131,6 +135,7 @@ def create_app(root: Path | None = None) -> FastAPI:
     config_path = root / "config.json"
     db_path = root / watcher.DB_PATH
     heartbeat_path = root / watcher.HEARTBEAT_PATH
+    search_db_path = root / watcher.SEARCH_DB_PATH
 
     def load_config():
         try:
@@ -349,6 +354,28 @@ def create_app(root: Path | None = None) -> FastAPI:
                 400, "That change doesn't fit the vault's schema.",
                 str(e),
                 "Pick one of the values offered in the drawer and try again.")
+
+    # ---- /query (Pass 9) --------------------------------------------------------------
+    # 'reindex' is declared before the bare '/api/query' POST for clarity; the
+    # two paths don't collide, but the literal-before-parameter habit holds.
+
+    @app.post("/api/query/reindex")
+    def query_reindex(config=Depends(require_token)):
+        return search.reindex_timed(config.vault_path, search_db_path)
+
+    @app.post("/api/query")
+    def query(body: QueryBody, config=Depends(require_token)):
+        question = (body.question or "").strip()
+        if not question:
+            raise Envelope(
+                400, "There was no question to answer.",
+                "The request arrived with an empty question.",
+                "Type what you want to know and ask again.")
+        return search.answer(question, config, search_db_path)
+
+    @app.get("/api/query/status")
+    def query_status(config=Depends(require_token)):
+        return search.stats(search_db_path)
 
     # ---- decisions + calibration (Pass 8) -------------------------------------------
 

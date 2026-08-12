@@ -463,6 +463,68 @@ resolved`, `outcome`, `resolved` (today), `process_grade`, and `brier` =
 Grade outside 1–5 → 400 envelope; already resolved → **409** envelope (the first
 answer stands); unknown id → 404.
 
+## /query (Pass 9)
+
+Full-text search over the vault, then an answer built only from what was
+retrieved.
+
+**The index is a cache, not a store.** It lives in its own `search.db` (never
+`events.db`), every row is a copy of a vault file, and it can be rebuilt from
+the vault at any time — delete it and you lose a cache, not a sentence, which
+is the test CLAUDE.md §1 sets. Indexed: every folder in `route.TYPE_FOLDER`
+plus `wiki/`. **Not** indexed: `raw/` (user-managed), `_System/` (status
+artifacts), and `00-Inbox` (those notes haven't passed the review gate, so an
+answer must not lean on them). Content-bearing frontmatter (`claim`, `name`,
+`company`, `outside_view`, `statement`, `description`) is indexed alongside the
+body — a decision's claim is its substance. The watcher's `--loop` tick
+reindexes incrementally by mtime.
+
+### `POST /api/query`
+
+Request `{"question": "what did I decide about the launch"}`. Blank → 400
+envelope.
+
+```json
+{ "found": true,
+  "answer": "You gave it 70% [[20260101100001]].",
+  "confident": true,
+  "provider": "openai-mini",
+  "sources": [ { "id": "20260101100001", "title": "The launch slips past October",
+                 "file": "09-Decisions/2026-01-01-launch.md", "type": "decision",
+                 "snippet": "… the vendor is the long pole …" } ],
+  "message": null }
+```
+
+The model sees only the retrieved excerpts, must answer from them alone, and
+must cite ids inline as `[[id]]`. **A citation naming an id that wasn't
+retrieved invalidates the answer** — one stricter retry, then the request
+returns `found: false` with the three-part `message` and the retrieved
+`sources` so the reader can look themselves. `found: false` is a normal 200,
+not an error: it also covers "nothing matched" (no model is called at all) and
+the model reporting `confident: false`. Nothing is ever invented to fill a gap.
+
+The question is sanitised into quoted OR-joined terms before it reaches FTS5,
+so operators typed by a user (`AND`, `NEAR`, `*`, `col:`) are literal words and
+can never be a query injection.
+
+### `POST /api/query/reindex`
+
+Full rebuild — the user-facing repair action when search looks stale.
+`200 {"ok": true, "indexed": 128, "took_ms": 240}`
+
+### `GET /api/query/status`
+
+`{"indexed": 128, "folders": ["01-Journal", …]}` — what the index currently holds.
+
+### Model chain
+
+`config.json → query.providers` (default `["openai-mini", "claude-haiku"]`),
+falling back to `classification.providers` when unset, and always ending in the
+`claude-haiku` floor. **`openai-mini`** is a provider in the same router
+(`gpt-4o-mini` via the OpenAI chat-completions API, key from `OPENAI_API_KEY`,
+env-only), selectable in either chain. `GET /api/config` reports the resolved
+order as `query_providers`.
+
 ## Build tracker + model router (Pass B)
 
 ### `GET /api/build?fresh=1`

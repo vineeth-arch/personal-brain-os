@@ -8,6 +8,7 @@ import { Decisions } from "./screens/Decisions";
 import { Integrations } from "./screens/Integrations";
 import { People } from "./screens/People";
 import { Pipeline } from "./screens/Pipeline";
+import { Query } from "./screens/Query";
 import { Resources } from "./screens/Resources";
 import { Settings } from "./screens/Settings";
 import { Today } from "./screens/Today";
@@ -20,6 +21,7 @@ export type Route =
   | "pipeline"
   | "people"
   | "decisions"
+  | "query"
   | "integrations"
   | "settings"
   | "build";
@@ -29,7 +31,7 @@ function parseRoute(): Route {
   // hash query (#/resources?category=…), which must not defeat route matching.
   const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
   if (hash === "resources" || hash === "triage" || hash === "pipeline" ||
-      hash === "people" || hash === "decisions" || hash === "integrations" || hash === "settings" ||
+      hash === "people" || hash === "decisions" || hash === "query" || hash === "integrations" || hash === "settings" ||
       hash === "build")
     return hash;
   return "today";
@@ -76,6 +78,7 @@ export default function App() {
         {route === "pipeline" && <Pipeline />}
         {route === "people" && <People />}
         {route === "decisions" && <Decisions />}
+        {route === "query" && <Query />}
         {route === "integrations" && <Integrations />}
         {route === "settings" && <Settings />}
         {route === "build" && <Build />}

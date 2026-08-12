@@ -41,6 +41,13 @@
   "todos": {
     "digest": false
   },
+  "query": {
+    "k": 8,
+    "providers": [
+      "openai-mini",
+      "claude-haiku"
+    ]
+  },
   "dex": {
     "sync_daily": false,
     "base_url": "https://api.getdex.com/api/rest",
