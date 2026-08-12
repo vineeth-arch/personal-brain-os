@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import archive, classify as classify_mod, config as config_mod, enrich, errors, extract, intake, route, todos
 from .events import EventLog
-from .transcribe import Transcriber, build_transcriber
+from .transcribe import Transcriber, build_backup_transcriber, build_transcriber
 
 POLL_SECONDS = 5 * 60
 BATCH_SIZE = 25
@@ -33,6 +33,7 @@ RETRY_BASE_SECONDS = 2      # backoff: 2s, then 4s, between tries
 class Deps:
     """Injectable seams so the e2e test runs hermetically (no binaries, no API)."""
     transcriber: Transcriber
+    backup_transcriber: Transcriber | None = None   # covers for the primary; see _transcribe_with_retry
     classifier_fn: object = None      # llm_fn(transcript, config) -> dict; None = real Haiku
     extract_llm: object = None        # llm_fn(prompt, config) -> str; None = real Haiku
     enrich_fetch: object = None       # fetch(url, data=, timeout=) -> bytes; None = real HTTP
@@ -56,22 +57,46 @@ def _transcribe(item, deps: Deps) -> str:
     return deps.transcriber.transcribe(item.path)
 
 
-def _transcribe_with_retry(item, deps: Deps) -> str:
-    """Retry policy: transient failures (network, 5xx, rate limits) get
-    RETRY_ATTEMPTS tries with exponential backoff BEFORE quarantine; permanent
-    ones (bad audio, missing binary, bad key) escape on the first try.
-    Transcription runs before any vault write, so retrying it is side-effect
-    free — which is exactly why the retry lives here and not around the whole
-    file."""
+def _transcribe_with_retry(item, deps: Deps) -> tuple[str, str]:
+    """Returns (transcript, engine) — the engine name goes on the transcribe
+    event so the log always says who actually served each recording.
+
+    Retry policy: transient failures (network, 5xx, rate limits) get
+    RETRY_ATTEMPTS tries with exponential backoff; permanent ones (bad audio,
+    missing binary, bad key) give up on the first try. Only once the primary
+    engine is out of road does the backup engine get its one attempt — so a
+    cloud outage or a missing key costs a few seconds, not a lost recording.
+    Transcription runs before any vault write, so all of this is side-effect
+    free — which is exactly why it lives here and not around the whole file."""
+    if item.kind in ("text", "link"):
+        return _transcribe(item, deps), "none"      # nothing was transcribed
+
+    primary_error: errors.StageError | None = None
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
-            return _transcribe(item, deps)
+            return _transcribe(item, deps), deps.transcriber.name
         except errors.StageError as e:
             e.attempts = attempt
             if not e.transient or attempt == RETRY_ATTEMPTS:
-                raise
+                primary_error = e
+                break
             deps.sleep(RETRY_BASE_SECONDS * 2 ** (attempt - 1))
-    raise AssertionError("unreachable")
+    assert primary_error is not None
+
+    backup = deps.backup_transcriber
+    if backup is None:
+        raise primary_error
+    try:
+        return backup.transcribe(item.path), f"{backup.name}-fallback"
+    except errors.StageError as e:
+        merged = errors.StageError(
+            "Could not transcribe the recording with either engine.",
+            f"{primary_error.cause} The local {backup.name} backup was tried next "
+            f"and also failed: {e.cause}",
+            f"{primary_error.todo} If that doesn't apply, check the whisper.cpp "
+            "binary and model paths in config.json so the backup can cover.")
+        merged.attempts = primary_error.attempts
+        raise merged from e
 
 
 def process_file(item, config, events: EventLog, deps: Deps) -> Result:
@@ -81,8 +106,9 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
         # Stage 2 — transcribe (text skips inside _transcribe); transient
         # failures are retried with backoff before they can reach quarantine
         t0 = time.monotonic()
-        transcript = _transcribe_with_retry(item, deps)
-        events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000))
+        transcript, engine = _transcribe_with_retry(item, deps)
+        events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000),
+                   message=f"engine={engine}")
 
         if item.kind == "link":
             # A link IS a resource — no classify LLM, no review gate. Enrich
@@ -247,7 +273,8 @@ def main(argv=None) -> None:
 
     config = config_mod.load(args.config)
     events = EventLog(DB_PATH, config.vault_path)
-    deps = Deps(transcriber=build_transcriber(config))
+    deps = Deps(transcriber=build_transcriber(config),
+                backup_transcriber=build_backup_transcriber(config))
     try:
         if args.loop:
             run_loop(config, events, deps)

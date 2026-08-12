@@ -203,9 +203,13 @@ optional `url` (link cards only), optional `meta` (presentational
 
 **Health cards (7)** — server checks, all cached 60s:
 - `transcription-whispercpp` — binary + model paths exist & executable
-  (`transcribe.py`); `meta.model` = model filename; `meta.engine_active`.
+  (`transcribe.py`); `meta.model` = model filename; `meta.engine_active`;
+  `meta.is_backup` (true when the active engine is `openai`, i.e. this one is
+  standing by as the fallback — badge `Ready · backup`).
 - `transcription-openai` — `OPENAI_API_KEY` present (boolean) + cached test-call
-  result; `meta.engine_active`. (The engine toggle lives on this card.)
+  result; `meta.engine_active`. (The engine toggle lives on this card.) When it
+  is the active engine with no key but whisper.cpp is configured, the card is
+  `warn` with badge `No key · using whisper.cpp` — a covered gap, not an outage.
 - `claude` — `ANTHROPIC_API_KEY` present + cached test call.
 - `ntfy` — configured topic; `unknown` until a test push is sent.
 - `vault-sync` — `inbox_path` & `vault_path` reachable + `meta.minutes_since_activity`.
@@ -227,6 +231,19 @@ Body `{"engine": "whispercpp" | "openai"}`. Writes `transcription.engine` in
 unknown engine → `400` + envelope. The client shows the cloud caution
 ("Cloud transcription sends your audio to OpenAI…") and requires one confirm
 before switching to `openai`.
+
+**Engine fallback.** `openai` is the shipped default and whisper.cpp is its
+automatic backup: when the cloud engine can't answer (no key, a rejected
+request, or the network still down after the transient-retry budget), the
+watcher gives the local engine one attempt before anything is quarantined. The
+`transcribe` event message records who actually served —
+`engine=openai | engine=whispercpp | engine=whispercpp-fallback | engine=none`
+(`none` = a typed capture, which never reaches an engine). The fallback is
+one-directional: a vault on `whispercpp` never falls back to the cloud, so
+audio is never uploaded by a decision the app made on the owner's behalf.
+Consequently `engine: "openai"` **without** a key is accepted when whisper.cpp
+is configured, and refused (400 + envelope) only when neither engine could
+transcribe.
 
 ### `POST /api/integrations/ntfy/test`
 

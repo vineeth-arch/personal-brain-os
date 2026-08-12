@@ -1,5 +1,12 @@
-"""Stage 2 — transcribe. Transcriber interface + whisper.cpp (default) and
-OpenAI whisper-1 implementations. Text files skip this stage entirely."""
+"""Stage 2 — transcribe. Transcriber interface + whisper.cpp and OpenAI
+whisper-1 implementations. Text files skip this stage entirely.
+
+OpenAI is the shipped default engine and whisper.cpp is its automatic backup:
+when the cloud can't answer (no key, rejected request, network down after
+retries), the watcher falls back to the local engine so a recording is never
+lost to a transient cloud problem. The reverse does NOT happen — a vault owner
+who chose the local engine never has their audio silently sent to a cloud
+service. See build_backup_transcriber and watcher._transcribe_with_retry."""
 from __future__ import annotations
 
 import subprocess
@@ -14,6 +21,8 @@ from .errors import StageError
 
 
 class Transcriber(ABC):
+    name = "unknown"    # recorded on the transcribe event: which engine served
+
     @abstractmethod
     def transcribe(self, audio_path: Path) -> str:
         ...
@@ -39,6 +48,8 @@ def _ffmpeg_to_wav16k(audio_path: Path) -> Path:
 
 
 class WhisperCppTranscriber(Transcriber):
+    name = "whispercpp"
+
     def __init__(self, binary_path: str, model_path: str):
         self.binary = binary_path
         self.model = model_path
@@ -66,6 +77,8 @@ class WhisperCppTranscriber(Transcriber):
 
 class OpenAITranscriber(Transcriber):
     """whisper-1 via a stdlib multipart POST (no openai/requests dependency)."""
+
+    name = "openai"
 
     def __init__(self, api_key: str | None):
         self.api_key = api_key
@@ -129,4 +142,18 @@ class OpenAITranscriber(Transcriber):
 def build_transcriber(config) -> Transcriber:
     if config.engine == "openai":
         return OpenAITranscriber(config.openai_key)
+    return WhisperCppTranscriber(config.whispercpp_binary, config.whispercpp_model)
+
+
+def build_backup_transcriber(config) -> Transcriber | None:
+    """The engine that covers for the primary when it can't answer.
+
+    Only the cloud engine gets a backup, and only when whisper.cpp is actually
+    configured. Someone running the local engine on purpose never gets their
+    audio quietly uploaded as a 'fallback' — that would be a privacy decision
+    the app made on their behalf."""
+    if config.engine != "openai":
+        return None
+    if not config.whispercpp_binary or not config.whispercpp_model:
+        return None
     return WhisperCppTranscriber(config.whispercpp_binary, config.whispercpp_model)

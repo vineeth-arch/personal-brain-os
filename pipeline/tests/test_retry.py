@@ -1,6 +1,8 @@
 """Retry policy (Pass 5): transient failures back off and retry before
-quarantine; permanent ones quarantine immediately. All failures are simulated
-transcribers — no network, no binaries; the backoff sleep is a recorder."""
+quarantine; permanent ones quarantine immediately — and once the primary engine
+is out of road, the backup engine gets one attempt before anything is
+quarantined. All failures are simulated transcribers — no network, no binaries;
+the backoff sleep is a recorder."""
 from __future__ import annotations
 
 import io
@@ -109,6 +111,99 @@ def test_permanent_quarantines_immediately(env):
     (row,) = _events_rows(events, "failed")
     assert "kind=permanent attempts=1" in row[2]
     assert "doesn't fix itself" in row[3]
+
+
+class Working(Transcriber):
+    """Stands in for a healthy engine."""
+
+    name = "whispercpp"
+
+    def __init__(self):
+        self.calls = 0
+
+    def transcribe(self, audio_path: Path) -> str:
+        self.calls += 1
+        return "#journal the backup engine picked this up"
+
+
+def test_backup_serves_when_primary_fails_permanently(env):
+    config, events, failed = env
+    primary, backup = AlwaysFailing(transient=False), Working()
+    deps = watcher.Deps(transcriber=primary, backup_transcriber=backup, sleep=lambda s: None)
+    results = watcher.run_once(config, events, deps)
+    assert results[0].status != "failed"
+    assert primary.calls == 1 and backup.calls == 1   # no retry on the primary, one on the backup
+    assert list(failed.iterdir()) == []
+    (row,) = [r for r in _events_rows(events) if r[0] == "transcribe"]
+    assert row[2] == "engine=whispercpp-fallback"     # the log says who actually served
+
+
+def test_backup_serves_after_transient_retries_exhausted(env):
+    config, events, failed = env
+    primary, backup = AlwaysFailing(transient=True), Working()
+    slept = []
+    deps = watcher.Deps(transcriber=primary, backup_transcriber=backup, sleep=slept.append)
+    results = watcher.run_once(config, events, deps)
+    assert results[0].status != "failed"
+    assert primary.calls == 3 and slept == [2, 4]     # full retry budget spent first
+    assert backup.calls == 1
+
+
+def test_both_engines_failing_quarantines_with_one_merged_error(env):
+    config, events, failed = env
+    primary, backup = AlwaysFailing(transient=False), AlwaysFailing(transient=False)
+    deps = watcher.Deps(transcriber=primary, backup_transcriber=backup, sleep=lambda s: None)
+    results = watcher.run_once(config, events, deps)
+    assert results[0].status == "failed"
+    assert len(list(failed.iterdir())) == 1
+    (row,) = _events_rows(events, "failed")
+    assert "either engine" in row[3]
+    assert "backup was tried next" in row[3]
+
+
+def test_text_captures_never_reach_either_engine(env, tmp_path):
+    config, events, failed = env
+    for f in config.inbox_path.iterdir():
+        f.unlink()
+    (config.inbox_path / "2026-07-03-0900 note.txt").write_text("#journal typed, not spoken")
+    primary, backup = AlwaysFailing(transient=False), AlwaysFailing(transient=False)
+    deps = watcher.Deps(transcriber=primary, backup_transcriber=backup, sleep=lambda s: None)
+    results = watcher.run_once(config, events, deps)
+    assert results[0].status != "failed"
+    assert primary.calls == 0 and backup.calls == 0
+    (row,) = [r for r in _events_rows(events) if r[0] == "transcribe"]
+    assert row[2] == "engine=none"
+
+
+def test_no_backup_configured_behaves_exactly_as_before(env):
+    config, events, failed = env
+    primary = AlwaysFailing(transient=False)
+    deps = watcher.Deps(transcriber=primary, sleep=lambda s: None)
+    results = watcher.run_once(config, events, deps)
+    assert results[0].status == "failed"
+    assert primary.calls == 1
+    (row,) = _events_rows(events, "failed")
+    assert "kind=permanent attempts=1" in row[2]
+    assert "either engine" not in row[3]
+
+
+def test_backup_builder_only_covers_the_cloud_engine(tmp_path):
+    """A local-first vault never gets a silent cloud fallback."""
+    from pipeline.transcribe import build_backup_transcriber
+    binary, model = tmp_path / "whisper-cli", tmp_path / "model.bin"
+    binary.write_text("#!/bin/sh")
+    model.write_bytes(b"ggml")
+    cloud = Config(vault_path=tmp_path, inbox_path=tmp_path, archive_path=tmp_path,
+                   failed_path=tmp_path, engine="openai",
+                   whispercpp_binary=str(binary), whispercpp_model=str(model))
+    local = Config(vault_path=tmp_path, inbox_path=tmp_path, archive_path=tmp_path,
+                   failed_path=tmp_path, engine="whispercpp",
+                   whispercpp_binary=str(binary), whispercpp_model=str(model))
+    unconfigured = Config(vault_path=tmp_path, inbox_path=tmp_path, archive_path=tmp_path,
+                          failed_path=tmp_path, engine="openai")
+    assert build_backup_transcriber(cloud) is not None
+    assert build_backup_transcriber(local) is None          # never uploads on their behalf
+    assert build_backup_transcriber(unconfigured) is None   # nothing to fall back to
 
 
 def test_openai_error_classification(monkeypatch, tmp_path):

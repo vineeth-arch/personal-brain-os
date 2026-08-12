@@ -46,6 +46,13 @@ class ConfigError(Exception):
         super().__init__(what)
 
 
+def _whispercpp_configured(config) -> bool:
+    """Both paths present and on disk — the condition for whisper.cpp to serve
+    as the automatic backup (pipeline.transcribe.build_backup_transcriber)."""
+    binary, model = config.whispercpp_binary, config.whispercpp_model
+    return bool(binary and model and Path(binary).exists() and Path(model).exists())
+
+
 # ---- config read / validated write -------------------------------------------
 
 def safe_config(config) -> dict:
@@ -75,11 +82,16 @@ def write_config(config_path: Path, config, changes: dict) -> None:
             "The request didn't name a known engine (whispercpp or openai).",
             "Pick one of the two engines and try again.",
         )
-    if engine == "openai" and not config.openai_key:
+    # Cloud-first is allowed without a key ONLY when the local engine is
+    # configured to cover for it — the fallback is what makes that safe. With
+    # neither, captures would have nowhere to go, so it stays a hard refusal.
+    if engine == "openai" and not config.openai_key and not _whispercpp_configured(config):
         raise ConfigError(
             "Can't switch to cloud transcription.",
-            "OPENAI_API_KEY is not set on the server, so the OpenAI engine can't run.",
-            "export OPENAI_API_KEY=... in the server's shell, or stay on whispercpp.",
+            "OPENAI_API_KEY isn't set on the server and there's no local whisper.cpp "
+            "fallback configured, so recordings would have no engine at all.",
+            "export OPENAI_API_KEY=... in the server's shell, or fill in the "
+            "transcription.whispercpp paths so the local backup can cover.",
         )
     threshold = changes.get("confidence_threshold")
     if threshold is not None and not (0.0 <= float(threshold) <= 1.0):
@@ -114,13 +126,16 @@ def write_config(config_path: Path, config, changes: dict) -> None:
 
 def _check_whisper(config) -> dict:
     active = config.engine == "whispercpp"
+    is_backup = config.engine == "openai"      # local engine covers for the cloud
     binary = Path(config.whispercpp_binary) if config.whispercpp_binary else None
     model = Path(config.whispercpp_model) if config.whispercpp_model else None
     card = {
         "id": "transcription-whispercpp", "group": "health",
         "name": "Transcription — whisper.cpp", "icon": "waveform",
-        "description": "Turns your voice memos into text, all on this machine.",
-        "meta": {"engine_active": active, "model": model.name if model else ""},
+        "description": "Turns your voice memos into text, all on this machine. "
+                       "It's also the automatic backup when OpenAI can't answer.",
+        "meta": {"engine_active": active, "is_backup": is_backup,
+                 "model": model.name if model else ""},
     }
     problems = []
     if not binary or not binary.exists():
@@ -132,7 +147,9 @@ def _check_whisper(config) -> dict:
     if problems:
         card.update(
             status="problem", badge="Not ready",
-            detail="Local transcription can't run yet.",
+            detail="Local transcription can't run yet."
+                   + (" Nothing is covering for OpenAI if it can't answer."
+                      if is_backup else ""),
             error={
                 "what": "Local transcription can't run.",
                 "cause": f"In config.json, {' and '.join(problems)}.",
@@ -141,9 +158,11 @@ def _check_whisper(config) -> dict:
     else:
         card.update(
             status="ok",
-            badge="Ready · active" if active else "Ready",
+            badge="Ready · active" if active else ("Ready · backup" if is_backup else "Ready"),
             detail="Local transcription is ready"
-                   + (" and is the engine in use." if active else " (not the active engine)."),
+                   + (" and is the engine in use." if active else
+                      " and covers for OpenAI automatically if the cloud can't answer."
+                      if is_backup else " (not the active engine)."),
         )
     return card
 
@@ -165,12 +184,26 @@ def _test_call_openai(key: str) -> bool:
 
 def _check_key_service(card_id: str, name: str, icon: str, description: str,
                        key: str | None, active: bool | None, fresh: bool,
-                       test_fn, state: dict) -> dict:
+                       test_fn, state: dict, covered_by: str = "") -> dict:
+    """`covered_by` names the engine that takes over when this one has no key —
+    the card then reports a covered gap rather than a broken pipeline."""
     card = {"id": card_id, "group": "health", "name": name, "icon": icon,
             "description": description, "meta": {"key_present": bool(key)}}
     if active is not None:
         card["meta"]["engine_active"] = active
     if not key:
+        if active and covered_by:
+            card.update(
+                status="warn", badge=f"No key · using {covered_by}",
+                detail=f"No key is set, so recordings are going to {covered_by} instead.",
+                error={
+                    "what": f"{name} isn't running — {covered_by} is doing the work.",
+                    "cause": "The environment variable isn't set in the server's shell, "
+                             "so the cloud engine can't be used.",
+                    "todo": "export the key in the shell that runs the API to use the "
+                            "cloud engine, or leave it — the local backup handles it.",
+                })
+            return card
         card.update(
             status="warn" if active else "unknown", badge="No key",
             detail="The key isn't set in the server's environment.",
@@ -387,8 +420,10 @@ def build_payload(config, heartbeat_path: Path, fresh: bool, state: dict) -> dic
         _check_whisper(config),
         _check_key_service(
             "transcription-openai", "Transcription — OpenAI", "cloud",
-            "Cloud fallback that sends audio to OpenAI to transcribe.",
-            config.openai_key, config.engine == "openai", fresh, _test_call_openai, state),
+            "Primary transcription — sends audio to OpenAI. If the key is missing or "
+            "OpenAI can't be reached, recordings fall back to local whisper.cpp.",
+            config.openai_key, config.engine == "openai", fresh, _test_call_openai, state,
+            covered_by="whisper.cpp" if _whispercpp_configured(config) else ""),
         _check_key_service(
             "claude", "Claude API", "brain",
             "Classifies untagged captures into the right note type.",

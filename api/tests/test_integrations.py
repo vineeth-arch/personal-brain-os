@@ -48,6 +48,47 @@ def test_put_config_openai_with_key_switches_live(env, monkeypatch):
         assert openai_card["meta"]["engine_active"] is True
 
 
+def _configure_whispercpp(root):
+    """Point config.json at real files so whisper.cpp counts as a live backup."""
+    binary, model = root / "whisper-cli", root / "ggml-base.en.bin"
+    binary.write_text("#!/bin/sh\n")
+    binary.chmod(0o755)
+    model.write_bytes(b"ggml")
+    config = json.loads((root / "config.json").read_text())
+    config["transcription"]["whispercpp"] = {"binary_path": str(binary), "model_path": str(model)}
+    (root / "config.json").write_text(json.dumps(config))
+
+
+def test_cloud_engine_allowed_without_key_when_local_backup_covers(env):
+    """Cloud-first with no key is a covered gap, not a broken pipeline — the
+    local engine transcribes and the card says so."""
+    root, _, _, _ = env
+    _configure_whispercpp(root)
+    with Server(root) as s:
+        code, body = s.req("PUT", "/api/config", {"engine": "openai"})
+        assert code == 200 and body["engine"] == "openai"
+        _, body = s.req("GET", "/api/integrations")
+        openai_card = next(c for c in body["cards"] if c["id"] == "transcription-openai")
+        assert openai_card["status"] == "warn"
+        assert openai_card["badge"] == "No key · using whisper.cpp"
+        assert set(openai_card["error"]) == {"what", "cause", "todo"}
+        whisper_card = next(c for c in body["cards"] if c["id"] == "transcription-whispercpp")
+        assert whisper_card["status"] == "ok" and whisper_card["badge"] == "Ready · backup"
+        assert whisper_card["meta"]["is_backup"] is True
+
+
+def test_cloud_engine_refused_when_nothing_can_transcribe(env):
+    """No key and no local backup — the only case that stays a hard refusal."""
+    root, _, _, _ = env
+    with Server(root) as s:
+        code, body = s.req("PUT", "/api/config", {"engine": "openai"})
+        assert code == 400
+        assert set(body["error"]) == {"what", "cause", "todo"}
+        assert "no local whisper.cpp fallback" in body["error"]["cause"]
+        assert json.loads((root / "config.json").read_text())["transcription"]["engine"] \
+            == "whispercpp"     # the refusal left config untouched
+
+
 def test_ntfy_test_send_success_mocked(env, monkeypatch):
     root, _, _, _ = env
     sent = []
