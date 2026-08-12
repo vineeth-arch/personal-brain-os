@@ -337,18 +337,31 @@ of `/api/status`) so the 20-second status poll never shells out to git.
 ## Todos (Pass T)
 
 Todos are Obsidian Tasks-compatible checkbox lines in `06-Todos/<date>.md`:
-`- [ ] task (from [[<note-id>]]) 📅 2026-07-05 ⏰ 14:00 ^<block-id>` — markers
-only when known; a ⏰ time means a reminder fires at that time (once, via the
-watcher's --loop tick). Completing flips `- [ ]` to `- [x]` in place; lines are
-never deleted. All date ranges are **Asia/Kolkata**.
+`- [ ] task (from [[<note-id>]]) 📅 2026-07-05 ⏰ 14:00 🔁 every week ^<block-id>`
+— markers only when known; a ⏰ time means a reminder fires at that time (once,
+via the watcher's --loop tick). Completing flips `- [ ]` to `- [x]` in place;
+lines are never deleted. All date ranges are **Asia/Kolkata**.
+
+**Recurrence (🔁).** Rules: `every day` · `every week` · `every month` ·
+`every N days` (also `every N weeks/months`). Completing a 🔁 line **spawns its
+next occurrence** — a new unchecked line in `06-Todos/<next-due>.md` with the
+date advanced, a fresh block id `<base>-r<N>`, and the ⏰ time, rule and
+provenance carried over; the completed line stays as the record. Month steps
+clamp to the end of the target month (Jan 31 → Feb 28/29). Reopening deletes
+nothing, and a duplicate guard means re-completing won't write the same
+occurrence twice. A rule the app can't parse ("every other Tuesday") leaves the
+todo perfectly valid — it just doesn't repeat. The syntax matches the Obsidian
+Tasks plugin, so ticking the box in Obsidian yields the same result there.
 
 ### `GET /api/todos?range=today|tomorrow|week|overdue`
 
 ```json
 { "items": [ { "id": "20260703140000-1", "task": "call the dentist",
   "due": "2026-07-05", "time": "14:00", "done": false, "overdue": false,
-  "file": "06-Todos/2026-07-03.md" } ] }
+  "recurrence": null, "file": "06-Todos/2026-07-03.md" } ] }
 ```
+
+`recurrence` is the raw 🔁 rule text (`"every week"`) or `null`.
 
 Only lines with a due date and a block id appear (undated todos live in the
 daily note). `week` = the day after tomorrow through +7 days. Unknown range →
@@ -357,8 +370,11 @@ daily note). `week` = the day after tomorrow through +7 days. Unknown range →
 ### `POST /api/todos/{block_id}/toggle`
 
 Flips the checkbox in place and git-commits the vault
-(`api: todo <id> marked done|open`). `200 {"ok": true, "done": true}`;
-unknown id → 404 envelope.
+(`api: todo <id> marked done|open`, with `(+ next occurrence <date>)` appended
+when one was spawned — one commit covers both lines).
+
+`200 {"ok": true, "done": true, "spawned": {"id": "…-r1", "due": "2026-07-12"}}`
+— `spawned` is `null` for a non-recurring todo. Unknown id → 404 envelope.
 
 ## Relationship OS (Pass 7)
 

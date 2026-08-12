@@ -23,7 +23,6 @@
 - Pass L: YouTube transcript language selection beyond lang=en (auto-detect / multi-lang).
 - Pass L: richer web enrichment (readability extraction / oEmbed discovery) beyond <title>+og:image.
 - Pass B: surface provider stats as a small sparkline over time, not just cumulative counts.
-- Pass T: recurring todos (weekly/daily) — current model is one-shot due dates only.
 - Pass 10: a live `url_ok` probe type for the reachable-from-internet milestone (GET deploy.public_url from the server) — manual config-field check for now, per the pass spec.
 - Pass 6: resource rating (schema `rating` 1–7) capture + display in the drawer — status lifecycle and insight shipped, rating not surfaced this pass.
 - Pass 6: real cover images via `attachments/` (book covers / posters) — seed uses remote picsum placeholders; the card already falls back to a category-initial tile.
@@ -34,3 +33,7 @@
 - Pass 7: morning engine — rank "who to reconnect with" + ntfy push + one-tap drafts in your voice (drafts only; nothing auto-sends, CLAUDE.md §4).
 - Pass 7: warm-up engine — PDL firmographic enrichment + dossiers advancing the warmth ladder; the `warmth_stage` field is set by hand for now.
 - Pass 7: a manual "park this relationship" override — status is computed from cadence today, so parking someone means widening their cadence rather than hand-setting dormant.
+- Pass 8: retroactive probability entry when resolving — deliberately excluded (a hindsight number would corrupt the calibration record); revisit only if the owner wants a separately-labelled "estimated after the fact" series.
+- Pass 9: semantic/vector retrieval alongside FTS5 keyword search — would need an embedding dependency, so it stays a keyword index for now.
+- Pass 9: multi-turn /query (follow-up questions that keep the retrieved context) — single-turn only today.
+- Deferred sweep: recurrence rules beyond every day/week/month/N-days (e.g. "every other Tuesday", "every weekday") — such a line stays valid today, it just doesn't repeat.

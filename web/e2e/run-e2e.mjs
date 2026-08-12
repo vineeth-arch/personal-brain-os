@@ -86,6 +86,15 @@ function seedDecisions(vault) {
     decisionNote("20260101100002", "We hire a second engineer in Q3", null));
 }
 
+function seedRecurringTodo(vault) {
+  const folder = path.join(vault, "06-Todos");
+  fs.mkdirSync(folder, { recursive: true });
+  const today = new Date().toISOString().slice(0, 10);
+  fs.writeFileSync(path.join(folder, `${today}.md`),
+    `# Todos — ${today}\n\n- [ ] water the plants (from [[20260701140000]]) ` +
+    `📅 ${today} 🔁 every week ^20260701140000-1\n`);
+}
+
 function seedPeople(vault) {
   const folder = path.join(vault, "07-People");
   // one comfortably inside its cadence; one past it but not yet at the 3x
@@ -106,6 +115,7 @@ function makeRoot() {
   const vault = path.join(root, "vault");
   seedPeople(vault);
   seedDecisions(vault);
+  seedRecurringTodo(vault);
   execSync(`git -C "${vault}" init -q && git -C "${vault}" config user.email t@t && git -C "${vault}" config user.name t`);
   fs.writeFileSync(
     path.join(root, "config.json"),
@@ -298,6 +308,26 @@ try {
   // the question is shareable via the hash
   assert.ok(page.url().includes("q=what%20did%20I%20decide"), `q= not in ${page.url()}`);
   console.log("✓ The question survives in the URL");
+
+  // ---- 8. Recurring todos (deferred sweep) ------------------------------------
+  await page.goto(`${BASE}/#/today`);
+  const plants = page.locator("li", { hasText: "water the plants" });
+  await plants.getByText("🔁 week").waitFor();
+  console.log("✓ Today marks a recurring todo with its rule");
+
+  await plants.getByRole("button", { name: /Mark done/ }).click();
+  await page.getByText(/^Done\. Back on /).waitFor();
+  console.log("✓ Completing it says when it comes back");
+
+  const nextWeek = new Date();
+  nextWeek.setDate(nextWeek.getDate() + 7);
+  const nextFile = path.join(root, "vault", "06-Todos",
+    `${nextWeek.toISOString().slice(0, 10)}.md`);
+  const spawnedText = fs.readFileSync(nextFile, "utf8");
+  assert.ok(spawnedText.includes("- [ ] water the plants"), "next occurrence not written");
+  assert.ok(spawnedText.includes("🔁 every week"), "the rule did not carry over");
+  assert.ok(spawnedText.includes("^20260701140000-1-r1"), "the occurrence has no fresh id");
+  console.log("✓ The next occurrence is on disk with a fresh id and the rule intact");
 
   console.log("\nE2E: all checks passed.");
 } catch (err) {

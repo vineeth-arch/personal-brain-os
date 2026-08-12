@@ -436,3 +436,45 @@ def test_config_has_enrichment_block(env):
         assert body["enrichment"]["youtube_keyless"] is True
         assert body["enrichment"]["apify_token"] is False   # no env token in the test
         assert body["enrichment"]["apify_actor_set"] is False
+
+
+def test_toggling_a_recurring_todo_spawns_the_next_occurrence(env):
+    """Deferred sweep: completing a 🔁 line writes its next occurrence and both
+    edits land in one commit."""
+    from datetime import timedelta
+
+    from pipeline import todos as ptodos
+
+    root, vault, _, _ = env
+    today = ptodos.today_kolkata()
+    next_week = (today + timedelta(days=7)).isoformat()
+    (vault / "06-Todos").mkdir(parents=True, exist_ok=True)
+    (vault / "06-Todos" / f"{today.isoformat()}.md").write_text(
+        f"# Todos — {today.isoformat()}\n\n"
+        f"- [ ] water the plants (from [[20260701140000]]) 📅 {today.isoformat()} ⏰ 09:00 "
+        "🔁 every week ^20260701140000-1\n")
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/todos/20260701140000-1/toggle")
+        assert code == 200 and body["done"] is True
+        assert body["spawned"] == {"id": "20260701140000-1-r1", "due": next_week}
+
+        _, listed = s.req("GET", "/api/todos?range=week")
+        # the surviving occurrence carries its rule so the UI can mark it
+        spawned = [i for i in listed["items"] if i["id"] == "20260701140000-1-r1"]
+        assert spawned and spawned[0]["recurrence"] == "every week"
+        assert spawned[0]["done"] is False and spawned[0]["due"] == next_week
+
+    logmsg = subprocess.run(["git", "-C", str(vault), "log", "-1", "--format=%s"],
+                            capture_output=True, text=True).stdout.strip()
+    assert logmsg == ("api: todo 20260701140000-1 marked done "
+                      f"(+ next occurrence {next_week})")
+
+
+def test_a_plain_todo_toggle_reports_no_spawn(env):
+    root, vault, _, _ = env
+    (vault / "06-Todos").mkdir(parents=True, exist_ok=True)
+    (vault / "06-Todos" / "2026-07-05.md").write_text(
+        "# Todos — 2026-07-05\n\n- [ ] one-off 📅 2026-07-05 ^one-1\n")
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/todos/one-1/toggle")
+        assert code == 200 and body["done"] is True and body["spawned"] is None

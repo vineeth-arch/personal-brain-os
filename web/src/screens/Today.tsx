@@ -179,15 +179,20 @@ function AgendaRow({
         >
           {item.task}
         </p>
-        {(item.overdue || item.time) && (
-          <p className="text-subtle text-xs">
+        {(item.overdue || item.time || item.recurrence) && (
+          <p className="text-subtle flex flex-wrap items-center gap-x-2 text-xs">
             {item.overdue && !item.done ? (
               // overdue is marked tonally, never with the accent
               <span className="bg-cal-muted text-emphasis rounded px-1.5 py-0.5 font-bold">
                 Overdue · {item.due ? fmtDay(item.due) : ""}
               </span>
             ) : (
-              item.time && `at ${item.time}`
+              item.time && <span>at {item.time}</span>
+            )}
+            {item.recurrence && (
+              <span className="bg-subtle text-subtle rounded px-1.5 py-0.5 font-bold">
+                🔁 {item.recurrence.replace(/^every /, "")}
+              </span>
             )}
           </p>
         )}
@@ -212,8 +217,16 @@ function Agenda() {
     const next = !item.done;
     setFlipped((f) => ({ ...f, [item.id]: next })); // optimistic
     try {
-      await api.toggleTodo(item.id);
-      toast(next ? "Done." : "Reopened.");
+      const result = await api.toggleTodo(item.id);
+      // a recurring todo says when it comes back, so completing it doesn't
+      // feel like the task disappeared
+      toast(
+        result.spawned
+          ? `Done. Back on ${fmtDay(result.spawned.due)}.`
+          : next
+            ? "Done."
+            : "Reopened.",
+      );
       refetch();
     } catch (err) {
       setFlipped((f) => ({ ...f, [item.id]: item.done }));

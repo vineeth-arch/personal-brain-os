@@ -265,6 +265,7 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "time": t.time,
                 "done": t.done,
                 "overdue": ptodos.in_range(t, "overdue"),
+                "recurrence": t.recurrence,
                 "file": str(t.file.relative_to(config.vault_path)),
             }
             for t in ptodos.scan(config.vault_path)
@@ -276,16 +277,23 @@ def create_app(root: Path | None = None) -> FastAPI:
     @app.post("/api/todos/{block_id}/toggle")
     def todos_toggle(block_id: str, config=Depends(require_token)):
         try:
-            done = ptodos.toggle(config.vault_path, block_id)
+            result = ptodos.toggle(config.vault_path, block_id)
         except LookupError:
             raise Envelope(
                 404, "That todo isn't in the daily notes anymore.",
                 "Its line was edited or removed in Obsidian, or the id is unknown.",
                 "Refresh the agenda.")
-        notes.git_commit_vault(
-            config.vault_path,
-            f"api: todo {block_id} marked {'done' if done else 'open'}")
-        return {"ok": True, "done": done}
+        message = f"api: todo {block_id} marked {'done' if result.done else 'open'}"
+        if result.spawned_due:
+            message += f" (+ next occurrence {result.spawned_due})"
+        # one commit covers both lines — completing and repeating are one act
+        notes.git_commit_vault(config.vault_path, message)
+        return {
+            "ok": True,
+            "done": result.done,
+            "spawned": ({"id": result.spawned_block_id, "due": result.spawned_due}
+                        if result.spawned_block_id else None),
+        }
 
     # ---- people (Pass 7) ------------------------------------------------------------
     # 'sync' is declared before '/{note_id}' so the literal path wins.

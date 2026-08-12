@@ -20,6 +20,7 @@ import type {
   SelfCheckResponse,
   TodoItem,
   TodoRange,
+  ToggleResult,
   ErrorEnvelope,
   EventRow,
   FailedItem,
@@ -191,7 +192,7 @@ export const api = {
   ntfyTest: () => request<{ ok: boolean }>("/api/integrations/ntfy/test", { method: "POST" }),
   todos: (range: TodoRange) => request<{ items: TodoItem[] }>(`/api/todos?range=${range}`),
   toggleTodo: (id: string) =>
-    request<{ ok: boolean; done: boolean }>(`/api/todos/${id}/toggle`, { method: "POST" }),
+    request<ToggleResult>(`/api/todos/${id}/toggle`, { method: "POST" }),
   build: (fresh = false) => request<BuildResponse>(`/api/build${fresh ? "?fresh=1" : ""}`),
   providers: () => request<{ providers: ProviderStat[] }>("/api/providers"),
   config: () => request<AppConfig>("/api/config"),

@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -92,10 +92,11 @@ def test_toggle_round_trip(vault):
                     CAPTURED, config, llm_fn=resolving_llm)
     [todo] = [t for t in todos.scan(config.vault_path) if t.block_id]
     assert not todo.done
-    assert todos.toggle(config.vault_path, todo.block_id) is True
+    result = todos.toggle(config.vault_path, todo.block_id)
+    assert result.done is True and result.spawned_block_id is None   # not recurring
     line = (todo.file).read_text().splitlines()[todo.line_no]
     assert line.startswith("- [x]") and f"^{todo.block_id}" in line  # edited in place
-    assert todos.toggle(config.vault_path, todo.block_id) is False   # round-trip back
+    assert todos.toggle(config.vault_path, todo.block_id).done is False   # round-trip back
     assert "- [ ]" in todo.file.read_text()
     with pytest.raises(LookupError):
         todos.toggle(config.vault_path, "nope")
@@ -193,3 +194,146 @@ def test_digest_silent_when_nothing_happened(vault, tmp_path, monkeypatch):
     assert pushes == []
     assert events.reminder_fired("digest-2026-07-02")
     events.close()
+
+
+# ---- recurring todos (deferred sweep) ------------------------------------------
+
+def _write_todo(vault, day, line):
+    folder = vault / todos.TODOS_FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{day}.md"
+    with path.open("a") as f:
+        if not path.exists() or path.stat().st_size == 0:
+            f.write(f"# Todos — {day}\n\n")
+        f.write(line + "\n")
+    return path
+
+
+def test_format_and_parse_round_trip_with_and_without_a_rule():
+    plain = todos.format_line("water the plants", "20260701140000", 1, "2026-07-05", "09:00")
+    assert "🔁" not in plain
+    assert todos.parse_line(plain)[5] is None
+
+    weekly = todos.format_line("water the plants", "20260701140000", 1,
+                               "2026-07-05", "09:00", "every week")
+    assert "🔁 every week" in weekly
+    task, done, due, time, block, recur = todos.parse_line(weekly)
+    assert (task, done, due, time, block, recur) == (
+        "water the plants", False, "2026-07-05", "09:00", "20260701140000-1", "every week")
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("every day", (1, "day")),
+    ("every week", (1, "week")),
+    ("every month", (1, "month")),
+    ("every 3 days", (3, "day")),
+    ("every 2 weeks", (2, "week")),
+    ("EVERY WEEK", (1, "week")),
+])
+def test_parse_recurrence(text, expected):
+    rule = todos.parse_recurrence(text)
+    assert (rule.n, rule.unit) == expected
+
+
+@pytest.mark.parametrize("text", [
+    None, "", "every other Tuesday", "weekly", "every fortnight", "every 0 days",
+])
+def test_an_unknown_rule_is_inert_rather_than_broken(text):
+    """A hand-typed rule this module can't advance must leave the todo working —
+    it just doesn't repeat."""
+    assert todos.parse_recurrence(text) is None
+
+
+def test_an_unparseable_rule_still_leaves_a_valid_todo_line():
+    line = "- [ ] water the plants 📅 2026-07-05 🔁 every other Tuesday ^abc-1"
+    parsed = todos.parse_line(line)
+    assert parsed is not None
+    assert parsed[0] == "water the plants" and parsed[4] == "abc-1"
+    assert todos.parse_recurrence(parsed[5]) is None
+
+
+@pytest.mark.parametrize("start,rule,expected", [
+    ("2026-07-05", "every day", "2026-07-06"),
+    ("2026-07-05", "every 3 days", "2026-07-08"),
+    ("2026-07-05", "every week", "2026-07-12"),
+    ("2026-07-05", "every 2 weeks", "2026-07-19"),
+    ("2026-07-05", "every month", "2026-08-05"),
+    # month-end clamps rather than overflowing into the next month
+    ("2026-01-31", "every month", "2026-02-28"),
+    ("2028-01-31", "every month", "2028-02-29"),   # leap year
+    ("2026-03-31", "every month", "2026-04-30"),
+    ("2026-12-15", "every month", "2027-01-15"),   # year rollover
+])
+def test_next_due(start, rule, expected):
+    assert todos.next_due(date.fromisoformat(start),
+                          todos.parse_recurrence(rule)).isoformat() == expected
+
+
+def test_completing_a_recurring_todo_spawns_the_next_occurrence(tmp_path):
+    vault = tmp_path / "vault"
+    _write_todo(vault, "2026-07-05",
+                "- [ ] water the plants (from [[20260701140000]]) 📅 2026-07-05 "
+                "⏰ 09:00 🔁 every week ^20260701140000-1")
+
+    result = todos.toggle(vault, "20260701140000-1")
+    assert result.done is True
+    assert result.spawned_due == "2026-07-12"
+    assert result.spawned_block_id == "20260701140000-1-r1"
+
+    spawned = (vault / todos.TODOS_FOLDER / "2026-07-12.md").read_text()
+    assert "- [ ] water the plants" in spawned
+    assert "📅 2026-07-12" in spawned
+    assert "⏰ 09:00" in spawned                      # the time carries over
+    assert "🔁 every week" in spawned                 # so does the rule
+    assert "(from [[20260701140000]])" in spawned     # and the provenance
+    assert "^20260701140000-1-r1" in spawned          # a fresh id → its own reminder
+
+    original = (vault / todos.TODOS_FOLDER / "2026-07-05.md").read_text()
+    assert "- [x] water the plants" in original       # the completed one stays as the record
+
+
+def test_reopening_never_deletes_the_spawned_occurrence_and_never_duplicates(tmp_path):
+    vault = tmp_path / "vault"
+    _write_todo(vault, "2026-07-05",
+                "- [ ] water the plants 📅 2026-07-05 🔁 every week ^base-1")
+    todos.toggle(vault, "base-1")
+    todos.toggle(vault, "base-1")      # reopened
+    again = todos.toggle(vault, "base-1")   # completed a second time
+
+    assert again.spawned_block_id is None   # the duplicate guard held
+    spawned_file = (vault / todos.TODOS_FOLDER / "2026-07-12.md").read_text()
+    assert spawned_file.count("water the plants") == 1
+    assert "^base-1-r1" in spawned_file     # and the occurrence was never removed
+
+
+def test_occurrences_chain_without_reusing_an_id(tmp_path):
+    vault = tmp_path / "vault"
+    _write_todo(vault, "2026-07-05",
+                "- [ ] standup notes 📅 2026-07-05 🔁 every week ^base-1")
+    first = todos.toggle(vault, "base-1")
+    second = todos.toggle(vault, first.spawned_block_id)
+    third = todos.toggle(vault, second.spawned_block_id)
+
+    assert [first.spawned_block_id, second.spawned_block_id, third.spawned_block_id] == \
+        ["base-1-r1", "base-1-r2", "base-1-r3"]
+    assert third.spawned_due == "2026-07-26"
+    ids = {t.block_id for t in todos.scan(vault)}
+    assert len(ids) == 4                      # every occurrence kept its own id
+
+
+def test_a_recurring_todo_without_a_due_date_does_not_spawn(tmp_path):
+    """Nothing to advance from — the rule needs a date to repeat."""
+    vault = tmp_path / "vault"
+    _write_todo(vault, "2026-07-05", "- [ ] someday thing 🔁 every week ^base-1")
+    result = todos.toggle(vault, "base-1")
+    assert result.done is True and result.spawned_block_id is None
+
+
+def test_non_recurring_todos_behave_exactly_as_before(tmp_path):
+    vault = tmp_path / "vault"
+    path = _write_todo(vault, "2026-07-05", "- [ ] one-off 📅 2026-07-05 ^base-1")
+    before = {p.name for p in (vault / todos.TODOS_FOLDER).iterdir()}
+    result = todos.toggle(vault, "base-1")
+    assert result.done is True and result.spawned_block_id is None
+    assert {p.name for p in (vault / todos.TODOS_FOLDER).iterdir()} == before
+    assert "- [x] one-off" in path.read_text()

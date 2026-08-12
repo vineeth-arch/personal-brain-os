@@ -140,7 +140,16 @@ export interface TodoItem {
   time: string | null; // HH:MM — presence means a reminder fires at that time
   done: boolean;
   overdue: boolean;
+  // The Obsidian-Tasks 🔁 rule ("every week"), or null. Completing a recurring
+  // todo writes its next occurrence — see `spawned` on the toggle response.
+  recurrence: string | null;
   file: string;
+}
+
+export interface ToggleResult {
+  ok: boolean;
+  done: boolean;
+  spawned: { id: string; due: string } | null;
 }
 
 // Build tracker (Pass B): live probes — reality is the checklist.

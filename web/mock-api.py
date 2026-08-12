@@ -219,7 +219,10 @@ BUILD_ITEMS = [
 
 TODO_ITEMS = [] if MODE_EMPTY else [
     {"id": "20260703140000-1", "task": "call the dentist", "due": date.today().isoformat(),
-     "time": "14:00", "done": False, "overdue": False,
+     "time": "14:00", "done": False, "overdue": False, "recurrence": None,
+     "file": f"06-Todos/{date.today().isoformat()}.md"},
+    {"id": "20260701140000-1", "task": "water the plants", "due": date.today().isoformat(),
+     "time": None, "done": False, "overdue": False, "recurrence": "every week",
      "file": f"06-Todos/{date.today().isoformat()}.md"},
 ]
 
@@ -691,6 +694,21 @@ class Handler(BaseHTTPRequestHandler):
                     # no stated probability = nothing to score, and never a 0
                     brier=None if p is None else round((p / 100 - (1 if outcome else 0)) ** 2, 4))
                 return self._send(200, decision)
+            if path.startswith("/api/todos/") and path.endswith("/toggle"):
+                tid = path.split("/")[3]
+                todo = next((t for t in TODO_ITEMS if t["id"] == tid), None)
+                if todo is None:
+                    return self._send(404, {"error": {
+                        "what": "That todo isn't in the daily notes anymore.",
+                        "cause": "Its line was edited or removed in Obsidian, or the id "
+                                 "is unknown.",
+                        "todo": "Refresh the agenda."}})
+                todo["done"] = not todo["done"]
+                spawned = None
+                if todo["done"] and todo["recurrence"] == "every week" and todo["due"]:
+                    due = date.fromisoformat(todo["due"]) + timedelta(days=7)
+                    spawned = {"id": f"{tid}-r1", "due": due.isoformat()}
+                return self._send(200, {"ok": True, "done": todo["done"], "spawned": spawned})
             if path == "/api/query/reindex":
                 return self._send(200, {"ok": True, "indexed": 0 if MODE_EMPTY else 42,
                                         "took_ms": 180})
