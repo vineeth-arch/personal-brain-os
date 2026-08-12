@@ -193,7 +193,7 @@ returns and never runs a check itself.
 }
 ```
 
-Per card: `id`, `group` (`"health"` | `"link"`), `name`, `description`, `icon`
+Per card: `id`, `group` (`"health"` | `"link"` | `"google"`), `name`, `description`, `icon`
 (a short key the frontend maps to an inline SVG; unknown keys render a
 lettermark), `status` (`"ok"` | `"warn"` | `"problem"` | `"unknown"`), `badge`
 (short label, or `null` for link cards), optional `detail`, optional `error`
@@ -214,11 +214,23 @@ optional `url` (link cards only), optional `meta` (presentational
 
 **Link cards** — no health check, no badge, just `url` from the config
 `links` section (below): `obsidian` (built server-side as
-`obsidian://open?vault=<basename(vault_path)>`), then the 7 known keys
-(`dex`, `gmail`, `gcal`, `caldiy`, `n8n`, `zima`, `supabase`), **plus any
+`obsidian://open?vault=<basename(vault_path)>`), then the known keys
+(`dex`, `caldiy`, `n8n`, `zima`, `supabase`), **plus any
 other key present in `links`** — unknown keys render with `icon` set to the
 key itself, which the frontend draws as a lettermark tile. Keys with an empty
 URL are skipped.
+
+**Google cards (2)** — `gmail` and `gcal` (Pass 12). Three states:
+- server has no Google OAuth client → `group: "link"`, exactly as before;
+- client configured, account not linked → `group: "google"`, `status:
+  "unknown"`, `badge: "Not connected"`, plus the `{what,cause,todo}` envelope
+  and `meta: {configured: true, connected: false}`;
+- linked → `group: "google"`, `status: "ok"`, `badge: "Connected"`,
+  `meta.connected: true`.
+
+No Google network call happens while building this payload (it is cached 60s
+and must not hang on a Google outage) — the client fetches live mail/events
+from the routes below.
 
 ### `POST /api/integrations/engine`
 
@@ -236,6 +248,58 @@ message (a truthful send receipt — still not proof the phone displayed it);
 the send failing (network down/blocked, wrong url) → `502` + envelope, and the
 ntfy card reports the failed test until a later one succeeds; unconfigured →
 `400` + envelope.
+
+## Google — read + draft (Pass 12)
+
+Gmail and Calendar, **read-only plus draft creation**. There is deliberately
+**no send route** — the app never sends anything (CLAUDE.md §4); drafts are
+sent by the user, in Gmail. `api/tests/test_google.py` fails the build if a
+Gmail send URL ever appears in the codebase.
+
+Server config: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` in the environment
+(the user's own Google Cloud OAuth client — GO-LIVE.md §6). The long-lived
+refresh token is runtime state in `config.json` under
+`google.refresh_token`; access tokens are cached in memory only. Scopes:
+`gmail.readonly`, `gmail.compose`, `calendar.readonly`.
+
+### `GET /api/google/connect?redirect_uri=<uri>`
+
+Mints a single-use CSRF state and returns `{"url": "<Google consent URL>"}`
+for the client to navigate to. `503` + envelope when the server has no OAuth
+client configured.
+
+### `GET /api/google/callback?state=&code=` (no auth)
+
+Google's browser redirect — the only HTML page the API serves. No bearer
+token (a redirected browser has none); the single-use `state` from
+`/connect` (which *did* require the token) is the proof the flow started
+here. Stores the refresh token in `config.json`, preserving every other key,
+and renders a plain-English "connected" / "couldn't connect" page.
+
+### `GET /api/google/inbox`
+
+`{"items": [{"id", "from", "subject", "date", "snippet", "url"}]}` — up to 10
+recent unread messages from the inbox. Subject falls back to `"(no subject)"`.
+
+### `GET /api/google/events`
+
+`{"items": [{"id", "summary", "start", "end", "all_day", "location", "url"}]}`
+— the next 7 days of the primary calendar, single events, time-ordered.
+
+### `POST /api/google/draft`
+
+Body `{"to", "subject", "text"}` → creates a Gmail **draft**.
+`200 {"id": "<draft id>", "url": "https://mail.google.com/mail/u/0/#drafts"}`.
+The UI's success copy is "Draft saved — send it from Gmail."
+
+### `POST /api/google/disconnect`
+
+Removes `google` from `config.json` and clears the cached access token.
+`200 {"ok": true}`
+
+Shared failure envelopes: `409` when no account is linked, `401` when the
+link was revoked (both tell the user to press Connect Google), `502` for a
+Google outage or a refresh that came back without an access token.
 
 ### config.json `links` section
 

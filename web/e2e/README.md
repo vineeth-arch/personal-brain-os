@@ -29,6 +29,17 @@ node web/e2e/run-e2e.mjs
 
 Exit code 0 = all checks passed. The script builds a temp server root
 (tmp vault git-inited, `config.json` with an `e2e-token`), launches
-`.venv/bin/uvicorn api.main:app` on port 8765 with a dummy `OPENAI_API_KEY`
-(so the engine switch is allowed; no real OpenAI call happens), and cleans
-everything up afterwards.
+`uvicorn api.main:app` on port 8765 — from `.venv/bin` when that exists,
+otherwise from `PATH` — with dummy `OPENAI_API_KEY` and `GOOGLE_CLIENT_*`
+values (so the engine switch is allowed and the Google cards render in their
+live form; no real OpenAI or Google call happens), and cleans everything up
+afterwards.
+
+Two optional environment overrides:
+
+- `COCKPIT_CHROMIUM=/path/to/chrome` — launch a chromium that's already on the
+  machine, for images whose preinstalled browser predates the installed
+  Playwright (avoids a download just to run the gate).
+- Nothing else is needed; the Google steps stub the cockpit's own
+  `/api/google/*` read routes in the browser, so the suite never talks to
+  Google and needs no account.

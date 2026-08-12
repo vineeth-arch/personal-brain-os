@@ -1,6 +1,12 @@
-import { useState } from "react";
-import { api } from "../api/client";
-import type { EngineName, IntegrationCard, IntegrationStatus } from "../api/types";
+import { useEffect, useRef, useState } from "react";
+import { api, getApiBase } from "../api/client";
+import type {
+  CalendarEvent,
+  EngineName,
+  GmailMessage,
+  IntegrationCard,
+  IntegrationStatus,
+} from "../api/types";
 import { CloudEngineConfirm } from "../components/CloudEngineConfirm";
 import { ErrorState } from "../components/ErrorState";
 import { IntegrationIcon } from "../components/IntegrationIcon";
@@ -242,6 +248,279 @@ function LinkCard({ card }: { card: IntegrationCard }) {
   );
 }
 
+// ---- Google (Pass 12) --------------------------------------------------------
+// Read + draft only. There is no send button anywhere in this file, and no
+// send route on the server — sending is always a human action in Gmail
+// (CLAUDE.md §4).
+
+function fmtEventTime(ev: CalendarEvent): string {
+  if (ev.all_day) {
+    const d = new Date(`${ev.start}T00:00:00`);
+    return Number.isNaN(d.getTime())
+      ? "All day"
+      : `${d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })} · all day`;
+  }
+  const d = new Date(ev.start);
+  return Number.isNaN(d.getTime())
+    ? ev.start
+    : d.toLocaleString(undefined, {
+        weekday: "short",
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+}
+
+function senderName(from: string): string {
+  // "Jane Doe <jane@x.com>" → "Jane Doe"; a bare address stays as-is
+  const match = from.match(/^\s*"?([^"<]+?)"?\s*</);
+  return (match ? match[1] : from).trim() || from;
+}
+
+function DraftComposer({
+  onClose,
+  onSaved,
+}: {
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [to, setTo] = useState("");
+  const [subject, setSubject] = useState("");
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const firstField = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    firstField.current?.focus();
+  }, []);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.googleDraft({ to, subject, text });
+      // The copy is deliberate: the cockpit cannot send, so the success
+      // message has to hand the next step back to the user.
+      toast("Draft saved — send it from Gmail.");
+      onSaved();
+      onClose();
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(envelope ? `${envelope.what} ${envelope.todo}` : "Couldn't save the draft.", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const field =
+    "bg-default border-subtle text-emphasis min-h-11 w-full rounded-xl border px-3 text-sm";
+
+  return (
+    <form
+      className="border-subtle mt-4 space-y-3 border-t pt-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        void save();
+      }}
+    >
+      <div>
+        <label htmlFor="draft-to" className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+          To
+        </label>
+        <input
+          id="draft-to"
+          ref={firstField}
+          type="email"
+          required
+          value={to}
+          onChange={(e) => setTo(e.target.value)}
+          className={`${field} mt-1`}
+          placeholder="name@example.com"
+        />
+      </div>
+      <div>
+        <label htmlFor="draft-subject" className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+          Subject
+        </label>
+        <input
+          id="draft-subject"
+          type="text"
+          required
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          className={`${field} mt-1`}
+        />
+      </div>
+      <div>
+        <label htmlFor="draft-body" className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+          Message
+        </label>
+        <textarea
+          id="draft-body"
+          required
+          rows={5}
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          className="bg-default border-subtle text-emphasis mt-1 w-full rounded-xl border p-3 text-sm"
+        />
+      </div>
+      <p className="text-subtle text-xs">
+        This saves a draft in Gmail. The cockpit never sends mail — you send it
+        yourself, from Gmail.
+      </p>
+      <div className="flex flex-wrap gap-2">
+        <button
+          type="submit"
+          disabled={busy}
+          className="border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold disabled:opacity-60"
+        >
+          {busy ? "Saving…" : "Save draft to Gmail"}
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-subtle min-h-11 rounded-xl px-4 text-sm font-bold"
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  );
+}
+
+function GoogleCard({
+  card,
+  onConnect,
+  onDisconnect,
+  busy,
+}: {
+  card: IntegrationCard;
+  onConnect: () => void;
+  onDisconnect: () => void;
+  busy: boolean;
+}) {
+  const connected = card.meta?.connected === true;
+  const isGmail = card.id === "gmail";
+  const [mail, setMail] = useState<GmailMessage[] | null>(null);
+  const [events, setEvents] = useState<CalendarEvent[] | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
+  const [composing, setComposing] = useState(false);
+
+  useEffect(() => {
+    if (!connected) return;
+    let alive = true;
+    const load = isGmail
+      ? api.googleInbox().then((r) => alive && setMail(r.items))
+      : api.googleEvents().then((r) => alive && setEvents(r.items));
+    load.catch((err) => {
+      const envelope = (err as { envelope?: { what: string } }).envelope;
+      if (alive) setLiveError(envelope?.what ?? "Couldn't reach Google just now.");
+    });
+    return () => {
+      alive = false;
+    };
+  }, [connected, isGmail]);
+
+  const count = isGmail ? mail?.length : events?.length;
+  const countLabel = isGmail ? "unread" : "in the next 7 days";
+
+  return (
+    <article className="bg-default border-subtle flex flex-col rounded-xl border p-4">
+      <div className="flex items-start gap-3">
+        <IntegrationIcon icon={card.icon} name={card.name} />
+        <div className="min-w-0 flex-1">
+          <h3 className="text-emphasis text-sm font-bold leading-tight">{card.name}</h3>
+          <p className="text-default mt-1 text-sm">{card.description}</p>
+        </div>
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <StatusBadge status={card.status} label={badgeLabel(card)} />
+      </div>
+
+      {connected && count !== undefined && count !== null && (
+        <p className="font-cal text-emphasis mt-3 text-2xl font-extrabold leading-none -tracking-[0.02em]">
+          {count} <span className="text-subtle text-sm font-semibold">{countLabel}</span>
+        </p>
+      )}
+
+      {connected && liveError && <p className="text-subtle mt-2 text-sm">{liveError}</p>}
+
+      {connected && isGmail && mail && mail.length > 0 && (
+        <ul className="mt-3 space-y-2">
+          {mail.slice(0, 3).map((m) => (
+            <li key={m.id} className="border-subtle border-t pt-2 first:border-t-0 first:pt-0">
+              <a href={m.url} target="_blank" rel="noreferrer" className="block">
+                <p className="text-emphasis truncate text-sm font-semibold">{m.subject}</p>
+                <p className="text-subtle truncate text-xs">{senderName(m.from)}</p>
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {connected && !isGmail && events && events.length > 0 && (
+        <ul className="mt-3 space-y-2">
+          {events.slice(0, 3).map((ev) => (
+            <li key={ev.id} className="border-subtle border-t pt-2 first:border-t-0 first:pt-0">
+              <a href={ev.url} target="_blank" rel="noreferrer" className="block">
+                <p className="text-emphasis truncate text-sm font-semibold">{ev.summary}</p>
+                <p className="text-subtle truncate text-xs">{fmtEventTime(ev)}</p>
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {card.detail && !connected && <p className="text-subtle mt-2 text-sm">{card.detail}</p>}
+
+      {composing ? (
+        <DraftComposer onClose={() => setComposing(false)} onSaved={() => setMail(null)} />
+      ) : (
+        <div className="mt-4 flex flex-wrap gap-2">
+          {connected ? (
+            <>
+              {isGmail && (
+                <button
+                  type="button"
+                  onClick={() => setComposing(true)}
+                  className="border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold"
+                >
+                  New draft
+                </button>
+              )}
+              <a
+                href={card.url}
+                target="_blank"
+                rel="noreferrer"
+                className="border-emphasis text-emphasis inline-flex min-h-11 items-center rounded-xl border px-5 text-sm font-bold"
+              >
+                Open ↗
+              </a>
+              <button
+                type="button"
+                onClick={onDisconnect}
+                disabled={busy}
+                className="text-subtle min-h-11 rounded-xl px-4 text-sm font-bold disabled:opacity-60"
+              >
+                Disconnect
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={onConnect}
+              disabled={busy}
+              className="border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold disabled:opacity-60"
+            >
+              Connect Google
+            </button>
+          )}
+        </div>
+      )}
+    </article>
+  );
+}
+
 function SkeletonGrid() {
   return (
     <div className="space-y-6" aria-hidden="true">
@@ -299,6 +578,33 @@ export function Integrations() {
     }
   };
 
+  const connectGoogle = async () => {
+    setBusy(true);
+    try {
+      // Google redirects back to the API's own callback page, which is why
+      // the redirect URI is built from the API base, not the app's location.
+      const { url } = await api.googleConnect(`${getApiBase()}/api/google/callback`);
+      window.location.href = url;
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(envelope ? `${envelope.what} ${envelope.todo}` : "Couldn't start the Google sign-in.", "error");
+      setBusy(false);
+    }
+  };
+
+  const disconnectGoogle = async () => {
+    setBusy(true);
+    try {
+      await api.googleDisconnect();
+      toast("Google disconnected.");
+      refetch();
+    } catch {
+      toast("Couldn't disconnect Google.", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (loading && !data) return <SkeletonGrid />;
   if (error && !data) {
     return <ErrorState envelope={error.envelope} detail={error.detail} onRetry={refetch} />;
@@ -306,6 +612,7 @@ export function Integrations() {
 
   const cards = data!.cards;
   const health = cards.filter((c) => c.group === "health");
+  const googleCards = cards.filter((c) => c.group === "google");
   const links = cards.filter((c) => c.group === "link");
 
   return (
@@ -328,6 +635,23 @@ export function Integrations() {
           ))}
         </div>
       </section>
+
+      {googleCards.length > 0 && (
+        <section>
+          <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">Google</p>
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {googleCards.map((card) => (
+              <GoogleCard
+                key={card.id}
+                card={card}
+                onConnect={connectGoogle}
+                onDisconnect={disconnectGoogle}
+                busy={busy}
+              />
+            ))}
+          </div>
+        </section>
+      )}
 
       <section>
         <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">Your tools</p>

@@ -23,14 +23,14 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from pipeline import classify, config as config_mod, enrich, intake, route as proute, todos as ptodos, watcher
 
-from . import build_status, integrations, notes, selfcheck, service, watchdog
+from . import build_status, google, integrations, notes, selfcheck, service, watchdog
 
 log = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
@@ -46,6 +46,35 @@ class Envelope(Exception):
         self.status = status
         self.body = {"error": {"what": what, "cause": cause, "todo": todo}}
         super().__init__(what)
+
+
+def _google_page(title: str, body: str) -> str:
+    """The one HTML page this API renders itself: the tab Google redirects
+    back to after consent. It can't be part of the React app (that tab is
+    outside the cockpit shell), so it's self-contained — no assets, no fonts
+    to fetch, dark-mode indigo per DESIGNSYSTEM.md, flush-left, one accent."""
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} — Brain Cockpit</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  body {{ margin: 0; min-height: 100vh; display: flex; align-items: center;
+         background: #1F006E; color: #E2D8F5;
+         font-family: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif; }}
+  main {{ max-width: 34rem; margin: 0 auto; padding: 2rem 1.5rem; }}
+  p.eyebrow {{ margin: 0; color: #00FFCF; font-size: 11px; font-weight: 700;
+              letter-spacing: 0.18em; text-transform: uppercase; }}
+  h1 {{ margin: 0.75rem 0 0; color: #FFFFFF; font-size: 2rem; line-height: 0.95;
+       letter-spacing: -0.02em; font-weight: 800;
+       font-family: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif; }}
+  p.body {{ margin: 1rem 0 0; font-size: 0.95rem; line-height: 1.5; }}
+</style></head>
+<body><main>
+  <p class="eyebrow">Brain Cockpit · Google</p>
+  <h1>{title}</h1>
+  <p class="body">{body}</p>
+</main></body></html>"""
 
 
 def _generic_envelope(status: int) -> dict:
@@ -93,6 +122,12 @@ class InsightBody(BaseModel):
     text: str
 
 
+class DraftBody(BaseModel):
+    to: str
+    subject: str
+    text: str
+
+
 def create_app(root: Path | None = None) -> FastAPI:
     root = Path(root or DEFAULT_ROOT)
 
@@ -111,6 +146,8 @@ def create_app(root: Path | None = None) -> FastAPI:
     app.state.run_lock = threading.Lock()
     app.state.integrations_cache = {}
     app.state.integrations_state = {}
+    app.state.google_states = {}   # pending OAuth CSRF states → (expiry, redirect_uri)
+    app.state.google_tokens = {}   # in-memory access-token cache — never persisted
     app.state.build_cache = {}
 
     config_path = root / "config.json"
@@ -616,6 +653,65 @@ def create_app(root: Path | None = None) -> FastAPI:
         except integrations.ConfigError as e:
             raise Envelope(400, **e.envelope)
         app.state.integrations_state["ntfy_tested"] = "ok"
+        integrations.bust_cache(app.state)
+        return {"ok": True}
+
+    # ---- google (read + draft — the API has no send route, by rule 4) ------------
+
+    @app.get("/api/google/connect")
+    def google_connect(redirect_uri: str, config=Depends(require_token)):
+        try:
+            return {"url": google.begin_connect(app.state.google_states, redirect_uri)}
+        except google.GoogleError as e:
+            raise Envelope(e.status, **e.envelope)
+
+    @app.get("/api/google/callback")
+    def google_callback(state: str = "", code: str = "", error: str = ""):
+        # No bearer here — this is Google's browser redirect. The one-time
+        # state minted by /connect (which DID require the token) is the proof
+        # this flow started from the cockpit.
+        if error or not code:
+            return HTMLResponse(_google_page(
+                "Sign-in cancelled",
+                "Google didn't complete the sign-in. Nothing was connected — "
+                "you can close this tab and try again from Integrations."))
+        try:
+            google.finish_connect(app.state.google_states, config_path, state, code)
+        except google.GoogleError as e:
+            return HTMLResponse(_google_page(
+                e.envelope["what"], f"{e.envelope['cause']} {e.envelope['todo']}"))
+        app.state.google_tokens.clear()
+        integrations.bust_cache(app.state)
+        return HTMLResponse(_google_page(
+            "Google connected",
+            "Gmail and Calendar are now linked. Close this tab and head back "
+            "to the cockpit — the Integrations screen will show them live."))
+
+    @app.get("/api/google/inbox")
+    def google_inbox(config=Depends(require_token)):
+        try:
+            return {"items": google.unread(config, app.state.google_tokens)}
+        except google.GoogleError as e:
+            raise Envelope(e.status, **e.envelope)
+
+    @app.get("/api/google/events")
+    def google_events(config=Depends(require_token)):
+        try:
+            return {"items": google.events(config, app.state.google_tokens)}
+        except google.GoogleError as e:
+            raise Envelope(e.status, **e.envelope)
+
+    @app.post("/api/google/draft")
+    def google_draft(body: DraftBody, config=Depends(require_token)):
+        try:
+            return google.create_draft(config, app.state.google_tokens,
+                                       body.to, body.subject, body.text)
+        except google.GoogleError as e:
+            raise Envelope(e.status, **e.envelope)
+
+    @app.post("/api/google/disconnect")
+    def google_disconnect(config=Depends(require_token)):
+        google.disconnect(config_path, app.state.google_tokens)
         integrations.bust_cache(app.state)
         return {"ok": True}
 

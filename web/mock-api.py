@@ -30,6 +30,10 @@ MODE_STALE = "--stale" in sys.argv
 MODE_ATTENTION = "--attention" in sys.argv
 MODE_INT_DEGRADED = "--integrations-degraded" in sys.argv
 MODE_INT_EMPTY = "--integrations-empty" in sys.argv
+# Google (Pass 12): default = client configured but not linked yet;
+# --google-connected = live cards; --google-unconfigured = plain link tiles.
+MODE_GOOGLE_CONNECTED = "--google-connected" in sys.argv
+MODE_GOOGLE_UNCONFIGURED = "--google-unconfigured" in sys.argv
 
 TOKEN = "mock-token"
 
@@ -222,6 +226,31 @@ TODO_ITEMS = [] if MODE_EMPTY else [
      "file": f"06-Todos/{date.today().isoformat()}.md"},
 ]
 
+# Google fixture data (Pass 12) — served to the live Gmail/Calendar cards.
+GMAIL_MESSAGES = [
+    {"id": "m1", "from": "Priya Raman <priya@example.com>",
+     "subject": "Re: studio visit on Thursday", "date": iso(now - timedelta(hours=2)),
+     "snippet": "Works for me — I'll bring the prints.",
+     "url": "https://mail.google.com/mail/u/0/#inbox/m1"},
+    {"id": "m2", "from": "billing@hetzner.com",
+     "subject": "Your invoice for August", "date": iso(now - timedelta(hours=9)),
+     "snippet": "Invoice 2026-08 is available.",
+     "url": "https://mail.google.com/mail/u/0/#inbox/m2"},
+    {"id": "m3", "from": "Anand <anand@example.com>",
+     "subject": "book recommendation", "date": iso(now - timedelta(days=1)),
+     "snippet": "The one I mentioned is Designing Brand Identity.",
+     "url": "https://mail.google.com/mail/u/0/#inbox/m3"},
+]
+
+CALENDAR_EVENTS = [
+    {"id": "e1", "summary": "Studio visit", "start": iso(now + timedelta(days=1, hours=3)),
+     "end": iso(now + timedelta(days=1, hours=4)), "all_day": False,
+     "location": "Alserkal Avenue", "url": "https://calendar.google.com/e1"},
+    {"id": "e2", "summary": "Dentist", "start": iso(now + timedelta(days=3)),
+     "end": iso(now + timedelta(days=3, hours=1)), "all_day": False,
+     "location": "", "url": "https://calendar.google.com/e2"},
+]
+
 LINK_CARDS = [
     {"id": "obsidian", "group": "link", "name": "Obsidian", "icon": "obsidian",
      "description": "Open your vault in Obsidian.", "status": "unknown", "badge": None,
@@ -229,12 +258,6 @@ LINK_CARDS = [
     {"id": "dex", "group": "link", "name": "Dex", "icon": "link",
      "description": "Your personal CRM for people and relationships.", "status": "unknown",
      "badge": None, "url": "https://getdex.com/"},
-    {"id": "gmail", "group": "link", "name": "Gmail", "icon": "mail",
-     "description": "Email inbox.", "status": "unknown", "badge": None,
-     "url": "https://mail.google.com/"},
-    {"id": "gcal", "group": "link", "name": "Google Calendar", "icon": "calendar",
-     "description": "Your calendar.", "status": "unknown", "badge": None,
-     "url": "https://calendar.google.com/"},
     {"id": "caldiy", "group": "link", "name": "cal.diy", "icon": "calendar",
      "description": "Scheduling links.", "status": "unknown", "badge": None,
      "url": "https://cal.diy/"},
@@ -363,7 +386,42 @@ def _integration_cards():
 
     health = [whisper, openai, claude, ntfy, vault, git, watcher]
     links = [] if MODE_INT_EMPTY else LINK_CARDS
-    return health + links
+    return health + _google_cards() + links
+
+
+def _google_cards():
+    """Gmail + Calendar, mirroring api/integrations.py::_google_cards."""
+    if MODE_INT_EMPTY:
+        return []
+    specs = [
+        ("gmail", "Gmail", "mail",
+         "Recent unread mail, and drafts you write here and send from Gmail.",
+         "https://mail.google.com/"),
+        ("gcal", "Google Calendar", "calendar",
+         "What's on in the next seven days.",
+         "https://calendar.google.com/"),
+    ]
+    cards = []
+    for card_id, name, icon, description, url in specs:
+        if MODE_GOOGLE_UNCONFIGURED:
+            cards.append({"id": card_id, "group": "link", "name": name, "icon": icon,
+                          "description": description, "status": "unknown",
+                          "badge": None, "url": url})
+            continue
+        card = {"id": card_id, "group": "google", "name": name, "icon": icon,
+                "description": description, "url": url,
+                "meta": {"configured": True, "connected": MODE_GOOGLE_CONNECTED}}
+        if MODE_GOOGLE_CONNECTED:
+            card.update(status="ok", badge="Connected",
+                        detail="Linked to your Google account.")
+        else:
+            card.update(status="unknown", badge="Not connected",
+                        detail="The server has a Google client — connect your account to go live.",
+                        error={"what": f"{name} isn't showing live data yet.",
+                               "cause": "No Google account has been linked to this cockpit.",
+                               "todo": "Press Connect Google on this card and approve the access."})
+        cards.append(card)
+    return cards
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -481,6 +539,14 @@ class Handler(BaseHTTPRequestHandler):
                     "last_backup": None if MODE_EMPTY else iso(now - timedelta(hours=20)),
                     "last_vault_commit": None if MODE_EMPTY else iso(now - timedelta(hours=2)),
                 })
+            if path == "/api/google/inbox":
+                return self._send(200, {"items": GMAIL_MESSAGES})
+            if path == "/api/google/events":
+                return self._send(200, {"items": CALENDAR_EVENTS})
+            if path == "/api/google/connect":
+                # the real server hands back Google's consent URL; the mock
+                # points at its own callback so e2e never leaves the harness
+                return self._send(200, {"url": f"http://127.0.0.1:{PORT}/api/google/callback?state=mock&code=mock"})
 
         if method == "PUT":
             if path == "/api/config":
@@ -569,6 +635,15 @@ class Handler(BaseHTTPRequestHandler):
                 print("BACKUP NOW")
                 return self._send(200, {"ok": True, "at": iso(datetime.now()),
                                         "vault_committed": True, "events_db_copied": True})
+            if path == "/api/google/draft":
+                body = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                draft = json.loads(body or b"{}")
+                print("DRAFT SAVED", draft.get("to"), draft.get("subject"))
+                return self._send(200, {"id": "draft-1",
+                                        "url": "https://mail.google.com/mail/u/0/#drafts"})
+            if path == "/api/google/disconnect":
+                print("GOOGLE DISCONNECT")
+                return self._send(200, {"ok": True})
 
         return self._send(404, {"error": {
             "what": "The server doesn't know that request.",

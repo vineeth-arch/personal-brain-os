@@ -149,6 +149,10 @@ to save a Gmail **draft** — never send. Sending stays a human act in Gmail,
 by design (the constitution forbids this app auto-sending anything, and
 there is no send code path in the cockpit at all).
 
+The three scopes requested, and nothing else: `gmail.readonly` (read recent
+unread), `gmail.compose` (create drafts — this scope cannot send),
+`calendar.readonly`. The data lands on your own VPS; no third party sees it.
+
 1. [console.cloud.google.com](https://console.cloud.google.com) → new
    project → **APIs & Services → Library** → enable **Gmail API** and
    **Google Calendar API**.

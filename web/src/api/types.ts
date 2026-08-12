@@ -107,7 +107,9 @@ export interface ResurfacedNote {
 // Integrations screen (Pass 4). Health checks run server-side, cached 60s.
 export type EngineName = "whispercpp" | "openai";
 export type IntegrationStatus = "ok" | "warn" | "problem" | "unknown";
-export type IntegrationGroup = "health" | "link";
+// "google" cards carry live Gmail/Calendar state; they fall back to plain
+// "link" cards when the server has no Google client configured (Pass 12).
+export type IntegrationGroup = "health" | "link" | "google";
 
 export interface IntegrationCard {
   id: string;
@@ -128,6 +130,39 @@ export interface IntegrationsResponse {
   generated_at: string;
   fresh: boolean;
   cards: IntegrationCard[];
+}
+
+// Google (Pass 12): read-only Gmail/Calendar plus draft creation. There is no
+// send — the cockpit never sends anything (CLAUDE.md §4); drafts are sent by
+// the user, in Gmail.
+export interface GmailMessage {
+  id: string;
+  from: string;
+  subject: string;
+  date: string;
+  snippet: string;
+  url: string;
+}
+
+export interface CalendarEvent {
+  id: string;
+  summary: string;
+  start: string;
+  end: string;
+  all_day: boolean;
+  location: string;
+  url: string;
+}
+
+export interface DraftWrite {
+  to: string;
+  subject: string;
+  text: string;
+}
+
+export interface DraftCreated {
+  id: string;
+  url: string;
 }
 
 // Todos (Pass T): Obsidian Tasks-compatible checkbox lines in 06-Todos/.

@@ -27,6 +27,9 @@
 - Pass 10: a live `url_ok` probe type for the reachable-from-internet milestone (GET deploy.public_url from the server) — manual config-field check for now, per the pass spec.
 - Pass 6: resource rating (schema `rating` 1–7) capture + display in the drawer — status lifecycle and insight shipped, rating not surfaced this pass.
 - Pass 6: real cover images via `attachments/` (book covers / posters) — seed uses remote picsum placeholders; the card already falls back to a category-initial tile.
-- Pass 6: resource type-extras in the drawer (author / where_to_watch / ingredients / map_url) — stored in frontmatter by the seed, only description is shown for now.
+- Pass 6: editing the type-extras from the cockpit (they render in the drawer since the per-type schema pass, but are written by the seed/pipeline only — no UI to change ingredients, runtime, etc.).
 - Pass 6: server-side resource filtering is live + tested, but the dashboard filters the fetched list client-side (snappy at current scale) — switch to server params if the library grows large.
 - Pass 6: insight edit history / a per-section origin stamp — the human-origin guarantee currently rides the note-level `origin` firewall (AI never writes `## Insight`).
+- Pass 12: Dex / n8n / Supabase real API integrations — they stay launcher tiles; each needs its own auth story and (for Dex) a dependency the locked list doesn't include.
+- Pass 12: pull Gmail/Calendar items INTO the vault as notes (currently read-only display in Integrations) — needs a routing decision per SCHEMA-REFERENCE before anything is written.
+- NOT DEFERRED — PERMANENTLY OUT (CLAUDE.md §4): sending email or any message from the app. Drafts are written to Gmail and sent by the human, in Gmail. api/tests/test_google.py fails the build if a send path ever appears.

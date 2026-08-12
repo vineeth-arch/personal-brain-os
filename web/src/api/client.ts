@@ -3,9 +3,13 @@ import type {
   BackupResult,
   BackupStatus,
   BuildResponse,
+  CalendarEvent,
   CaptureTag,
   ConfigWrite,
+  DraftCreated,
+  DraftWrite,
   EngineName,
+  GmailMessage,
   ProviderStat,
   SelfCheckResponse,
   TodoItem,
@@ -179,6 +183,21 @@ export const api = {
       body: JSON.stringify({ engine }),
     }),
   ntfyTest: () => request<{ ok: boolean }>("/api/integrations/ntfy/test", { method: "POST" }),
+  // Google (Pass 12): read + draft only. There is deliberately no send call
+  // here and no send route on the server — CLAUDE.md §4.
+  googleConnect: (redirectUri: string) =>
+    request<{ url: string }>(
+      `/api/google/connect?redirect_uri=${encodeURIComponent(redirectUri)}`,
+    ),
+  googleInbox: () => request<{ items: GmailMessage[] }>("/api/google/inbox"),
+  googleEvents: () => request<{ items: CalendarEvent[] }>("/api/google/events"),
+  googleDraft: (draft: DraftWrite) =>
+    request<DraftCreated>("/api/google/draft", {
+      method: "POST",
+      body: JSON.stringify(draft),
+    }),
+  googleDisconnect: () =>
+    request<{ ok: boolean }>("/api/google/disconnect", { method: "POST" }),
   todos: (range: TodoRange) => request<{ items: TodoItem[] }>(`/api/todos?range=${range}`),
   toggleTodo: (id: string) =>
     request<{ ok: boolean; done: boolean }>(`/api/todos/${id}/toggle`, { method: "POST" }),
