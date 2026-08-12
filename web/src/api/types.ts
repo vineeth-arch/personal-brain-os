@@ -338,3 +338,54 @@ export interface DexSyncResult {
   skipped: number;
   message: string;
 }
+
+// ---- Decision journal + calibration (Pass 8) ----
+
+// A decision's probability is captured only when it was spoken at recording
+// time (see pipeline/decisions.py). `null` means none was stated — the decision
+// resolves normally, it just can't be scored, so `brier` is null too and it
+// stays off the calibration chart. There is deliberately no way to add one
+// after the fact: a hindsight number would corrupt the measurement.
+export interface Decision {
+  id: string;
+  title: string;
+  claim: string;
+  file: string; // vault-relative, for the obsidian:// deep link
+  created: string;
+  resolves: string | null;
+  resolved: string | null;
+  status: "open" | "resolved";
+  probability: number | null; // 0–100
+  outcome: boolean | null;
+  brier: number | null;
+  process_grade: number | null; // 1–5, graded on PROCESS not outcome
+}
+
+// One column of the calibration chart: how often things you called at ~X%
+// actually happened. `actual` is null when nothing has landed in the bucket —
+// an empty bucket is unknown, not zero.
+export interface CalibrationBucket {
+  bucket: number;
+  label: string;
+  count: number;
+  hits: number;
+  actual: number | null;
+  midpoint: number;
+}
+
+export interface Calibration {
+  buckets: CalibrationBucket[];
+  resolved_count: number;
+  scored_count: number;
+  open_count: number;
+  mean_brier: number | null;
+  mean_process_grade: number | null;
+}
+
+export interface DecisionsResponse {
+  items: Decision[];
+  calibration: Calibration;
+}
+
+export const PROCESS_GRADES = [1, 2, 3, 4, 5] as const;
+export type ProcessGrade = (typeof PROCESS_GRADES)[number];

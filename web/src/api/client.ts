@@ -5,8 +5,11 @@ import type {
   BuildResponse,
   CaptureTag,
   ConfigWrite,
+  Decision,
+  DecisionsResponse,
   DexSyncResult,
   EngineName,
+  ProcessGrade,
   PeopleFilter,
   Person,
   PersonDetail,
@@ -236,6 +239,14 @@ export const api = {
       body: JSON.stringify(changes),
     }),
   syncDex: () => request<DexSyncResult>("/api/people/sync", { method: "POST" }),
+
+  // ---- Decision journal (Pass 8) ----
+  decisions: () => request<DecisionsResponse>("/api/decisions"),
+  resolveDecision: (id: string, outcome: boolean, processGrade: ProcessGrade) =>
+    request<Decision>(`/api/decisions/${encodeURIComponent(id)}/resolve`, {
+      method: "POST",
+      body: JSON.stringify({ outcome, process_grade: processGrade }),
+    }),
 
   sampleCount: (olderThan: SampleScope) =>
     request<SampleCount>(`/api/resources/sample/count?older_than=${olderThan}`),

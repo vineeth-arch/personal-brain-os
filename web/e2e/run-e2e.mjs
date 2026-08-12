@@ -65,6 +65,27 @@ function personNote(id, name, lastContact, cadence) {
   ].join("\n");
 }
 
+function decisionNote(id, claim, probability, status = "open") {
+  return [
+    "---", `id: ${id}`, "type: decision", "created: 2026-01-01", "source: voice",
+    "origin: human", `status: ${status}`, `claim: ${claim}`,
+    "outside_view: base rate is about a third", "resolves: 2026-09-01",
+    `probability: ${probability ?? ""}`, "---", "",
+    "## Reasoning", "The sub-questions that must be true.", "",
+    "## Disconfirmers", "I am wrong if the vendor slips.", "",
+  ].join("\n");
+}
+
+function seedDecisions(vault) {
+  const folder = path.join(vault, "09-Decisions");
+  // one with a spoken probability (scoreable) and one without (resolves, but
+  // never appears on the chart)
+  fs.writeFileSync(path.join(folder, "2026-01-01-launch.md"),
+    decisionNote("20260101100001", "The launch slips past October", 70));
+  fs.writeFileSync(path.join(folder, "2026-01-01-hire.md"),
+    decisionNote("20260101100002", "We hire a second engineer in Q3", null));
+}
+
 function seedPeople(vault) {
   const folder = path.join(vault, "07-People");
   // one comfortably inside its cadence; one past it but not yet at the 3x
@@ -79,11 +100,12 @@ function seedPeople(vault) {
 function makeRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-e2e-"));
   for (const d of ["vault/00-Inbox", "vault/02-Musings", "vault/03-Learnings", "vault/wiki",
-                   "vault/07-People", "inbox", "archive", "failed"]) {
+                   "vault/07-People", "vault/09-Decisions", "inbox", "archive", "failed"]) {
     fs.mkdirSync(path.join(root, d), { recursive: true });
   }
   const vault = path.join(root, "vault");
   seedPeople(vault);
+  seedDecisions(vault);
   execSync(`git -C "${vault}" init -q && git -C "${vault}" config user.email t@t && git -C "${vault}" config user.name t`);
   fs.writeFileSync(
     path.join(root, "config.json"),
@@ -202,6 +224,49 @@ try {
   assert.ok(graceNote.includes("- 2026-01-02 — first call"), "existing history was lost");
   assert.ok(graceNote.includes("Met at a workshop."), "the owner's prose was touched");
   console.log("✓ The note on disk gained the stamp and kept its history and prose");
+
+  // ---- 6. Decisions (Pass 8): resolving updates the chart and the list --------
+  await page.goto(`${BASE}/#/decisions`);
+  await page.getByText("The launch slips past October").waitFor();
+  await page.locator("li", { hasText: "We hire a second engineer" })
+    .getByText("No probability stated").waitFor();
+  console.log("✓ Decisions lists open bets and marks the one with no stated probability");
+
+  await page.locator("li", { hasText: "The launch slips past October" })
+    .getByRole("button", { name: "Resolve" }).click();
+  await page.getByText("You said 70% at the time.").waitFor();
+  await page.getByRole("button", { name: "Yes", exact: true }).click();
+  await page.getByRole("button", { name: "4", exact: true }).click();
+  await page.getByRole("button", { name: "Resolve", exact: true }).last().click();
+  await page.getByText("Closed the loop on that one.").waitFor();
+  await page.locator("li", { hasText: "The launch slips past October" })
+    .getByText("Process 4/5").waitFor();
+  console.log("✓ Resolving a decision records the outcome and the process grade");
+
+  // the Brier score is (0.7 - 1)^2 = 0.09, and it reaches the chart
+  const launchNote = fs.readFileSync(
+    path.join(root, "vault", "09-Decisions", "2026-01-01-launch.md"), "utf8");
+  assert.ok(launchNote.includes("status: resolved"), "status was not restamped");
+  assert.ok(launchNote.includes("outcome: true"), "outcome was not recorded");
+  assert.ok(launchNote.includes("brier: 0.09"), `brier was not computed: ${launchNote}`);
+  assert.ok(launchNote.includes("I am wrong if the vendor slips."), "the reasoning was lost");
+  await page.getByText("The numbers behind the chart").click();
+  await page.getByRole("cell", { name: "70–80%" }).waitFor();
+  console.log("✓ The note carries the Brier score and the chart's table shows the bucket");
+
+  // resolving without a stated probability still closes the loop, unscored
+  await page.locator("li", { hasText: "We hire a second engineer" })
+    .getByRole("button", { name: "Resolve" }).click();
+  await page.getByText("No probability was stated when you recorded this").waitFor();
+  await page.getByRole("button", { name: "No", exact: true }).click();
+  await page.getByRole("button", { name: "2", exact: true }).click();
+  await page.getByRole("button", { name: "Resolve", exact: true }).last().click();
+  await page.getByText("Closed the loop on that one.").waitFor();
+  const hireNote = fs.readFileSync(
+    path.join(root, "vault", "09-Decisions", "2026-01-01-hire.md"), "utf8");
+  assert.ok(hireNote.includes("status: resolved"), "it did not resolve");
+  assert.ok(/\nbrier:\s*\n/.test(hireNote), `brier should be blank, not 0: ${hireNote}`);
+  console.log("✓ A decision with no stated probability resolves but stays unscored");
 
   console.log("\nE2E: all checks passed.");
 } catch (err) {

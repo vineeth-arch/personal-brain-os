@@ -421,6 +421,48 @@ Dex unreachable/rate-limited → 502 envelope. `config.json → dex` holds
 `sync_daily`, `base_url`, `deeplink_base`; with `sync_daily: true` the watcher's
 `--loop` tick also runs it once a day after 03:00.
 
+## Decision journal + calibration (Pass 8)
+
+`09-Decisions` notes, per SCHEMA-REFERENCE.md §7. **A probability is captured
+only when it was spoken at recording time** ("I'd say 70%") — the pipeline's
+`probability` stage stores it, and never infers one. There is deliberately no
+way to add a probability afterwards: a hindsight number would be recorded as
+the owner's own forecast and would corrupt the only measurement this feature
+exists to produce. A decision without one resolves normally with `brier: null`
+and is excluded from the chart.
+
+### `GET /api/decisions`
+
+```json
+{ "items": [ {
+    "id": "20260101100001", "title": "launch", "claim": "The launch slips past October",
+    "file": "09-Decisions/2026-01-01-launch.md", "created": "2026-01-01",
+    "resolves": "2026-09-01", "resolved": null, "status": "open",
+    "probability": 70, "outcome": null, "brier": null, "process_grade": null } ],
+  "calibration": {
+    "buckets": [ { "bucket": 7, "label": "70–80%", "count": 3, "hits": 2,
+                   "actual": 0.6667, "midpoint": 75 } ],
+    "resolved_count": 4, "scored_count": 3, "open_count": 2,
+    "mean_brier": 0.16, "mean_process_grade": 3.5 } }
+```
+
+Open decisions first (soonest `resolves` first), then resolved (newest first).
+Ten fixed buckets, 0–10% … 90–100%; `actual` is `null` for an empty bucket —
+unknown, not zero. Only decisions with **both** a stated probability and a
+recorded outcome reach the curve or `mean_brier`.
+
+### `POST /api/decisions/{id}/resolve`
+
+Request `{"outcome": true, "process_grade": 4}` — `process_grade` is 1–5, the
+owner's self-rating of the **process, not the outcome**. Stamps `status:
+resolved`, `outcome`, `resolved` (today), `process_grade`, and `brier` =
+`(probability/100 − outcome)²` when a probability was stated, or an **empty**
+`brier` when it wasn't (a `0` would read as a perfect forecast). Git-commits
+(`api: resolved <id>`) and returns the decision's new shape.
+
+Grade outside 1–5 → 400 envelope; already resolved → **409** envelope (the first
+answer stands); unknown id → 404.
+
 ## Build tracker + model router (Pass B)
 
 ### `GET /api/build?fresh=1`

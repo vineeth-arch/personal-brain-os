@@ -252,6 +252,55 @@ PEOPLE = [] if MODE_EMPTY else [
 
 WARMTH_STAGES = ["identified", "researched", "engaging", "conversing", "warm", "ready"]
 
+# Pass 8 — a scoreable open bet, one with no stated probability (resolves but
+# never plots), and enough resolved history for the chart to have a shape.
+DECISIONS = [] if MODE_EMPTY else [
+    {"id": "20260101100001", "title": "launch", "claim": "The launch slips past October",
+     "file": "09-Decisions/2026-01-01-launch.md", "created": "2026-01-01",
+     "resolves": "2026-09-01", "resolved": None, "status": "open",
+     "probability": 70, "outcome": None, "brier": None, "process_grade": None},
+    {"id": "20260101100002", "title": "hire", "claim": "We hire a second engineer in Q3",
+     "file": "09-Decisions/2026-01-01-hire.md", "created": "2026-01-02",
+     "resolves": "2026-10-01", "resolved": None, "status": "open",
+     "probability": None, "outcome": None, "brier": None, "process_grade": None},
+    {"id": "20260101100003", "title": "vendor", "claim": "The vendor delivers on time",
+     "file": "09-Decisions/2026-01-01-vendor.md", "created": "2025-11-01",
+     "resolves": "2026-02-01", "resolved": "2026-02-03", "status": "resolved",
+     "probability": 75, "outcome": True, "brier": 0.0625, "process_grade": 4},
+    {"id": "20260101100004", "title": "pricing", "claim": "The price rise sticks",
+     "file": "09-Decisions/2026-01-01-pricing.md", "created": "2025-10-01",
+     "resolves": "2026-01-01", "resolved": "2026-01-05", "status": "resolved",
+     "probability": 72, "outcome": False, "brier": 0.5184, "process_grade": 2},
+    {"id": "20260101100005", "title": "churn", "claim": "Churn stays under 3%",
+     "file": "09-Decisions/2026-01-01-churn.md", "created": "2025-09-01",
+     "resolves": "2025-12-01", "resolved": "2025-12-02", "status": "resolved",
+     "probability": 30, "outcome": False, "brier": 0.09, "process_grade": 3},
+]
+
+
+def _calibration():
+    resolved = [d for d in DECISIONS if d["status"] == "resolved"]
+    scored = [d for d in resolved if d["brier"] is not None]
+    grades = [d["process_grade"] for d in resolved if d["process_grade"] is not None]
+    buckets = [{"bucket": i, "label": f"{i * 10}–{i * 10 + 10}%", "count": 0, "hits": 0,
+                "actual": None, "midpoint": i * 10 + 5} for i in range(10)]
+    for d in scored:
+        b = buckets[min(9, d["probability"] // 10)]
+        b["count"] += 1
+        b["hits"] += 1 if d["outcome"] else 0
+    for b in buckets:
+        if b["count"]:
+            b["actual"] = round(b["hits"] / b["count"], 4)
+    return {
+        "buckets": buckets,
+        "resolved_count": len(resolved),
+        "scored_count": len(scored),
+        "open_count": len(DECISIONS) - len(resolved),
+        "mean_brier": (round(sum(d["brier"] for d in scored) / len(scored), 4)
+                       if scored else None),
+        "mean_process_grade": (round(sum(grades) / len(grades), 2) if grades else None),
+    }
+
 PERSON_DETAIL_EXTRA = {
     "sections": {"Context": "Met at a workshop in Zurich.",
                  "Needs": "An intro to the compiler people.",
@@ -492,6 +541,8 @@ class Handler(BaseHTTPRequestHandler):
                 })
             if path == "/api/todos":
                 return self._send(200, {"items": TODO_ITEMS})
+            if path == "/api/decisions":
+                return self._send(200, {"items": DECISIONS, "calibration": _calibration()})
             if path == "/api/people":
                 q = self.path.split("?")[1] if "?" in self.path else ""
                 params = dict(p.split("=", 1) for p in q.split("&") if "=" in p)
@@ -598,6 +649,35 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, person)
 
         if method == "POST":
+            if path.startswith("/api/decisions/") and path.endswith("/resolve"):
+                did = path.split("/")[3]
+                decision = next((d for d in DECISIONS if d["id"] == did), None)
+                if decision is None:
+                    return self._send(404, {"error": {
+                        "what": "That decision isn't in your vault anymore.",
+                        "cause": "The note was renamed, moved, or the id is unknown.",
+                        "todo": "Refresh the Decisions list."}})
+                if decision["status"] == "resolved":
+                    return self._send(409, {"error": {
+                        "what": "That decision is already closed.",
+                        "cause": "It was resolved earlier — the first answer stands.",
+                        "todo": "Reload the list to see how it was resolved."}})
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                body = json.loads(raw or b"{}")
+                grade = body.get("process_grade")
+                if not isinstance(grade, int) or not 1 <= grade <= 5:
+                    return self._send(400, {"error": {
+                        "what": "That resolution doesn't fit the vault's schema.",
+                        "cause": "process_grade must be a whole number from 1 to 5.",
+                        "todo": "Grade the process from 1 to 5 and try again."}})
+                outcome = bool(body.get("outcome"))
+                p = decision["probability"]
+                decision.update(
+                    status="resolved", outcome=outcome, process_grade=grade,
+                    resolved=date.today().isoformat(),
+                    # no stated probability = nothing to score, and never a 0
+                    brier=None if p is None else round((p / 100 - (1 if outcome else 0)) ** 2, 4))
+                return self._send(200, decision)
             if path == "/api/people/sync":
                 return self._send(200, {
                     "ok": True, "created": 1, "updated": 2, "unchanged": 4, "skipped": 0,

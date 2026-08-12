@@ -95,6 +95,11 @@ class InsightBody(BaseModel):
     text: str
 
 
+class ResolveBody(BaseModel):
+    outcome: bool
+    process_grade: int
+
+
 class PersonPatchBody(BaseModel):
     # No `status` here on purpose: the lifecycle is computed from
     # last_contact + cadence_days, so a hand-set status would be overwritten
@@ -344,6 +349,35 @@ def create_app(root: Path | None = None) -> FastAPI:
                 400, "That change doesn't fit the vault's schema.",
                 str(e),
                 "Pick one of the values offered in the drawer and try again.")
+
+    # ---- decisions + calibration (Pass 8) -------------------------------------------
+
+    @app.get("/api/decisions")
+    def decisions_list(config=Depends(require_token)):
+        return {
+            "items": notes.list_decisions(config.vault_path),
+            "calibration": notes.calibration(config.vault_path),
+        }
+
+    @app.post("/api/decisions/{note_id}/resolve")
+    def decisions_resolve(note_id: str, body: ResolveBody, config=Depends(require_token)):
+        try:
+            return notes.resolve_decision(config.vault_path, note_id, body.outcome,
+                                          body.process_grade)
+        except LookupError:
+            raise Envelope(
+                404, "That decision isn't in your vault anymore.",
+                "The note was renamed, moved out of 09-Decisions, or the id is unknown.",
+                "Refresh the Decisions list.")
+        except ValueError as e:
+            already = "already resolved" in str(e)
+            raise Envelope(
+                409 if already else 400,
+                "That decision is already closed." if already
+                else "That resolution doesn't fit the vault's schema.",
+                str(e),
+                "Reload the list to see how it was resolved." if already
+                else "Grade the process from 1 to 5 and try again.")
 
     @app.get("/api/build")
     def build(fresh: int = 0, config=Depends(require_token)):

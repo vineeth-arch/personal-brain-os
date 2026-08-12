@@ -17,7 +17,8 @@ import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from pipeline import classify, notefm, people, relationships as rel, route
+from pipeline import (classify, decisions as pdecisions, notefm, people,
+                      relationships as rel, route)
 # The frontmatter primitives live in the pipeline package (dex.py and search.py
 # need them too, and imports only run api → pipeline). Re-exported here under
 # their original names so this module's call sites read unchanged.
@@ -620,3 +621,98 @@ def update_person(vault: Path, note_id: str, changes: dict, today: date | None =
     git_commit_vault(vault, f"api: person {note_id} updated")
     fm, _ = parse_frontmatter(path.read_text())
     return _person_summary(vault, path, fm, today)
+
+
+# ---- decisions (Pass 8) ------------------------------------------------------
+# 09-Decisions notes. A decision's probability is captured at recording time or
+# not at all (pipeline/decisions.py); resolving records the outcome, a
+# self-rated process grade, and — only when a probability was stated — a Brier
+# score. Everything the calibration chart needs is in the vault.
+
+def _decision_summary(path: Path, fm: dict[str, str], vault: Path) -> dict:
+    outcome = fm.get("outcome", "").strip().lower()
+    brier = fm.get("brier", "").strip()
+    return {
+        "id": fm.get("id", ""),
+        "title": pdecisions.decision_title(path, fm),
+        "claim": fm.get("claim", ""),
+        "file": str(path.relative_to(vault)),
+        "created": fm.get("created", ""),
+        "resolves": fm.get("resolves", "") or None,
+        "resolved": fm.get("resolved", "") or None,
+        "status": fm.get("status", pdecisions.OPEN),
+        "probability": pdecisions.parse_probability(fm.get("probability")),
+        "outcome": True if outcome == "true" else False if outcome == "false" else None,
+        "brier": float(brier) if brier else None,
+        "process_grade": pdecisions.parse_grade(fm.get("process_grade")),
+    }
+
+
+def list_decisions(vault: Path) -> list[dict]:
+    items = [_decision_summary(path, fm, vault)
+             for path, fm, _ in pdecisions.decision_notes(vault)]
+    # open first (they're the ones asking for something), newest first within each
+    items.sort(key=lambda d: (d["status"] != pdecisions.OPEN, d["created"]), reverse=False)
+    open_items = [d for d in items if d["status"] == pdecisions.OPEN]
+    closed = [d for d in items if d["status"] != pdecisions.OPEN]
+    open_items.sort(key=lambda d: d["resolves"] or "9999-12-31")
+    closed.sort(key=lambda d: d["resolved"] or d["created"], reverse=True)
+    return open_items + closed
+
+
+def resolve_decision(vault: Path, note_id: str, outcome: bool, process_grade: int,
+                     today: date | None = None) -> dict:
+    """Close the loop on a decision. Raises LookupError for an unknown id and
+    ValueError when it's already resolved or the grade is out of range."""
+    today = today or date.today()
+    grade = pdecisions.parse_grade(process_grade)
+    if grade is None:
+        raise ValueError(
+            f"process_grade must be a whole number from {pdecisions.GRADE_MIN} "
+            f"to {pdecisions.GRADE_MAX}")
+    path = pdecisions.find_decision(vault, note_id)
+    if path is None:
+        raise LookupError(note_id)
+
+    text = path.read_text()
+    fm, _ = parse_frontmatter(text)
+    if fm.get("status", "").strip() == pdecisions.RESOLVED:
+        raise ValueError("that decision is already resolved")
+
+    split = _split_note(text)
+    if split is None:
+        raise LookupError(note_id)
+    fm_block, body = split
+
+    probability = pdecisions.parse_probability(fm.get("probability"))
+    brier = pdecisions.brier_score(probability, outcome)
+    fm_block = _stamp_field(fm_block, "status", pdecisions.RESOLVED)
+    fm_block = _stamp_field(fm_block, "outcome", "true" if outcome else "false")
+    fm_block = _stamp_field(fm_block, "resolved", today.isoformat())
+    fm_block = _stamp_field(fm_block, "process_grade", str(grade))
+    # An empty brier is the honest record of "no probability was stated" —
+    # writing 0 would look like a perfect forecast.
+    fm_block = _stamp_field(fm_block, "brier", "" if brier is None else str(brier))
+    path.write_text(_compose_note(fm_block, body))
+
+    git_commit_vault(vault, f"api: resolved {note_id}")
+    return _decision_summary(path, parse_frontmatter(path.read_text())[0], vault)
+
+
+def calibration(vault: Path) -> dict:
+    """The chart's data, computed from the vault: ten probability buckets plus
+    the headline numbers. Only scored decisions (a stated probability AND a
+    recorded outcome) count toward the curve or the mean Brier score."""
+    items = list_decisions(vault)
+    resolved = [d for d in items if d["status"] == pdecisions.RESOLVED]
+    scored = [d for d in resolved if d["brier"] is not None]
+    grades = [d["process_grade"] for d in resolved if d["process_grade"] is not None]
+    return {
+        "buckets": pdecisions.calibration_buckets(resolved),
+        "resolved_count": len(resolved),
+        "scored_count": len(scored),
+        "open_count": len(items) - len(resolved),
+        "mean_brier": (round(sum(d["brier"] for d in scored) / len(scored), 4)
+                       if scored else None),
+        "mean_process_grade": (round(sum(grades) / len(grades), 2) if grades else None),
+    }

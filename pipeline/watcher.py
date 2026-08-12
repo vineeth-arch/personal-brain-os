@@ -12,13 +12,14 @@ logs a plain-English event, pushes one ntfy, and the loop moves on.
 from __future__ import annotations
 
 import argparse
+import logging
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import (archive, classify as classify_mod, config as config_mod, dex, enrich, errors,
-               extract, intake, route, todos)
+from . import (archive, classify as classify_mod, config as config_mod, decisions, dex, enrich,
+               errors, extract, intake, route, todos)
 from .events import EventLog
 from .transcribe import Transcriber, build_backup_transcriber, build_transcriber
 
@@ -100,6 +101,23 @@ def _transcribe_with_retry(item, deps: Deps) -> tuple[str, str]:
         raise merged from e
 
 
+def _stamp_probability(paths, transcript: str, config, events: EventLog, fkey: str,
+                       deps: Deps) -> None:
+    """Best-effort: a decision note is written whether or not this works, the
+    same way enrichment decorates a resource without gating it."""
+    try:
+        t0 = time.monotonic()
+        probability = decisions.resolve_probability(transcript, config,
+                                                    llm_fn=deps.extract_llm)
+        for path in paths:
+            path.write_text(decisions.stamp_probability(path.read_text(), probability))
+        events.log(fkey, "probability", "ok", int((time.monotonic() - t0) * 1000),
+                   message=("none stated" if probability is None
+                            else f"probability={probability}"))
+    except Exception:
+        logging.getLogger("pipeline").exception("probability capture failed")
+
+
 def process_file(item, config, events: EventLog, deps: Deps) -> Result:
     fkey = str(item.path)
     res = Result(name=item.path.name)
@@ -146,6 +164,12 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
             paths = route.route(item, cls, transcript, config.vault_path)
             events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
                        message=f"wrote {', '.join(p.name for p in paths)}")
+
+            # A decision's stated probability is captured here, at recording
+            # time, or never — see pipeline/decisions.py for why it is never
+            # inferred afterwards.
+            if cls.type == "decision" and not cls.needs_review:
+                _stamp_probability(paths, transcript, config, events, fkey, deps)
 
         # Stage 5 — extract action items (append only)
         t0 = time.monotonic()

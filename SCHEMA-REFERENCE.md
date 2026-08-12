@@ -89,8 +89,12 @@ reasoning:                \# Fermi-ized: the sub-questions that must be true
 disconfirmers:            \# "I am wrong if ..."  
 resolves: 2026-07-01  
 status: open  
-brier:                    \# set on resolution  
-process\_grade:            \# graded on PROCESS, not outcome
+outcome:                  \# true | false — set on resolution (did the claim hold?)  
+resolved:                 \# YYYY-MM-DD — set on resolution  
+brier:                    \# set on resolution; null when no probability was stated  
+process\_grade:            \# 1–5, graded on PROCESS, not outcome
+
+`probability` is captured **only when it was spoken at recording time** ("I'd say 70%") — never inferred, never entered after the fact. A decision without one resolves normally with `brier:` empty; it is simply excluded from the calibration chart. `brier` = (probability/100 − outcome)², so `outcome` must be stored to rebuild the chart from the vault alone.
 
 ### **Principle (`10-Principles`)**
 
