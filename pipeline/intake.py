@@ -19,6 +19,11 @@ _NAME_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})-(?P<time>\d{4})\s+(?P<name>
                       r"(?:\s+#(?P<tag>[\w-]+))?$")
 
 
+# recordings dropped here (by Plaud Desktop's export, or the ingest sweep) are
+# stamped with their provenance instead of the generic "voice"
+PLAUD_DIR = "plaud"
+
+
 @dataclass
 class Item:
     path: Path
@@ -26,13 +31,13 @@ class Item:
     captured: datetime
     name: str                 # human title hint from filename
     tag: str | None           # capture/routing tag from filename, if any
-    source: str               # "voice" | "manual"
+    source: str               # "voice" | "manual" | "plaud"
 
 
-def _parse(path: Path) -> Item | None:
+def _parse(path: Path, source_hint: str | None = None) -> Item | None:
     ext = path.suffix.lower()
     if ext in AUDIO_EXT:
-        kind, source = "audio", "voice"
+        kind, source = "audio", source_hint or "voice"
     elif ext in TEXT_EXT:
         # a text capture whose body is (or contains) a URL becomes a link —
         # enriched into a resource note instead of classified (Pass L)
@@ -57,12 +62,23 @@ def _parse(path: Path) -> Item | None:
 
 
 def poll(inbox_path: Path) -> list[Item]:
-    """Return inbox items oldest-first (by captured time), ignoring unknown types + dotfiles."""
+    """Return inbox items oldest-first (by captured time), ignoring unknown types + dotfiles.
+
+    The inbox root is source-agnostic; the one subfolder that carries meaning is
+    `plaud/`, whose recordings are stamped `source: plaud`."""
+    inbox = Path(inbox_path)
     items = []
-    for p in Path(inbox_path).iterdir():
+    for p in inbox.iterdir():
         if p.is_file() and not p.name.startswith("."):
-            item = _parse(p)
+            item = _parse(p, "plaud" if p.stem.lower().startswith("plaud") else None)
             if item:
                 items.append(item)
+    plaud_dir = inbox / PLAUD_DIR
+    if plaud_dir.is_dir():
+        for p in plaud_dir.iterdir():
+            if p.is_file() and not p.name.startswith("."):
+                item = _parse(p, "plaud")
+                if item:
+                    items.append(item)
     items.sort(key=lambda i: i.captured)
     return items

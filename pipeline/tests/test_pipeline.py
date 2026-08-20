@@ -149,3 +149,90 @@ def test_mic_recording_runs_end_to_end(tmp_path, monkeypatch):
     # source archived, never deleted; inbox drained
     assert not any(inbox.iterdir())
     assert len(list(archive.iterdir())) == 1
+
+
+class HindiTranscriber(Transcriber):
+    """What whisper returns for Hindi speech: Devanagari, not Roman."""
+
+    def transcribe(self, audio_path: Path) -> str:
+        return "#journal मैं कल दफ़्तर जाऊँगा और मुझे डॉक्टर को कॉल करना है"
+
+
+def test_hindi_recording_becomes_one_note_with_both_scripts(tmp_path, monkeypatch):
+    """Pass P: the body leads with Hinglish (what the owner reads), the
+    Devanagari original stays in the SAME note, and one recording is still one
+    note (SCHEMA-REFERENCE.md §8)."""
+    from pipeline.events import EventLog
+    from pipeline import transliterate
+
+    vault, inbox, archive, failed = (tmp_path / d for d in ("vault", "inbox", "archive", "failed"))
+    for d in (vault, inbox, archive, failed):
+        d.mkdir()
+    (inbox / "2026-07-03-0900 morning note.m4a").write_bytes(b"fake audio")
+
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+    # a 3-minute recording: long enough to stamp duration, short enough not to chunk
+    monkeypatch.setattr(watcher.transcribe_mod, "probe_duration_seconds", lambda p: 180.0)
+
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed,
+                    raw={"transliteration": {"engine": "ollama",
+                                             "ollama": {"url": "http://x", "model": "m"}}})
+    events = EventLog(tmp_path / "events.db", vault)
+    seen = []
+
+    def fake_transliterator(text, block):
+        seen.append(text)
+        # a real engine keeps the spoken #tag (see transliterate.PROMPT) — the
+        # tag is what free-routes the note, so the stub must keep it too
+        return "#journal main kal daftar jaunga aur mujhe doctor ko call karna hai"
+
+    deps = watcher.Deps(transcriber=HindiTranscriber(), classifier_fn=stub_classifier,
+                        transliterate_fn=fake_transliterator)
+    results = watcher.run_once(config, events, deps)
+    assert len(results) == 1 and results[0].status != "failed", results[0].error
+
+    notes = _notes_of_type(vault, "01-Journal", "journal")
+    assert len(notes) == 1, "one recording is one note, in either script"
+    text = notes[0].read_text()
+    body = text.split("---\n", 2)[2]
+
+    assert body.strip().startswith("#journal main kal daftar jaunga")   # Hinglish leads
+    assert transliterate.ORIGINAL_HEADING in body             # original kept
+    assert "मैं कल दफ़्तर जाऊँगा" in body
+    assert _fm(notes[0])["duration_min"] == "3"
+
+
+def test_a_dead_transliteration_engine_still_writes_the_note(tmp_path, monkeypatch):
+    """The capture is the point. If Ollama is off, the note is written in
+    Devanagari and the event log says why — nothing is quarantined."""
+    from pipeline.events import EventLog
+
+    vault, inbox, archive, failed = (tmp_path / d for d in ("vault", "inbox", "archive", "failed"))
+    for d in (vault, inbox, archive, failed):
+        d.mkdir()
+    (inbox / "2026-07-03-0900 morning note.m4a").write_bytes(b"fake audio")
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+    monkeypatch.setattr(watcher.transcribe_mod, "probe_duration_seconds", lambda p: 120.0)
+
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed,
+                    raw={"transliteration": {"engine": "ollama",
+                                             "ollama": {"url": "http://x", "model": "m"}}})
+    events = EventLog(tmp_path / "events.db", vault)
+
+    def dead_engine(text, block):
+        raise OSError("connection refused")
+
+    deps = watcher.Deps(transcriber=HindiTranscriber(), classifier_fn=stub_classifier,
+                        transliterate_fn=dead_engine)
+    results = watcher.run_once(config, events, deps)
+    assert len(results) == 1 and results[0].status != "failed"
+
+    notes = _notes_of_type(vault, "01-Journal", "journal")
+    assert len(notes) == 1
+    assert "मैं कल दफ़्तर जाऊँगा" in notes[0].read_text()
+
+    rows = sqlite3.connect(tmp_path / "events.db").execute(
+        "SELECT status, message FROM events WHERE stage = 'transliterate'").fetchall()
+    assert rows and rows[0][0] == "failed" and "Devanagari" in rows[0][1]

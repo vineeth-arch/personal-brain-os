@@ -4,12 +4,24 @@
   "archive_path": "",
   "failed_path": "",
   "transcription": {
-    "engine": "whispercpp",
+    "engine": "openai",
+    "language": "hi",
     "whispercpp": {
       "binary_path": "",
       "model_path": ""
     }
   },
+  "transliteration": {
+    "engine": "",
+    "ollama": {
+      "url": "http://localhost:11434",
+      "model": ""
+    },
+    "openrouter": {
+      "model": ""
+    }
+  },
+  "watch_folders": [],
   "ntfy": {
     "url": "",
     "topic": ""

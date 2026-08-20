@@ -14,6 +14,7 @@ class Config:
     archive_path: Path
     failed_path: Path
     engine: str = "whispercpp"          # whispercpp | openai
+    language: str = ""                  # ISO hint for the transcriber ("hi"); "" = auto-detect
     whispercpp_binary: str = ""
     whispercpp_model: str = ""
     ntfy_url: str = ""
@@ -43,6 +44,7 @@ def load(path: str | Path = "config.json") -> Config:
         archive_path=Path(data["archive_path"]).expanduser(),
         failed_path=Path(data["failed_path"]).expanduser(),
         engine=t.get("engine", "whispercpp"),
+        language=t.get("language", ""),
         whispercpp_binary=w.get("binary_path", ""),
         whispercpp_model=w.get("model_path", ""),
         ntfy_url=n.get("url", ""),

@@ -17,12 +17,13 @@ yaml
 id: 20260605143000        \# immutable timestamp YYYYMMDDHHmmss — links point here  
 type: musing              \# see type list below  
 created: 2026-06-05  
-source: voice             \# voice | share | web-clipper | dex | manual | ai-compiled  
+source: voice             \# voice | plaud | share | web-clipper | dex | manual | ai-compiled  
 origin: human             \# human | ai  (provenance firewall)  
 status: active            \# lifecycle per type (section 6\)  
 categories: \[\]            \# what it IS    — as \[\[links\]\] (Kepano model), not flat tags  
 subjects: \[\]              \# what it's ABOUT — as \[\[links\]\]  
 tags: \[\]                  \# from \_System/vocabulary.md (controlled vocabulary)  
+duration\_min:             \# audio captures only — how long the recording ran  
 \---
 
 **Types:** `musing · learning · todo · journal · project · person · resource · decision · principle · insight · reflection`
@@ -119,6 +120,8 @@ Body: `## Context` · `## Needs` · `## Interaction log` (append-only, dated) ·
 ## **8\. CAPTURE / PROCESSING RULES**
 
 * **One recording \= one note, kept at FULL LENGTH. NO splitting into atomic notes.** The watcher keeps the transcript whole in the body; it only *additionally* extracts action items to `06-Todos/<date>.md`.  
+* A long recording is **transcribed in segments and stitched back together** (10-minute chunks past 15 min / 20 MB, with `[hh:mm]` markers between them). That is a request-size workaround, not a split: the result is still ONE note at full length. A segment that can't be transcribed leaves `[N minutes unintelligible — audio archived]` in place, so one bad stretch never costs the rest of a meeting.  
+* Hindi speech is transcribed in **Devanagari**, then transliterated to **Roman Hindi / Hinglish**, which becomes the note body; the Devanagari original is kept in the same note under `## Original (Devanagari)`. Classification and action-item extraction read the Hinglish text. If no transliteration engine is configured or reachable, the note keeps the Devanagari transcript — a capture is never lost to a formatting step.  
 * Processing delay is accepted; "✅ Captured" is the instant trust signal.  
 * Every bulk AI write goes through a **review gate \+ git commit**. AI-generated notes carry `origin: ai`.
 

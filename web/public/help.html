@@ -179,6 +179,25 @@
         <li>Build "→ Brain": accept audio → optional name → tag menu (8 tags, skippable) → rename <code>YYYY-MM-DD-HHmm name #tag</code> → save to CaptureInbox → ✅</li>
         <li>Test end-to-end: record → share → file on Mac</li>
       </ul></div>
+      <div class="card"><div class="tool-eyebrow">Device</div><h3>Plaud</h3><ul>
+        <li><b>Works day one:</b> export the recording from the Plaud app/Desktop and share it into <code>CaptureInbox/plaud/</code> — anything in that folder is stamped <code>source: plaud</code></li>
+        <li><b>Hands-off:</b> add the folder Plaud Desktop already writes to under <code>watch_folders</code> in config.json (<code>{"path": "…", "source": "plaud"}</code>) — every tick copies new recordings in and never touches your originals. Check the real path in Plaud Desktop → Preferences before you set it</li>
+        <li>Note Pro: sync to the app, point <code>watch_folders</code> at that export folder — same deal</li>
+        <li>A long meeting is transcribed in 10-minute segments and stitched into <b>one</b> note with <code>[hh:mm]</code> markers; it takes a few ticks, and one bad segment never costs the rest</li>
+        <li>The Plaud SDK (pulling straight off the device) is deliberately deferred — see DEFERRED.md</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Mic</div><h3>Record in the cockpit</h3><ul>
+        <li>Today screen → the mic button beside the capture box: tap to start, tap to stop</li>
+        <li>Tag chips apply to the recording the same way they apply to typed text</li>
+        <li>Needs the HTTPS (tunnel) address — browsers block the mic on a plain <code>http://192.168…</code> address</li>
+        <li>For capture that survives a locked screen, keep using the Action Button flow</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Language</div><h3>Hindi → Hinglish</h3><ul>
+        <li>Hindi speech is transcribed in Devanagari (OpenAI whisper, <code>transcription.language: "hi"</code>)</li>
+        <li>It is then rewritten in Roman Hindi, which becomes the note body; the Devanagari original stays in the same note under <code>## Original (Devanagari)</code></li>
+        <li>Pick the engine in Settings: Ollama (local, name the model) or OpenRouter (needs <code>OPENROUTER_API_KEY</code>)</li>
+        <li>Engine off or unreachable → the note is still written, in Devanagari. A capture is never lost to a formatting step</li>
+      </ul></div>
       <div class="card"><div class="tool-eyebrow">Terminal</div><h3>Run it</h3><ul>
         <li>First: the Backlog Ritual (04)</li>
         <li>Daily: <code>.venv/bin/python -m pipeline --loop</code> in a tab that stays open</li>
@@ -224,6 +243,13 @@
       <tr><td>Notes stopped appearing</td><td>Watcher not running / Mac asleep</td><td>Check <code>.watcher-heartbeat</code> age; rerun <code>--loop</code>; disable sleep while plugged in</td></tr>
       <tr><td>Note in <code>00-Inbox</code></td><td>Classifier under 0.7 — by design</td><td>Triage, not an error. Approve or retype</td></tr>
       <tr><td>File in <code>_failed/</code></td><td>Read its plain-English reason</td><td>Fix the cause, move back to inbox (or retry via API/UI)</td></tr>
+      <tr><td>Mic button does nothing / no mic</td><td>Page is on a plain <code>http://</code> address</td><td>Open the cockpit on the HTTPS tunnel address — browsers only allow recording on a secure one</td></tr>
+      <tr><td>Mic says access was blocked</td><td>Permission denied for this site</td><td>Allow the microphone for this address in browser/phone settings, then tap the mic again</td></tr>
+      <tr><td>Recording didn't upload</td><td>Server unreachable mid-upload</td><td>The take is still held in the page — press Retry upload. Over ~100 MB, copy the file into the inbox folder instead</td></tr>
+      <tr><td>A long meeting takes a while to appear</td><td>It transcribes in 10-minute segments</td><td>Expected — it lands as one note. Watch the Pipeline screen for per-chunk events</td></tr>
+      <tr><td>Part of a meeting reads "unintelligible"</td><td>One segment failed permanently</td><td>By design: the rest of the meeting is kept. The audio is archived if you want to redo that stretch</td></tr>
+      <tr><td>Hindi note is still in Devanagari</td><td>No transliteration engine, or it was unreachable</td><td>Set Ollama or OpenRouter in Settings; the note was written rather than lost — check Integrations → Hindi → Hinglish</td></tr>
+      <tr><td>Plaud files never arrive</td><td>Wrong <code>watch_folders</code> path</td><td>Check the real recordings folder in Plaud Desktop's preferences, then fix the path in config.json</td></tr>
       <tr><td>Transcript is garbage</td><td>Muffled audio / model too small</td><td>Speak near the mic up-front; consider <code>medium.en</code></td></tr>
       <tr><td>Haiku errors / 429s</td><td>Key missing or rate-limited</td><td>Check env key; transient errors auto-retry then quarantine</td></tr>
       <tr><td>No ntfy pushes ever</td><td>Wrong topic / not subscribed</td><td>Match topic in config + app; manual test push</td></tr>

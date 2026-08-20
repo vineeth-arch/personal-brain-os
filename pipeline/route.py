@@ -56,7 +56,7 @@ def _yaml_list(values: list[str]) -> str:
     return "\n" + "\n".join(f"  - {v}" for v in values)
 
 
-def build_frontmatter(item, cls) -> str:
+def build_frontmatter(item, cls, duration_min: int | None = None) -> str:
     """cls is a classify.Classification. Body transcript is human-origin; AI-added
     metadata is flagged via meta_origin (SCHEMA §1 provenance firewall)."""
     note_id = item.captured.strftime("%Y%m%d%H%M%S")
@@ -78,18 +78,23 @@ def build_frontmatter(item, cls) -> str:
         f"categories: {_yaml_links(cls.categories)}",
         f"subjects: {_yaml_links(cls.subjects)}",
         f"tags: {_yaml_list(cls.tags)}",
-        "---",
     ]
+    if duration_min is not None:
+        # how long the recording ran — the one audio fact worth keeping in
+        # frontmatter, so a 2-hour meeting reads differently from a 40-second memo
+        lines.append(f"duration_min: {duration_min}")
+    lines.append("---")
     return "\n".join(lines)
 
 
-def route(item, cls, transcript: str, vault_path: Path) -> list[Path]:
+def route(item, cls, transcript: str, vault_path: Path,
+          duration_min: int | None = None) -> list[Path]:
     """Write the note(s) and return the paths written."""
     folder = INBOX_FOLDER if cls.needs_review else TYPE_FOLDER.get(cls.type, INBOX_FOLDER)
     dest_dir = Path(vault_path) / folder
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    frontmatter = build_frontmatter(item, cls)
+    frontmatter = build_frontmatter(item, cls, duration_min)
     created = item.captured.strftime("%Y-%m-%d")
     base = f"{created}-{_kebab(cls.title)}"
     path = dest_dir / f"{base}.md"

@@ -209,6 +209,47 @@ def _check_key_service(card_id: str, name: str, icon: str, description: str,
     return card
 
 
+def _check_transliteration(config, state: dict) -> dict:
+    """Devanagari → Hinglish (Pass P). Not configured is a normal, honest state:
+    the pipeline still writes the note, just in the script whisper returned."""
+    from pipeline import transliterate as tl
+
+    block = (config.raw.get("transliteration") or {})
+    engine = (block.get("engine") or "").strip().lower()
+    usable = tl.configured_engine(config)
+    card = {"id": "transliteration", "group": "health", "name": "Hindi → Hinglish",
+            "icon": "brain",
+            "description": "Rewrites Hindi transcripts in Roman script before they are filed.",
+            "meta": {"engine": engine, "usable": bool(usable)}}
+    if not engine:
+        card.update(
+            status="unknown", badge="Not configured",
+            detail="Hindi captures stay in Devanagari until an engine is chosen.",
+            error={
+                "what": "No transliteration engine is set.",
+                "cause": "transliteration.engine in config.json is empty.",
+                "todo": "Pick Ollama (local) or OpenRouter in Settings, and name a model.",
+            })
+        return card
+    if not usable:
+        missing = ("a model name" if engine == "ollama"
+                   else "OPENROUTER_API_KEY in the server's shell, or a model name")
+        card.update(
+            status="warn", badge=f"{engine} · incomplete",
+            detail="The engine is chosen but can't run yet.",
+            error={
+                "what": f"The {engine} transliteration engine isn't ready.",
+                "cause": f"It still needs {missing}.",
+                "todo": "Finish the transliteration settings, then Recheck.",
+            })
+        return card
+    where = (block.get("ollama") or {}).get("url") if engine == "ollama" else "openrouter.ai"
+    model = (block.get(engine) or {}).get("model")
+    card.update(status="ok", badge=f"{engine} · ready",
+                detail=f"Using {model} via {where}.")
+    return card
+
+
 def _check_ntfy(config, state: dict) -> dict:
     card = {"id": "ntfy", "group": "health", "name": "ntfy push", "icon": "bell",
             "description": "Sends one push to your phone when a capture fails.",
@@ -445,6 +486,7 @@ def build_payload(config, heartbeat_path: Path, fresh: bool, state: dict) -> dic
             "claude", "Claude API", "brain",
             "Classifies untagged captures into the right note type.",
             config.anthropic_key, None, fresh, _test_call_anthropic, state),
+        _check_transliteration(config, state),
         _check_ntfy(config, state),
         _check_vault_sync(config),
         _check_git(config),

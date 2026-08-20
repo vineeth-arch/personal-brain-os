@@ -17,8 +17,10 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import archive, classify as classify_mod, config as config_mod, enrich, errors, extract, intake, route, todos
+from . import (archive, classify as classify_mod, config as config_mod, enrich, errors,
+               extract, ingest, intake, route, todos, transliterate)
 from .events import EventLog
+from . import transcribe as transcribe_mod
 from .transcribe import Transcriber, build_transcriber
 
 POLL_SECONDS = 5 * 60
@@ -37,6 +39,7 @@ class Deps:
     extract_llm: object = None        # llm_fn(prompt, config) -> str; None = real Haiku
     enrich_fetch: object = None       # fetch(url, data=, timeout=) -> bytes; None = real HTTP
     enrich_router: object = None      # router(prompt, config, validate) -> (data, provider, attempts)
+    transliterate_fn: object = None   # caller(text, block) -> str; None = the configured engine
     sleep: object = time.sleep        # retry backoff seam (tests inject a recorder)
 
 
@@ -50,13 +53,24 @@ class Result:
     error: str = ""
 
 
-def _transcribe(item, deps: Deps) -> str:
+def _transcribe(item, deps: Deps, events: EventLog | None = None) -> str:
+    """Text passes through; audio goes to the engine — whole for a normal
+    recording, in stitched 10-minute segments once it is long enough that one
+    request would be refused or crawl (Pass P)."""
     if item.kind in ("text", "link"):
         return item.path.read_text()
+    duration = transcribe_mod.probe_duration_seconds(item.path)
+    if transcribe_mod.is_long(item.path, duration):
+        def on_event(message, ok):
+            if events:
+                events.log(str(item.path), "transcribe", "ok" if ok else "failed", message=message)
+        return transcribe_mod.transcribe_long(
+            item.path, deps.transcriber, sleep=deps.sleep, on_event=on_event,
+            attempts=RETRY_ATTEMPTS, backoff_base=RETRY_BASE_SECONDS)
     return deps.transcriber.transcribe(item.path)
 
 
-def _transcribe_with_retry(item, deps: Deps) -> str:
+def _transcribe_with_retry(item, deps: Deps, events: EventLog | None = None) -> str:
     """Retry policy: transient failures (network, 5xx, rate limits) get
     RETRY_ATTEMPTS tries with exponential backoff BEFORE quarantine; permanent
     ones (bad audio, missing binary, bad key) escape on the first try.
@@ -65,7 +79,7 @@ def _transcribe_with_retry(item, deps: Deps) -> str:
     file."""
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
-            return _transcribe(item, deps)
+            return _transcribe(item, deps, events)
         except errors.StageError as e:
             e.attempts = attempt
             if not e.transient or attempt == RETRY_ATTEMPTS:
@@ -81,8 +95,34 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
         # Stage 2 — transcribe (text skips inside _transcribe); transient
         # failures are retried with backoff before they can reach quarantine
         t0 = time.monotonic()
-        transcript = _transcribe_with_retry(item, deps)
+        transcript = _transcribe_with_retry(item, deps, events)
         events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000))
+
+        # Stage 2b — transliterate. Hindi speech comes back in Devanagari; the
+        # note leads with Roman Hindi/Hinglish and keeps the original below it.
+        # Everything downstream (classify, todos) reads the Hinglish text.
+        duration_min = None
+        body = transcript
+        if item.kind == "audio":
+            seconds = transcribe_mod.probe_duration_seconds(item.path)
+            if seconds:
+                duration_min = max(1, round(seconds / 60))
+            if transliterate.has_devanagari(transcript):
+                t0 = time.monotonic()
+                hinglish = transliterate.to_hinglish(transcript, config,
+                                                     caller=deps.transliterate_fn)
+                if hinglish:
+                    body = transliterate.compose_body(hinglish, transcript)
+                    transcript = hinglish
+                    events.log(fkey, "transliterate", "ok",
+                               int((time.monotonic() - t0) * 1000),
+                               message="devanagari → hinglish")
+                else:
+                    # never a lost capture: the note keeps the Devanagari body
+                    events.log(fkey, "transliterate", "failed",
+                               int((time.monotonic() - t0) * 1000),
+                               message="no transliteration engine answered — "
+                                       "note kept in Devanagari")
 
         if item.kind == "link":
             # A link IS a resource — no classify LLM, no review gate. Enrich
@@ -116,7 +156,7 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
 
             # Stage 4 — route
             t0 = time.monotonic()
-            paths = route.route(item, cls, transcript, config.vault_path)
+            paths = route.route(item, cls, body, config.vault_path, duration_min)
             events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
                        message=f"wrote {', '.join(p.name for p in paths)}")
 
@@ -197,6 +237,9 @@ def run_once(config, events: EventLog, deps: Deps) -> list[Result]:
 def run_loop(config, events, deps) -> None:
     print(f"Watching {config.inbox_path} — polling every {POLL_SECONDS // 60} min. Ctrl-C to stop.")
     while True:
+        # pull anything new out of the app-owned folders (Plaud Desktop,
+        # Note Pro exports, Voice Memos) before polling the inbox
+        ingest.sweep(config, events)
         results = run_once(config, events, deps)
         if results:
             print(f"Processed {len(results)} file(s).")

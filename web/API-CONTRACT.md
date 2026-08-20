@@ -356,6 +356,29 @@ threshold, ntfy url/topic); everything else stays documentation.
 in order (read-only here — reordering lives in config.json).
 `api.auth_token` is never included.
 
+### Capture-pipeline config keys (Pass P)
+
+`config.json` gained three keys the pipeline reads directly (they are not
+settable through `PUT /api/config` yet — the Settings surface for them lands
+with the People pass):
+
+```json
+"transcription": { "engine": "openai", "language": "hi" },
+"transliteration": {
+  "engine": "",                                     // "" | "ollama" | "openrouter"
+  "ollama": { "url": "http://localhost:11434", "model": "" },
+  "openrouter": { "model": "" }                     // key from OPENROUTER_API_KEY
+},
+"watch_folders": [ { "path": "~/…/Plaud", "source": "plaud" } ]
+```
+
+`transcription.language` is the whisper language hint (`""` = auto-detect).
+`transliteration` rewrites Devanagari transcripts in Roman Hindi; unset or
+unreachable is a normal state — the note is written in Devanagari instead, and
+`GET /api/integrations` carries a `transliteration` health card saying so.
+`watch_folders` are app-owned folders the watcher copies new recordings *out
+of* (never modifying them); `source: plaud` lands them in `inbox/plaud/`.
+
 ### `PUT /api/config`
 
 Body may set any of `engine`, `confidence_threshold` (0..1), `ntfy_topic`,

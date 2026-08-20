@@ -32,4 +32,8 @@
 - Pass 6: insight edit history / a per-section origin stamp — the human-origin guarantee currently rides the note-level `origin` firewall (AI never writes `## Insight`).
 - Pass 12: Dex / n8n / Supabase real API integrations — they stay launcher tiles; each needs its own auth story and (for Dex) a dependency the locked list doesn't include.
 - Pass 12: pull Gmail/Calendar items INTO the vault as notes (currently read-only display in Integrations) — needs a routing decision per SCHEMA-REFERENCE before anything is written.
+- Pass P: Plaud SDK ingest (pulling recordings straight off the Note Pro over BLE/Wi-Fi) — the official SDK's binaries are proprietary and need a partner token, so the watched-folder path ships instead.
+- Pass P: speaker diarization ("who said what") on meeting transcripts — needs a second model in the chain; the transcript stays undiarized for now.
+- Pass P: per-chunk resume for a long recording (today a re-run re-transcribes every segment, and one permanently failed segment stays a placeholder).
+- Pass P: transliteration quality dial — no way yet to re-run Hindi → Hinglish on an existing note with a better model.
 - NOT DEFERRED — PERMANENTLY OUT (CLAUDE.md §4): sending email or any message from the app. Drafts are written to Gmail and sent by the human, in Gmail. api/tests/test_google.py fails the build if a send path ever appears.
