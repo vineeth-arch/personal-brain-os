@@ -156,6 +156,16 @@ class PushBody(BaseModel):
     text: str
 
 
+class ChannelBody(BaseModel):
+    kind: str
+    value: str
+
+
+class NewPersonBody(BaseModel):
+    name: str
+    channel: ChannelBody
+
+
 def create_app(root: Path | None = None) -> FastAPI:
     root = Path(root or DEFAULT_ROOT)
 
@@ -477,6 +487,19 @@ def create_app(root: Path | None = None) -> FastAPI:
     @app.get("/api/people")
     def people_list(config=Depends(require_token)):
         return {"items": people_mod.list_people(Path(config.vault_path))}
+
+    @app.post("/api/people", status_code=201)
+    def people_create(body: NewPersonBody, config=Depends(require_token)):
+        """Quick-add a warm-up target (Pass X): one name, one channel. Feeding
+        the warm-up engine should not require opening Obsidian."""
+        try:
+            return people_mod.create_target(Path(config.vault_path), body.name,
+                                            body.channel.kind, body.channel.value)
+        except ValueError as e:
+            raise Envelope(
+                400, "That target couldn't be added.",
+                str(e).capitalize() + ".",
+                "Give them a name and one way to reach you — WhatsApp, email, or LinkedIn.")
 
     @app.get("/api/people/voice")
     def people_voice(config=Depends(require_token)):

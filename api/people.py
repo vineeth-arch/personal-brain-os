@@ -231,6 +231,18 @@ def profile_summary(vault_path: Path, person_id: str, config, *, router=None
 
 # ---- writers -------------------------------------------------------------------
 
+def create_target(vault_path: Path, name: str, channel_kind: str, channel_value: str,
+                  today: date | None = None) -> dict:
+    """Quick-add a warm-up target: one name, one channel, stage `identified`.
+
+    Raises ValueError for blank/unknown input — the caller turns that into the
+    plain-English refusal."""
+    today = today or date.today()
+    person = relationships.create_person(Path(vault_path), name, channel_kind, channel_value)
+    git_commit_vault(Path(vault_path), f"api: added target {person.name}")
+    return summary(person, today)
+
+
 def log_contact(vault_path: Path, person_id: str, note: str, channel: str = "",
                 today: date | None = None) -> dict | None:
     today = today or date.today()

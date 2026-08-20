@@ -343,6 +343,10 @@ export interface PersonChannels {
   linkedin?: string;
 }
 
+// mirrors pipeline/relationships.py CHANNEL_PRIORITY, in that order
+export const CHANNEL_KINDS = ["whatsapp", "email", "linkedin"] as const;
+export type ChannelKind = (typeof CHANNEL_KINDS)[number];
+
 export interface Person {
   id: string;
   name: string;

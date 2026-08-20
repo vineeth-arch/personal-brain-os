@@ -414,6 +414,32 @@ try {
     "the text posted was not the text the human read");
   console.log("✓ Profile push previews the exact text and only writes on confirm");
 
+  // ---- 9. Quick-add a warm-up target (Pass X) --------------------------------
+  // One name, one channel, one tap — and a schema-correct note on disk.
+  await page.keyboard.press("Escape");   // the drawer closes on Escape
+  await page.goto(`${BASE}/#/people`);
+  await page.getByRole("button", { name: "+ Target" }).click();
+  await page.getByLabel("Name").fill("Sara Khalid");
+  await page.getByRole("button", { name: "email", exact: true }).click();
+  await page.getByLabel("Email").fill("sara@example.com");
+  await page.getByRole("button", { name: "Add target" }).click();
+  await page.getByText("✅ Added Sara Khalid").waitFor();
+
+  const peopleDir = path.join(root, "vault", "07-People");
+  const targetFile = fs.readdirSync(peopleDir).find((f) => f.includes("sara-khalid"));
+  assert.ok(targetFile, `no note written for the new target (saw ${fs.readdirSync(peopleDir)})`);
+  const targetText = fs.readFileSync(path.join(peopleDir, targetFile), "utf8");
+  assert.match(targetText, /type: person/);
+  assert.match(targetText, /origin: human/);          // the owner typed it
+  assert.match(targetText, /warmth_stage: identified/); // spotted, not researched
+  assert.match(targetText, /channels: \{email: sara@example\.com\}/);
+  for (const section of ["## Context", "## Needs", "## Interaction log", "## Next action"]) {
+    assert.ok(targetText.includes(section), `${section} missing from the new note`);
+  }
+  const addLog = execSync(`git -C "${path.join(root, "vault")}" log -1 --format=%s`).toString();
+  assert.match(addLog, /added target Sara Khalid/);
+  console.log("✓ Quick-add writes a schema-correct person note and commits the vault");
+
   console.log("\nE2E: all checks passed.");
 } catch (err) {
   failed = true;

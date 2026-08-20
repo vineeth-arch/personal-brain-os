@@ -18,6 +18,7 @@ import type {
   EventRow,
   FailedItem,
   IntegrationsResponse,
+  ChannelKind,
   ContactResult,
   EnrichResult,
   NoteType,
@@ -194,6 +195,12 @@ export const api = {
     );
   },
   people: () => request<{ items: Person[] }>("/api/people"),
+  // Pass X: one name, one channel — feeding the warm-up engine without Obsidian
+  addTarget: (name: string, kind: ChannelKind, value: string) =>
+    request<Person>("/api/people", {
+      method: "POST",
+      body: JSON.stringify({ name, channel: { kind, value } }),
+    }),
   person: (id: string) => request<PersonDetail>(`/api/people/${id}`),
   personDraft: (id: string, channel?: string) =>
     request<PersonDraft>(`/api/people/${id}/draft`, {

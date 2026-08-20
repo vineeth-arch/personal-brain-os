@@ -187,3 +187,53 @@ Nothing is rebuilt; knowledge lives in the vault, config is one file.
 6. `events.db`, the heartbeat, and `backups/` are **disposable by design**
    (CLAUDE.md §1) — copy them if you want the history, skip them if you
    don't. No knowledge is lost either way.
+
+## Claude Desktop over MCP (optional)
+
+`scripts/cockpit_mcp.py` lets Claude Desktop read the running cockpit — status,
+people, todos — and drop a capture in. It is a proxy: no data of its own, and
+every tool is one authenticated call to a route the API already serves.
+
+It needs the cockpit to be reachable from wherever Claude Desktop runs. On the
+same machine, `http://127.0.0.1:8000` is enough; from anywhere else, use the
+tunnel hostname from the section above.
+
+1. Install the SDK into the same venv the cockpit uses (it is in
+   `requirements.txt`): `.venv/bin/pip install -r requirements.txt`.
+2. **[you]** Claude Desktop → Settings → Developer → Edit Config, and add:
+
+   ```json
+   {
+     "mcpServers": {
+       "brain-cockpit": {
+         "command": "/absolute/path/to/brain-cockpit/.venv/bin/python",
+         "args": ["/absolute/path/to/brain-cockpit/scripts/cockpit_mcp.py"],
+         "env": {
+           "COCKPIT_URL": "https://your-tunnel-hostname",
+           "COCKPIT_TOKEN": "the api.auth_token from config.json"
+         }
+       }
+     }
+   }
+   ```
+
+   Both values are read from the environment only — never from config.json,
+   never committed (CLAUDE.md §7). Absolute paths: Claude Desktop does not run
+   from this directory.
+3. **[you]** Restart Claude Desktop, then ask it for your cockpit status. When
+   it answers, set `deploy.mcp_connected` to `true` in `config.json` so the
+   Build screen's milestone ticks — only Claude Desktop can prove this one,
+   which is why it's a manual tick.
+
+**Behind Cloudflare Access:** an Access-protected hostname will reject the MCP
+server's bearer token with a login page, because Access authenticates browsers,
+not services. Either add a service-token bypass for `/api/*`, or point
+`COCKPIT_URL` at the LAN address and run Claude Desktop on the same network.
+
+If Claude says it cannot connect: check the API is up, then the URL and token,
+then restart Claude Desktop — it only reads that config at startup.
+
+What it can never do: send a message to anybody. `people_draft` returns draft
+text exactly as the cockpit's own drawer does; delivering it stays a human
+action in a human's own app (CLAUDE.md §4), and a test fails the build if a
+send path ever appears in that file.

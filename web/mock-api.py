@@ -731,6 +731,23 @@ class Handler(BaseHTTPRequestHandler):
                     "todo": "Add a People Data Labs key to the server's environment and "
                             "restart the API — everything else on this card keeps working "
                             "without it."}})
+            if path == "/api/people":
+                body = self._json_body()
+                name = (body.get("name") or "").strip()
+                channel = body.get("channel") or {}
+                kind, value = channel.get("kind", ""), (channel.get("value") or "").strip()
+                if not name or not value or kind not in ("whatsapp", "email", "linkedin"):
+                    return self._send(400, {"error": {
+                        "what": "That target couldn't be added.",
+                        "cause": "A target needs a name and one way to reach them.",
+                        "todo": "Give them a name and one channel — WhatsApp, email, "
+                                "or LinkedIn."}})
+                created = _person(datetime.now().strftime("%Y%m%d%H%M%S"), name, "", "",
+                                  "identified", 7, None, channels={kind: value})
+                created["sample"] = False
+                PEOPLE.insert(0, created)
+                return self._send(201, created)
+
             # --- profile push (Pass D) ---------------------------------------
             # The mock ships Dex ON and contacts OFF so both states — a working
             # preview→confirm and an honest "reconnect Google" pill — are

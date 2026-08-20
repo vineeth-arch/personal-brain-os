@@ -431,6 +431,26 @@ effective figure: the note's `cadence_days` when set, otherwise the default for
 its `warmth_stage`. `days_since_contact` is `null` when `last_contact` is empty,
 which counts as cold. `dormant` people are never flagged.
 
+### `POST /api/people` (Pass X)
+
+Quick-add a warm-up target — one name, one channel, so feeding the warm-up
+engine never requires opening Obsidian.
+
+Body `{"name": "Sara Khalid", "channel": {"kind": "whatsapp"|"email"|"linkedin",
+"value": "…"}}`.
+
+Writes a schema-correct note in `07-People` (`origin: human`, `source: manual`,
+`warmth_stage: identified`, empty Context/Needs/Interaction log/Next action) and
+git-commits the vault (`api: added target <name>`). `201` with the same person
+object `GET /api/people` returns.
+
+The frontmatter `id` is a `YYYYMMDDHHmmss` timestamp and is guaranteed unique —
+two targets added in the same second step the stamp forward rather than sharing
+an id, because every link in the vault points at it (SCHEMA-REFERENCE.md §1).
+
+`400` + envelope for a blank name, a blank channel value, or a channel kind
+outside the three; nothing is written in those cases.
+
 ### `GET /api/people/{id}`
 
 The same object plus `context`, `needs` and `interaction_log` (the `## Context`,
@@ -704,3 +724,30 @@ watcher's `--loop` tick.
 ```
 Booleans only — no token values (CLAUDE.md §7). `apify_last_call` = timestamp of
 the most recent Instagram `enrich` event, or null.
+
+## MCP — Claude Desktop (Pass X)
+
+`scripts/cockpit_mcp.py` is a stdio MCP server that **proxies to these same
+routes**. It holds no logic and no data: every tool is one authenticated HTTP
+call to an endpoint above, and the answer is passed back unchanged. It is not
+a second API and adds no route — if a tool needs something, the route has to
+exist here first.
+
+Configured by environment only (CLAUDE.md §7): `COCKPIT_URL`, `COCKPIT_TOKEN`.
+
+| Tool | Route |
+| --- | --- |
+| `cockpit_status` | `GET /api/status` |
+| `people_list(going_cold?, warmth_stage?)` | `GET /api/people` (filters applied in the proxy) |
+| `people_draft(person_id, channel?)` | `POST /api/people/{id}/draft` |
+| `capture_text(text, tag?)` | `POST /api/capture` |
+| `todos_today` | `GET /api/todos?range=today` |
+
+Read-mostly by design: `capture_text` is the only write. `people_draft` returns
+draft **text**, exactly as the cockpit's own drawer does — the MCP layer has no
+way to deliver a message and none may be added (CLAUDE.md §4, pinned by
+`api/tests/test_mcp.py::test_the_mcp_layer_has_no_way_to_send_anything`).
+
+Non-2xx responses keep their `{what,cause,todo}` envelope, re-rendered as the
+tool's error text ("What happened: … / Likely cause: … / What to do: …"), so a
+model holding these tools tells the owner the same thing the cockpit would.

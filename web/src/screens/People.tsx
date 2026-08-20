@@ -16,9 +16,10 @@ import type {
   PushPreview,
   PushQueueItem,
   PushTarget,
+  ChannelKind,
   WarmthStage,
 } from "../api/types";
-import { WARMTH_STAGES } from "../api/types";
+import { CHANNEL_KINDS, WARMTH_STAGES } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
 import { toast } from "../components/Toast";
 import { usePolling } from "../hooks/usePolling";
@@ -536,6 +537,108 @@ function StageRow({ person, onChanged }: { person: Person; onChanged: (p: Person
   );
 }
 
+// Quick-add (Pass X): one name, one channel, one tap. Adding someone to the
+// warm-up engine should never require opening Obsidian. The note the server
+// writes is schema-correct and git-committed like any other vault write.
+function AddTarget({
+  open,
+  onClose,
+  onAdded,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onAdded: (person: Person) => void;
+}) {
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState<ChannelKind>("whatsapp");
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const person = await api.addTarget(name.trim(), kind, value.trim());
+      onAdded(person);
+      toast(`✅ Added ${person.name}`);
+      setName("");
+      setValue("");
+      onClose();
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(envelope ? `${envelope.what} ${envelope.todo}` : "Couldn't add that target.", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <form onSubmit={submit} className="border-subtle mt-3 w-full rounded-xl border p-4">
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+        New warm-up target
+      </p>
+      <label className="text-default mt-3 block text-sm font-semibold" htmlFor="target-name">
+        Name
+      </label>
+      <input
+        id="target-name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        autoFocus
+        className="bg-subtle border-subtle text-emphasis mt-1 w-full rounded-xl border p-3 text-base"
+      />
+      <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Channel">
+        {CHANNEL_KINDS.map((c) => (
+          <button
+            key={c}
+            type="button"
+            aria-pressed={kind === c}
+            onClick={() => setKind(c)}
+            className={`min-h-11 rounded-full border px-4 text-sm font-semibold ${
+              kind === c
+                ? "bg-emphasis border-emphasis text-emphasis"
+                : "bg-subtle border-subtle text-default"
+            }`}
+          >
+            {c}
+          </button>
+        ))}
+      </div>
+      <label className="text-default mt-3 block text-sm font-semibold" htmlFor="target-channel">
+        {kind === "whatsapp" ? "Phone number" : kind === "email" ? "Email" : "LinkedIn"}
+      </label>
+      <input
+        id="target-channel"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        className="bg-subtle border-subtle text-emphasis mt-1 w-full rounded-xl border p-3 text-base"
+      />
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="submit"
+          disabled={saving || !name.trim() || !value.trim()}
+          className="bg-inverted text-inverted min-h-11 rounded-xl px-5 text-sm font-bold disabled:opacity-60"
+        >
+          {saving ? "Adding…" : "Add target"}
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold"
+        >
+          Cancel
+        </button>
+      </div>
+      <p className="text-muted mt-2 text-[11px]">
+        Starts at “identified” — spotted, not yet researched. Everything else can be filled
+        in later, here or in Obsidian.
+      </p>
+    </form>
+  );
+}
+
 // The staged half of the nightly batch: the server works out who has moved on
 // since their last push, and this lists them. Nothing pushes itself — each row
 // opens the same preview → confirm as the drawer (CLAUDE.md §3).
@@ -584,6 +687,7 @@ export function People() {
   const [overrides, setOverrides] = useState<Record<string, Person>>({});
   const [pushAvailable, setPushAvailable] = useState<PushAvailability | null>(null);
   const [queue, setQueue] = useState<PushQueueItem[]>([]);
+  const [adding, setAdding] = useState(false);
 
   const loadQueue = () => {
     void api
@@ -612,7 +716,25 @@ export function People() {
   return (
     <div className="space-y-6">
       <section>
-        <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">People</p>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">People</p>
+          <button
+            type="button"
+            onClick={() => setAdding((v) => !v)}
+            aria-expanded={adding}
+            className="border-emphasis text-emphasis min-h-11 rounded-xl border px-4 text-sm font-bold"
+          >
+            + Target
+          </button>
+        </div>
+        <AddTarget
+          open={adding}
+          onClose={() => setAdding(false)}
+          onAdded={(person) => {
+            record(person);
+            refetch();
+          }}
+        />
         <div className="mt-2 flex flex-wrap gap-2" role="group" aria-label="Filter">
           {FILTERS.map((f) => (
             <button
