@@ -31,7 +31,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from pipeline import classify, config as config_mod, enrich, intake, route as proute, todos as ptodos, watcher
 
-from . import build_status, google, integrations, notes, people as people_mod, selfcheck, service, watchdog
+from . import (build_status, google, integrations, notes, people as people_mod,
+               push as push_mod, selfcheck, service, watchdog)
 
 log = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
@@ -144,6 +145,15 @@ class StageBody(BaseModel):
 
 class VoiceBody(BaseModel):
     samples: list[str]
+
+
+class PushPreviewBody(BaseModel):
+    target: str
+
+
+class PushBody(BaseModel):
+    target: str
+    text: str
 
 
 def create_app(root: Path | None = None) -> FastAPI:
@@ -558,6 +568,46 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "Refresh the People screen.")
         return updated
 
+    # ---- profile push (Pass D) -------------------------------------------------
+    # Writes PROFILE DATA into the owner's own CRM/address book. Nothing is
+    # delivered to another person here (CLAUDE.md §4), and nothing is written
+    # without a human confirming the exact text first (CLAUDE.md §3).
+
+    def _push_event_log(config):
+        from pipeline.events import EventLog
+        return EventLog(db_path, Path(config.vault_path))
+
+    @app.post("/api/people/{person_id}/push/preview")
+    def person_push_preview(person_id: str, body: PushPreviewBody,
+                            config=Depends(require_token)):
+        try:
+            return push_mod.preview(Path(config.vault_path), person_id, body.target,
+                                    config, app.state.google_tokens)
+        except push_mod.PushError as e:
+            raise Envelope(e.status, **e.envelope)
+
+    @app.post("/api/people/{person_id}/push")
+    def person_push(person_id: str, body: PushBody, config=Depends(require_token)):
+        event_log = None
+        try:
+            event_log = _push_event_log(config)
+        except Exception:
+            log.exception("push event log unavailable")   # never block the push on bookkeeping
+        try:
+            return push_mod.push(Path(config.vault_path), person_id, body.target,
+                                 body.text, config, app.state.google_tokens,
+                                 event_log=event_log)
+        except push_mod.PushError as e:
+            raise Envelope(e.status, **e.envelope)
+        finally:
+            if event_log is not None:
+                event_log.close()
+
+    @app.get("/api/push/queue")
+    def push_queue(config=Depends(require_token)):
+        return {"items": push_mod.queue(Path(config.vault_path), db_path, config),
+                "available": push_mod.availability(config)}
+
     @app.post("/api/failed/{event_id}/retry")
     def retry(event_id: int, config=Depends(require_token)):
         row = service.failed_row(db_path, event_id)
@@ -733,6 +783,7 @@ def create_app(root: Path | None = None) -> FastAPI:
             "apify_last_call": last_ig,
             "youtube_keyless": True,
         }
+        safe["push"] = push_mod.availability(config)   # presence booleans only
         return safe
 
     @app.get("/api/config")

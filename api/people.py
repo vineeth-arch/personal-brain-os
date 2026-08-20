@@ -41,6 +41,8 @@ def summary(person: relationships.Person, today: date) -> dict:
     return {
         "id": person.id,
         "name": person.name,
+        "dex_id": person.dex_id,
+        "dex_deeplink": person.dex_deeplink,
         "relationship": person.relationship,
         "company": person.company,
         "warmth_stage": person.warmth_stage,
@@ -172,6 +174,59 @@ def draft(vault_path: Path, person_id: str, channel: str | None,
         "provider": provider,
         "attempts": [a.__dict__ for a in attempts],
     }
+
+
+# ---- profile summaries (Pass D — what gets pushed to Dex / Google Contacts) -----
+
+def build_summary_prompt(person: relationships.Person) -> str:
+    """A factual third-person profile summary, not a message.
+
+    Same context loader as the draft prompt, different leash: a draft may be
+    warm and vague, a CRM summary must be true. A thin interaction log produces
+    a SHORTER summary — inventing a plausible history is the one failure mode
+    that would poison the owner's own CRM.
+    """
+    log_text = person.interaction_log()
+    context = person.sections.get("Context", "").strip()
+    needs = person.sections.get("Needs", "").strip()
+    next_action = person.next_action()
+
+    return (
+        f"Write a short profile summary of {person.name} for my own contact "
+        "manager. Three or four short lines, in this order, one per line:\n"
+        "1. who they are;\n"
+        "2. the last real interaction;\n"
+        "3. what is currently open between us;\n"
+        "4. the next step, if there is one.\n\n"
+        "---\n"
+        + (f"What I know about them:\n{context}\n\n" if context else "")
+        + (f"What they need:\n{needs}\n\n" if needs else "")
+        + (f"Our history:\n{log_text}\n\n" if log_text
+           else "Our history: nothing logged yet.\n\n")
+        + (f"My next action:\n{next_action}\n\n" if next_action else "")
+        + (f"Relationship: {person.relationship}\n" if person.relationship else "")
+        + (f"Company: {person.company}\n" if person.company else "")
+        + "\nUse ONLY what is written above. Do not invent meetings, projects, "
+          "mutual friends, dates, or anything they said. If a line has nothing "
+          "true to say, leave that line out entirely — a two-line honest "
+          "summary is correct, a four-line invented one is not. Write plain "
+          "sentences in the third person. Return only the summary text.")
+
+
+def profile_summary(vault_path: Path, person_id: str, config, *, router=None
+                    ) -> tuple[relationships.Person, str] | None:
+    """(person, summary text) — None for an unknown id.
+
+    Raises RuntimeError when no provider in the chain could write it, which the
+    caller turns into the plain-English 502."""
+    person = relationships.find_person(vault_path, person_id)
+    if not person:
+        return None
+    prompt = build_summary_prompt(person)
+    text, _provider, _attempts = (router or llm.complete_text)(prompt, config)
+    if not text or not text.strip():
+        raise RuntimeError("no provider could write the summary")
+    return person, text.strip()
 
 
 # ---- writers -------------------------------------------------------------------

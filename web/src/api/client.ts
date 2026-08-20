@@ -24,6 +24,11 @@ import type {
   Person,
   PersonDetail,
   PersonDraft,
+  PushAvailability,
+  PushPreview,
+  PushQueueItem,
+  PushResult,
+  PushTarget,
   ResurfacedNote,
   ReviewItem,
   Resource,
@@ -207,6 +212,20 @@ export const api = {
     }),
   enrichPerson: (id: string) =>
     request<EnrichResult>(`/api/people/${id}/enrich`, { method: "POST" }),
+  // Pass D: preview is the dry run of push — the human confirms the exact text
+  // the server will write, and nothing leaves without that tap.
+  pushPreview: (id: string, target: PushTarget) =>
+    request<PushPreview>(`/api/people/${id}/push/preview`, {
+      method: "POST",
+      body: JSON.stringify({ target }),
+    }),
+  push: (id: string, target: PushTarget, text: string) =>
+    request<PushResult>(`/api/people/${id}/push`, {
+      method: "POST",
+      body: JSON.stringify({ target, text }),
+    }),
+  pushQueue: () =>
+    request<{ items: PushQueueItem[]; available: PushAvailability }>("/api/push/queue"),
   voice: () => request<VoiceStatus>("/api/people/voice"),
   saveVoice: (samples: string[]) =>
     request<VoiceStatus>("/api/people/voice", {

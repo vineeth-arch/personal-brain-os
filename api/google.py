@@ -34,10 +34,14 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 CALENDAR_BASE = "https://www.googleapis.com/calendar/v3"
+CONTACTS_SCOPE = "https://www.googleapis.com/auth/contacts"
 SCOPES = " ".join([
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/calendar.readonly",
+    # Pass D: update the notes field of contacts that ALREADY exist. The app
+    # never creates a contact, and never reads the address book into the vault.
+    CONTACTS_SCOPE,
 ])
 TIMEOUT = 10
 STATE_TTL_SECONDS = 600
@@ -73,6 +77,19 @@ def refresh_token(config) -> str:
 
 def connected(config) -> bool:
     return bool(refresh_token(config))
+
+
+def granted_scopes(config) -> str:
+    return str((config.raw.get("google") or {}).get("scopes") or "")
+
+
+def has_contacts_scope(config) -> bool:
+    """True only when the stored grant includes the contacts permission.
+
+    An account linked before Pass D has a valid refresh token but no contacts
+    scope — that is a normal state, and the honest answer is "reconnect once",
+    not a failed API call."""
+    return CONTACTS_SCOPE in granted_scopes(config)
 
 
 # ---- OAuth flow ---------------------------------------------------------------
@@ -120,6 +137,10 @@ def finish_connect(states: dict, config_path: Path, state: str, code: str) -> No
 
     raw = json.loads(config_path.read_text())
     raw.setdefault("google", {})["refresh_token"] = refresh
+    # What Google ACTUALLY granted, so "do we have the contacts permission?"
+    # is answerable without a network call (and so a link made before Pass D
+    # reports honestly that it needs one re-consent).
+    raw["google"]["scopes"] = tokens.get("scope") or ""
     fd, tmp = tempfile.mkstemp(dir=config_path.parent, prefix=".config-", suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:

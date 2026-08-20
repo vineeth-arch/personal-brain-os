@@ -163,6 +163,7 @@ def _tick(config, events, now: datetime) -> None:
     quiet_pipeline = not (stats["captured"] or stats["needs_review"] or stats["failed"])
     # the relationship half of the morning — folded into THIS push, never a second one
     people_lines = morning.people_section(config, today)
+    people_lines += morning.push_section(config, events.db_path)
     if not due_today and not overdue and quiet_pipeline and not people_lines:
         events.mark_reminder(digest_key)  # nothing to say today; don't re-check
         return

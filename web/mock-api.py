@@ -178,9 +178,11 @@ FAIL_ENVELOPE = {
 
 # Note type → folder, mirroring pipeline/route.py TYPE_FOLDER (keep in sync).
 # --- people (Pass MW) --------------------------------------------------------
-def _person(pid, name, relationship, company, stage, cadence, days, action="", channels=None):
+def _person(pid, name, relationship, company, stage, cadence, days, action="", channels=None,
+            dex_id=""):
     return {
         "id": pid, "name": name, "relationship": relationship, "company": company,
+        "dex_id": dex_id, "dex_deeplink": "",
         "warmth_stage": stage, "status": "active", "cadence_days": cadence,
         "last_contact": None if days is None else "2026-07-20",
         "days_since_contact": days,
@@ -195,7 +197,7 @@ def _person(pid, name, relationship, company, stage, cadence, days, action="", c
 
 PEOPLE = [
     _person("20260701090100", "Priya Raman", "client", "Alserkal Avenue",
-            "conversing", 3, 24, "Send the studio deck today"),
+            "conversing", 3, 24, "Send the studio deck today", dex_id="dex-priya"),
     _person("20260701090200", "Omar Haddad", "prospect", "Tashkeel", "researched", 5, 12,
             channels={"email": "omar@example.com"}),
     _person("20260701090300", "Aisha Noor", "prospect", "Dubai Design District",
@@ -210,6 +212,13 @@ PEOPLE_DETAIL_EXTRA = {
 }
 
 VOICE = {"exists": False, "file": "_System/my-voice.md", "samples": 0}
+
+# --- profile push (Pass D) ---------------------------------------------------
+# Mirrors pipeline/dex.py: the app owns what is between these markers and
+# nothing else in the field.
+PUSH_MARKER_OPEN = "<!-- BRAIN-OS -->"
+PUSH_MARKER_CLOSE = "<!-- /BRAIN-OS -->"
+PUSHED: set[str] = set()      # who has been pushed this mock session
 
 # mirrors api/notes.py AUDIO_MIME_EXT — what the mic button may upload
 AUDIO_MIME_TYPES = {"audio/webm", "audio/ogg", "audio/mp4", "audio/m4a",
@@ -241,6 +250,9 @@ CONFIG = {
         "apify_last_call": None if MODE_EMPTY else iso(now - timedelta(hours=6)),
         "youtube_keyless": True,
     },
+    # Dex on, contacts off — so the working push AND the honest "reconnect
+    # Google" pill are both visible without any real key.
+    "push": {"dex": True, "contacts_scope": False},
 }
 
 PROVIDERS = [] if MODE_EMPTY else [
@@ -474,6 +486,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _json_body(self) -> dict:
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
+        try:
+            return json.loads(raw or b"{}")
+        except json.JSONDecodeError:
+            return {}
+
     def do_OPTIONS(self):  # CORS preflight
         self._send(204, {})
 
@@ -503,6 +522,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"items": items})
             if path == "/api/people/voice":
                 return self._send(200, VOICE)
+            if path == "/api/push/queue":
+                # staged, never pushed: whoever has a dex_id and hasn't been
+                # pushed yet this session
+                items = [] if MODE_EMPTY else [
+                    {**p, "targets": ["dex"], "last_pushed": None}
+                    for p in PEOPLE if p["dex_id"] and p["id"] not in PUSHED
+                ]
+                return self._send(200, {"items": items, "available": CONFIG["push"]})
             if path.startswith("/api/people/"):
                 pid = path.split("/")[3]
                 found = next((p for p in PEOPLE if p["id"] == pid), None)
@@ -704,6 +731,52 @@ class Handler(BaseHTTPRequestHandler):
                     "todo": "Add a People Data Labs key to the server's environment and "
                             "restart the API — everything else on this card keeps working "
                             "without it."}})
+            # --- profile push (Pass D) ---------------------------------------
+            # The mock ships Dex ON and contacts OFF so both states — a working
+            # preview→confirm and an honest "reconnect Google" pill — are
+            # visible without any real key.
+            if path.startswith("/api/people/") and path.endswith("/push/preview"):
+                body = self._json_body()
+                pid = path.split("/")[3]
+                person = next((p for p in PEOPLE if p["id"] == pid), None)
+                if person is None:
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in the vault.", "cause": "Unknown id.",
+                        "todo": "Refresh the People screen."}})
+                if body.get("target") == "contacts":
+                    return self._send(409, {"error": {
+                        "what": "Google Contacts isn't connected yet.",
+                        "cause": "This cockpit's Google link was made before it could "
+                                 "update contacts, so Google hasn't granted the contacts "
+                                 "permission.",
+                        "todo": "Open Integrations, press Disconnect, then Connect Google "
+                                "again — it's a one-time re-consent."}})
+                summary = (f"{person['name']} runs the artist programme at "
+                           f"{person['company'] or 'their company'}.\n"
+                           "Last spoke on 2026-07-20 about the season programme.\n"
+                           "Open: whether the studio can hold a full season.\n"
+                           f"Next: {person['next_action'] or 'no step owed'}.")
+                block = (f"{PUSH_MARKER_OPEN}\n{summary}\n· via Brain OS 2026-08-20\n"
+                         f"{PUSH_MARKER_CLOSE}")
+                return self._send(200, {
+                    "target": "dex", "person_id": pid, "name": person["name"],
+                    "summary": summary, "block": block,
+                    "destination": f"Dex contact {person['dex_id']} · description",
+                    "replaced": ""})
+            if path.startswith("/api/people/") and path.endswith("/push"):
+                body = self._json_body()
+                pid = path.split("/")[3]
+                person = next((p for p in PEOPLE if p["id"] == pid), None)
+                print("PUSH", pid, body.get("target"), repr(body.get("text", ""))[:80])
+                if person is None:
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in the vault.", "cause": "Unknown id.",
+                        "todo": "Refresh the People screen."}})
+                PUSHED.add(pid)
+                return self._send(200, {
+                    "ok": True, "target": body.get("target", "dex"),
+                    "changed": f"Dex contact {person['dex_id']} · description",
+                    "replaced": False})
             if path == "/api/capture":
                 print("CAPTURE", self.rfile.read(int(self.headers.get("Content-Length", 0))))
                 return self._send(201, {"id": "20260703061500", "status": "captured"})

@@ -66,6 +66,8 @@ class Person:
     cadence_days: int | None = None
     last_contact: date | None = None
     warmth_stage: str = ""
+    dex_id: str = ""
+    dex_deeplink: str = ""
     status: str = "active"
     sample: bool = False
     sections: dict[str, str] = field(default_factory=dict)
@@ -176,6 +178,8 @@ def parse_person(path: Path) -> Person | None:
         cadence_days=cadence,
         last_contact=_parse_date(fm.get("last_contact", "")),
         warmth_stage=(fm.get("warmth_stage") or "").strip().lower(),
+        dex_id=fm.get("dex_id", "").strip(),
+        dex_deeplink=fm.get("dex_deeplink", "").strip(),
         status=(fm.get("status") or "active").strip().lower(),
         sample=(fm.get("sample") or "").strip().lower() == "true",
         sections=_sections(parts[2]),
