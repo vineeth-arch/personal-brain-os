@@ -82,6 +82,20 @@ class Server:
             raw = e.read()
             return e.code, json.loads(raw) if raw else None
 
+    def raw(self, method: str, path: str, data: bytes, content_type: str, token=TOKEN):
+        """Post a raw (non-JSON) body — how the mic button uploads a recording."""
+        url = f"http://127.0.0.1:{self.port}{path}"
+        headers = {"Content-Type": content_type}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        r = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(r) as resp:
+                return resp.status, json.loads(resp.read() or "null")
+        except urllib.error.HTTPError as e:
+            body = e.read()
+            return e.code, json.loads(body) if body else None
+
 
 @pytest.fixture
 def env(tmp_path):
@@ -217,6 +231,57 @@ def test_capture_same_minute_collision(env):
         # the -2 lands on the name, before the tag, so the tag still parses
         assert any("-2 #todo" in n for n in names)
         assert all(i.tag == "todo" for i in intake.poll(inbox))
+
+
+def test_capture_audio_roundtrip(env):
+    root, _, inbox, _ = env
+    from pipeline import intake
+    with Server(root) as s:
+        code, body = s.raw("POST", "/api/capture/audio?tag=idea&name=walk%20thought",
+                           b"\x1aE\xdf\xa3fake webm bytes", "audio/webm;codecs=opus")
+        assert code == 201 and body["status"] == "captured"
+        items = intake.poll(inbox)
+        assert len(items) == 1
+        item = items[0]
+        # a recording is audio the pipeline will transcribe, with the tag free-routing it
+        assert item.kind == "audio" and item.source == "voice" and item.tag == "idea"
+        assert item.path.suffix == ".webm" and "walk-thought" in item.path.name
+        assert body["id"] == item.captured.strftime("%Y%m%d%H%M%S")
+
+
+def test_capture_audio_rejects_bad_input(env):
+    root, _, inbox, _ = env
+    with Server(root) as s:
+        # not audio at all
+        code, body = s.raw("POST", "/api/capture/audio", b"hello", "text/plain")
+        assert code == 400 and set(body["error"]) == {"what", "cause", "todo"}
+        # audio, but a tag outside the 8 capture tags
+        assert s.raw("POST", "/api/capture/audio?tag=bogus", b"x", "audio/webm")[0] == 400
+        # an empty recording
+        assert s.raw("POST", "/api/capture/audio", b"", "audio/webm")[0] == 400
+        # nothing half-written is left behind for the watcher to trip over
+        assert list(inbox.iterdir()) == []
+
+
+def test_capture_audio_size_cap(env, monkeypatch):
+    root, _, inbox, _ = env
+    from api import notes as notes_mod
+    monkeypatch.setattr(notes_mod, "MAX_AUDIO_BYTES", 1024)
+    with Server(root) as s:
+        code, body = s.raw("POST", "/api/capture/audio", b"x" * 4096, "audio/webm")
+        assert code == 413 and body["error"]["todo"]
+        assert list(inbox.iterdir()) == []
+
+
+def test_capture_audio_same_minute_collision(env):
+    root, _, inbox, _ = env
+    from pipeline import intake
+    with Server(root) as s:
+        s.raw("POST", "/api/capture/audio?tag=todo", b"one", "audio/webm")
+        s.raw("POST", "/api/capture/audio?tag=todo", b"two", "audio/webm")
+    names = sorted(p.name for p in inbox.glob("*.webm"))
+    assert len(names) == 2 and any("-2 #todo" in n for n in names)
+    assert all(i.tag == "todo" for i in intake.poll(inbox))
 
 
 def test_failed_and_retry(env):

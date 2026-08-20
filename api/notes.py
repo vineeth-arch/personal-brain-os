@@ -229,6 +229,47 @@ def valid_tag(tag: str | None) -> bool:
     return tag is None or tag in classify.TAG_TO_TYPE
 
 
+# audio the browser's MediaRecorder can produce, mapped to the extension the
+# intake stage recognises. Safari records mp4/m4a, everything else webm.
+AUDIO_MIME_EXT = {
+    "audio/webm": ".webm",
+    "audio/ogg": ".ogg",
+    "audio/mp4": ".mp4",
+    "audio/m4a": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/mpeg": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+}
+MAX_AUDIO_BYTES = 100 * 1024 * 1024
+
+
+def audio_extension(content_type: str | None) -> str | None:
+    """Extension for a recording's Content-Type, or None if it isn't audio we
+    can hand to the pipeline. Parameters (`;codecs=opus`) are ignored."""
+    base = (content_type or "").split(";")[0].strip().lower()
+    return AUDIO_MIME_EXT.get(base)
+
+
+def audio_capture_path(inbox: Path, ext: str, name: str | None, tag: str | None,
+                       now: datetime | None = None) -> tuple[Path, str]:
+    """Reserve the inbox filename for a recording and return (path, note id).
+
+    Same stamping as capture(): "YYYY-MM-DD-HHmm <name> #tag.<ext>", collision
+    suffix on the NAME (after the #tag it would break the free tag-route)."""
+    inbox.mkdir(parents=True, exist_ok=True)
+    now = now or datetime.now()
+    stamp = now.strftime("%Y-%m-%d-%H%M")
+    slug = _slug(name) if name and name.strip() else "voice-note"
+    suffix = f" #{tag}" if tag else ""
+    path = inbox / f"{stamp} {slug}{suffix}{ext}"
+    i = 1
+    while path.exists():
+        i += 1
+        path = inbox / f"{stamp} {slug}-{i}{suffix}{ext}"
+    return path, now.strftime("%Y%m%d%H%M") + "00"
+
+
 # ---- resurface ----------------------------------------------------------------
 
 def resurface(vault: Path) -> dict | None:

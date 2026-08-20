@@ -16,6 +16,7 @@ import os
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -387,6 +388,52 @@ def create_app(root: Path | None = None) -> FastAPI:
         # the inbox is outside the vault — nothing to git-commit here; the
         # watcher's processing (and any approve) is where vault history is made
         note_id = notes.capture(Path(config.inbox_path), text, body.tag)
+        return {"id": note_id, "status": "captured"}
+
+    @app.post("/api/capture/audio", status_code=201)
+    async def capture_audio(request: Request, config=Depends(require_token)):
+        """A recording from the cockpit's mic button. The body is the raw audio
+        (no multipart — python-multipart isn't a locked dependency, CLAUDE.md
+        §7), streamed to the inbox so a long recording never sits in memory."""
+        ext = notes.audio_extension(request.headers.get("content-type"))
+        if ext is None:
+            raise Envelope(
+                400, "That recording isn't in a format the pipeline can read.",
+                f"The upload's Content-Type was '{request.headers.get('content-type') or 'missing'}'.",
+                "Record again with the mic button, or drop the audio file into the inbox folder instead.")
+        tag = request.query_params.get("tag") or None
+        if not notes.valid_tag(tag):
+            raise Envelope(
+                400, "That's not a capture tag the pipeline knows.",
+                f"'{tag}' isn't one of the 8 capture tags in SCHEMA-REFERENCE.md.",
+                "Pick one of the tag chips, or send no tag and let the classifier decide.")
+
+        inbox = Path(config.inbox_path)
+        path, note_id = notes.audio_capture_path(inbox, ext, request.query_params.get("name"), tag)
+        fd, tmp = tempfile.mkstemp(dir=inbox, prefix=".capture-", suffix=".tmp")
+        written = 0
+        try:
+            with os.fdopen(fd, "wb") as f:
+                async for chunk in request.stream():
+                    written += len(chunk)
+                    if written > notes.MAX_AUDIO_BYTES:
+                        raise Envelope(
+                            413, "That recording is too large to upload.",
+                            f"The upload passed the {notes.MAX_AUDIO_BYTES // (1024 * 1024)} MB limit "
+                            "this server accepts.",
+                            "Record in shorter takes, or copy the file straight into the inbox folder "
+                            "— the watcher picks it up from there with no size limit.")
+                    f.write(chunk)
+            if written == 0:
+                raise Envelope(
+                    400, "There was nothing to capture.",
+                    "The recording arrived empty — the mic may have been blocked mid-recording.",
+                    "Check the microphone permission, then record again.")
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        # the inbox is outside the vault — nothing to git-commit here
         return {"id": note_id, "status": "captured"}
 
     @app.post("/api/failed/{event_id}/retry")

@@ -9,7 +9,9 @@ from pathlib import Path
 
 from . import enrich
 
-AUDIO_EXT = {".m4a", ".mp3", ".wav", ".aac", ".opus", ".ogg", ".oga", ".flac"}
+# .webm/.mp4 are what the cockpit's mic button records (MediaRecorder)
+AUDIO_EXT = {".m4a", ".mp3", ".wav", ".aac", ".opus", ".ogg", ".oga", ".flac",
+             ".webm", ".mp4"}
 TEXT_EXT = {".txt", ".md"}
 
 # "2026-07-03-0900 morning walk #idea"  (time, name, tag all after the date are optional)

@@ -165,6 +165,22 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text, tag }),
     }),
+  // The recording goes up as the raw body (the server takes no multipart —
+  // python-multipart isn't a locked dependency), so the blob's own mime type
+  // is what tells the server which extension the inbox file gets.
+  captureAudio: (blob: Blob, tag: CaptureTag | null) => {
+    const params = new URLSearchParams();
+    if (tag) params.set("tag", tag);
+    const query = params.toString();
+    return request<{ id: string; status: string }>(
+      `/api/capture/audio${query ? `?${query}` : ""}`,
+      {
+        method: "POST",
+        body: blob,
+        headers: { "Content-Type": blob.type || "audio/webm" },
+      },
+    );
+  },
   failed: () => request<{ items: FailedItem[] }>("/api/failed"),
   retry: (id: number) =>
     request<{ ok: boolean }>(`/api/failed/${id}/retry`, { method: "POST" }),

@@ -98,6 +98,24 @@ capture into `inbox_path` with the tag baked into the filename so
 
 `201 {"id": "20260703061500", "status": "captured"}`
 
+### `POST /api/capture/audio?tag=&name=`
+
+A recording from the cockpit's mic button. The body is the **raw audio bytes**
+— not multipart (`python-multipart` isn't a locked dependency, CLAUDE.md §7) —
+and `Content-Type` decides the inbox file's extension: `audio/webm`,
+`audio/ogg`, `audio/mp4`, `audio/m4a`, `audio/x-m4a`, `audio/mpeg`,
+`audio/wav` (any `;codecs=` parameter is ignored). Both query params are
+optional: `tag` is one of the 8 capture tags (no `#`), `name` becomes the
+filename's human hint (default `voice-note`).
+
+`201 {"id": "20260703061500", "status": "captured"}` — same shape as the text
+capture, and the same minute-precision predicted id.
+
+`400` when the Content-Type isn't audio the pipeline reads, when the tag isn't
+a capture tag, or when the recording arrives empty. `413` when the upload
+passes the server's 100 MB limit — nothing partial is left in the inbox in any
+of those cases.
+
 ### `GET /api/failed`
 
 ```json

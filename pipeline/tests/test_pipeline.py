@@ -118,3 +118,34 @@ def test_end_to_end(vault_env):
     assert (config.vault_path / "_System" / "capture_log.md").exists()
     assert (tmp_path / ".watcher-heartbeat").exists()
     events.close()
+
+
+def test_mic_recording_runs_end_to_end(tmp_path, monkeypatch):
+    """Pass V: a .webm from the cockpit's mic button is a first-class capture —
+    the browser's format must reach a routed note like any phone recording."""
+    from pipeline.events import EventLog
+
+    vault, inbox, archive, failed = (tmp_path / d for d in ("vault", "inbox", "archive", "failed"))
+    for d in (vault, inbox, archive, failed):
+        d.mkdir()
+    # exactly what api/notes.audio_capture_path stamps for a tagless recording
+    (inbox / "2026-07-03-0900 voice-note.webm").write_bytes(b"\x1aE\xdf\xa3webm-ish bytes")
+
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed)
+    events = EventLog(tmp_path / "events.db", vault)
+    deps = watcher.Deps(transcriber=FakeTranscriber(), classifier_fn=stub_classifier)
+
+    results = watcher.run_once(config, events, deps)
+
+    assert len(results) == 1 and results[0].status != "failed", results[0].error
+    # the FakeTranscriber speaks "#journal …" → free tag-route into 01-Journal
+    notes = _notes_of_type(vault, "01-Journal", "journal")
+    assert len(notes) == 1
+    fm = _fm(notes[0])
+    assert fm["source"] == "voice" and fm["origin"] == "human"
+    assert len(fm["id"]) == 14 and fm["id"].isdigit()
+    # source archived, never deleted; inbox drained
+    assert not any(inbox.iterdir())
+    assert len(list(archive.iterdir())) == 1

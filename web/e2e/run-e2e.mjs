@@ -110,9 +110,14 @@ try {
   const { chromium } = loadPlaywright();
   // CI images often ship a chromium that predates the installed playwright;
   // COCKPIT_CHROMIUM points at it instead of demanding a matching download.
-  browser = await chromium.launch(
-    process.env.COCKPIT_CHROMIUM ? { executablePath: process.env.COCKPIT_CHROMIUM } : {});
-  const page = await browser.newPage();
+  // --use-fake-* give the headless browser a silent synthetic microphone, so
+  // the mic button's getUserMedia resolves without a real device or a prompt.
+  browser = await chromium.launch({
+    ...(process.env.COCKPIT_CHROMIUM ? { executablePath: process.env.COCKPIT_CHROMIUM } : {}),
+    args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+  });
+  const context = await browser.newContext({ permissions: ["microphone"] });
+  const page = await context.newPage();
   // seed the connection before any script runs — skips the TokenGate screen
   await page.addInitScript(([base, token]) => {
     localStorage.setItem("cockpit.apiBase", base);
@@ -238,6 +243,32 @@ try {
     assert.ok([404, 405].includes(probe.status), `unexpected status ${probe.status} for ${sendPath}`);
   }
   console.log("✓ No send route exists on the API");
+
+  // ---- 6. Mic capture: record in the PWA → a file lands in the inbox (Pass V) ---
+  await page.goto(`${BASE}/#/today`);
+  const micButton = page.getByRole("button", { name: "Record a voice capture" });
+  await micButton.waitFor();
+  await micButton.click();
+  // the running timer is the proof it armed, not just that the button toggled
+  await page.getByRole("button", { name: "Stop recording" }).waitFor();
+  await page.getByText("Tap to stop").waitFor();
+  await new Promise((r) => setTimeout(r, 1200));   // let the recorder collect audio
+  await page.getByRole("button", { name: "Stop recording" }).click();
+  await page.getByText("✅ Captured").waitFor();
+
+  const inboxDir = path.join(root, "inbox");
+  let recorded = null;
+  for (let i = 0; i < 50; i++) {
+    recorded = fs.readdirSync(inboxDir).filter((f) => !f.startsWith("."));
+    if (recorded.length) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(recorded.length === 1, `expected one recording in the inbox, saw ${JSON.stringify(recorded)}`);
+  const stamped = recorded[0];
+  assert.match(stamped, /^\d{4}-\d{2}-\d{2}-\d{4} voice-note\.(webm|mp4|ogg)$/,
+    `recording filename '${stamped}' is not the stamp intake parses`);
+  assert.ok(fs.statSync(path.join(inboxDir, stamped)).size > 0, "the recording landed empty");
+  console.log(`✓ Mic capture wrote ${stamped} into the inbox`);
 
   console.log("\nE2E: all checks passed.");
 } catch (err) {

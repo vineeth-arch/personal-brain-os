@@ -177,6 +177,10 @@ FAIL_ENVELOPE = {
 
 
 # Note type → folder, mirroring pipeline/route.py TYPE_FOLDER (keep in sync).
+# mirrors api/notes.py AUDIO_MIME_EXT — what the mic button may upload
+AUDIO_MIME_TYPES = {"audio/webm", "audio/ogg", "audio/mp4", "audio/m4a",
+                    "audio/x-m4a", "audio/mpeg", "audio/wav", "audio/x-wav"}
+
 TYPE_FOLDER = {
     "journal": "01-Journal", "musing": "02-Musings", "learning": "03-Learnings",
     "insight": "wiki", "resource": "04-Resources", "project": "05-Projects",
@@ -577,6 +581,23 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST":
             if path == "/api/capture":
                 print("CAPTURE", self.rfile.read(int(self.headers.get("Content-Length", 0))))
+                return self._send(201, {"id": "20260703061500", "status": "captured"})
+            if path == "/api/capture/audio":
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                print("CAPTURE AUDIO", ctype, len(raw), "bytes")
+                if ctype not in AUDIO_MIME_TYPES:
+                    return self._send(400, {"error": {
+                        "what": "That recording isn't in a format the pipeline can read.",
+                        "cause": f"The upload's Content-Type was '{ctype or 'missing'}'.",
+                        "todo": "Record again with the mic button, or drop the audio file "
+                                "into the inbox folder instead."}})
+                if not raw:
+                    return self._send(400, {"error": {
+                        "what": "There was nothing to capture.",
+                        "cause": "The recording arrived empty — the mic may have been "
+                                 "blocked mid-recording.",
+                        "todo": "Check the microphone permission, then record again."}})
                 return self._send(201, {"id": "20260703061500", "status": "captured"})
             if path.startswith("/api/review/") and path.endswith("/approve"):
                 note_id = path.split("/")[3]
