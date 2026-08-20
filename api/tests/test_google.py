@@ -86,7 +86,8 @@ def test_no_send_path_exists_anywhere():
         for path in (REPO_ROOT / folder).rglob("*"):
             if path.suffix not in {".py", ".ts", ".tsx"} or not path.is_file():
                 continue
-            if path.name == "test_google.py":   # this file names it to forbid it
+            # the guard tests spell the patterns out in order to forbid them
+            if path.name in {"test_google.py", "test_no_send.py"}:
                 continue
             for i, line in enumerate(path.read_text().splitlines(), start=1):
                 if pattern.search(line):

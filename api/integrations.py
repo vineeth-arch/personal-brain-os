@@ -209,6 +209,29 @@ def _check_key_service(card_id: str, name: str, icon: str, description: str,
     return card
 
 
+def _check_pdl(config, state: dict) -> dict:
+    """People Data Labs (Pass MW). No key is a normal state: the People screen
+    works fully without enrichment, it just can't look up a role or company."""
+    key = os.environ.get("PDL_API_KEY")
+    card = {"id": "pdl", "group": "health", "name": "People Data Labs", "icon": "link",
+            "description": "Looks up role and company for a person card, on demand.",
+            "meta": {"key_present": bool(key)}}
+    if not key:
+        card.update(
+            status="unknown", badge="Not configured",
+            detail="Person cards work without it; enrichment is the only thing missing.",
+            error={
+                "what": "People Data Labs has no API key.",
+                "cause": "PDL_API_KEY isn't set in the server's shell.",
+                "todo": "Add a key (100 free lookups a month) and restart the API, "
+                        "or leave it — nothing else depends on it.",
+            })
+        return card
+    card.update(status="ok", badge="Key set",
+                detail="Enrichment is available from a person's card.")
+    return card
+
+
 def _check_transliteration(config, state: dict) -> dict:
     """Devanagari → Hinglish (Pass P). Not configured is a normal, honest state:
     the pipeline still writes the note, just in the script whisper returned."""
@@ -487,6 +510,7 @@ def build_payload(config, heartbeat_path: Path, fresh: bool, state: dict) -> dic
             "Classifies untagged captures into the right note type.",
             config.anthropic_key, None, fresh, _test_call_anthropic, state),
         _check_transliteration(config, state),
+        _check_pdl(config, state),
         _check_ntfy(config, state),
         _check_vault_sync(config),
         _check_git(config),

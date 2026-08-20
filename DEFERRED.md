@@ -36,4 +36,9 @@
 - Pass P: speaker diarization ("who said what") on meeting transcripts — needs a second model in the chain; the transcript stays undiarized for now.
 - Pass P: per-chunk resume for a long recording (today a re-run re-transcribes every segment, and one permanently failed segment stays a placeholder).
 - Pass P: transliteration quality dial — no way yet to re-run Hindi → Hinglish on an existing note with a better model.
+- Pass MW: real Dex sync (write-back / CardDAV) — Dex stays a launcher tile; the person schema keeps dex_id + dex_deeplink ready for it.
+- Pass MW: draft history — a draft is generated fresh each time and never stored, so there is no "what did I send last time" beyond the interaction log line.
+- Pass MW: per-person cadence editing from the cockpit (cadence_days and the stage defaults are set in the note / in one constants dict).
+- Pass MW: a People sample-purge endpoint in the API — scripts/seed_people.py --purge covers it for now.
+- Pass MW: PDL credits counter is read from the response header per call; no running total is stored between calls.
 - NOT DEFERRED — PERMANENTLY OUT (CLAUDE.md §4): sending email or any message from the app. Drafts are written to Gmail and sent by the human, in Gmail. api/tests/test_google.py fails the build if a send path ever appears.

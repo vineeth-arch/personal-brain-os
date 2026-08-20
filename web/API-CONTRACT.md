@@ -387,6 +387,99 @@ preserving unknown keys (`links`, paths, `api`). Rejects `engine: "openai"`
 when `OPENAI_API_KEY` is missing (400 + envelope). Returns the same shape as
 `GET`. `POST /api/integrations/engine` shares this validated writer.
 
+## People — Relationship OS (Pass MW)
+
+The PEOPLE screen. Every route reads and writes notes of `type: person` in
+`07-People` (SCHEMA-REFERENCE.md §7). **Nothing here sends anything to anyone**
+(CLAUDE.md §4): a draft comes back as text plus the person's raw channel values,
+and the cockpit builds the chat/mail deep link in the browser for a human to
+tap. `api/tests/test_no_send.py` fails the build if a delivery URL ever appears
+in server code.
+
+### `GET /api/people`
+
+```json
+{ "items": [ {
+  "id": "20260701090000",
+  "name": "Priya Raman",
+  "relationship": "client",
+  "company": "Alserkal Avenue",
+  "warmth_stage": "conversing",
+  "status": "active",
+  "cadence_days": 3,
+  "last_contact": "2026-07-27",
+  "days_since_contact": 24,
+  "going_cold": true,
+  "warmup_due": true,
+  "commitment_due": true,
+  "channels": { "whatsapp": "+9715…", "email": "priya@example.com" },
+  "next_action": "Send the studio deck today",
+  "sample": false,
+  "file": "2026-07-01-priya-raman.md"
+} ] }
+```
+
+Ranked by how far each person is through their OWN cadence, so a 3-day contact
+a month silent outranks a 90-day one a fortnight silent. `cadence_days` is the
+effective figure: the note's `cadence_days` when set, otherwise the default for
+its `warmth_stage`. `days_since_contact` is `null` when `last_contact` is empty,
+which counts as cold. `dormant` people are never flagged.
+
+### `GET /api/people/{id}`
+
+The same object plus `context`, `needs` and `interaction_log` (the `## Context`,
+`## Needs` and `## Interaction log` body sections). `404` + envelope for an
+unknown id.
+
+### `POST /api/people/{id}/draft`
+
+Body `{"channel": "whatsapp" | "email" | "linkedin" | null}` — omitted picks the
+first channel the person has, in that order.
+
+```json
+{ "text": "hey Priya — long time…", "channel": "whatsapp",
+  "channels": { "whatsapp": "+9715…", "email": "priya@example.com" },
+  "provider": "claude-haiku" }
+```
+
+The message is written in the owner's voice from `_System/my-voice.md` and
+leashed to the person's interaction log — an empty log produces a shorter,
+vaguer message rather than an invented shared history.
+
+`409` when `_System/my-voice.md` doesn't exist (the cockpit sends the user to
+Settings → My voice rather than drafting in a generic voice). `502` when every
+provider in the chain failed. `404` for an unknown id.
+
+### `POST /api/people/{id}/contact`
+
+Body `{"note": "…", "channel": "whatsapp"}`. Appends a dated line to the
+`## Interaction log`, resets `last_contact` to today, revives a `cold` person to
+`active`, and commits the vault. Returns the refreshed person plus
+`"suggest_stage"` — the next warmth stage, offered for one tap, never applied
+automatically.
+
+### `POST /api/people/{id}/warmth`
+
+Body `{"stage": "conversing"}` — one of the six stages in SCHEMA-REFERENCE.md
+§7. Returns the refreshed person; `400` for anything outside the six. (POST, not
+PATCH: every mutation in this API is a POST verb.)
+
+### `POST /api/people/{id}/enrich`
+
+Looks the person up at People Data Labs and appends role/company under
+`## Context`, marked `origin: ai`, then commits. Returns the refreshed person
+plus `"enriched"`, `"credits_remaining"` and a one-line `"detail"`.
+
+`503` when `PDL_API_KEY` isn't set — the honest not-configured state; every
+other People feature works without it. `502` when the lookup itself fails.
+
+### `GET` / `POST /api/people/voice`
+
+`GET` → `{"exists": false, "file": "_System/my-voice.md", "samples": 0}`.
+`POST` body `{"samples": ["…", "…"]}` writes the file from messages the owner
+actually sent (stored verbatim, `origin: human`) and commits the vault; `400`
+when every sample is blank.
+
 ## Hardening (Pass 5)
 
 ### `GET /api/selfcheck`

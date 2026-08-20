@@ -321,3 +321,71 @@ export interface SamplePurgeResult {
   scope: SampleScope;
   message: string;
 }
+
+
+// ---- People (Relationship OS) -------------------------------------------------
+
+export const WARMTH_STAGES = [
+  "identified",
+  "researched",
+  "engaging",
+  "conversing",
+  "warm",
+  "ready",
+] as const;
+export type WarmthStage = (typeof WARMTH_STAGES)[number];
+
+export interface PersonChannels {
+  whatsapp?: string;
+  email?: string;
+  linkedin?: string;
+}
+
+export interface Person {
+  id: string;
+  name: string;
+  relationship: string;
+  company: string;
+  warmth_stage: WarmthStage | "";
+  status: string;
+  cadence_days: number;
+  last_contact: string | null;
+  days_since_contact: number | null;
+  going_cold: boolean;
+  warmup_due: boolean;
+  commitment_due: boolean;
+  channels: PersonChannels;
+  next_action: string;
+  sample: boolean;
+  file: string;
+}
+
+export interface PersonDetail extends Person {
+  context: string;
+  needs: string;
+  interaction_log: string;
+}
+
+export interface PersonDraft {
+  text: string;
+  channel: string;
+  // raw values only — the deep link is built in the browser (CLAUDE.md §4)
+  channels: PersonChannels;
+  provider: string | null;
+}
+
+export interface ContactResult extends Person {
+  suggest_stage: WarmthStage | null;
+}
+
+export interface VoiceStatus {
+  exists: boolean;
+  file: string;
+  samples: number;
+}
+
+export interface EnrichResult extends Person {
+  enriched: boolean;
+  credits_remaining: number | null;
+  detail: string;
+}

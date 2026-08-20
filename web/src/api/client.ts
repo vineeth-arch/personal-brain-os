@@ -18,7 +18,12 @@ import type {
   EventRow,
   FailedItem,
   IntegrationsResponse,
+  ContactResult,
+  EnrichResult,
   NoteType,
+  Person,
+  PersonDetail,
+  PersonDraft,
   ResurfacedNote,
   ReviewItem,
   Resource,
@@ -29,6 +34,8 @@ import type {
   SamplePurgeResult,
   Status,
   Streak,
+  VoiceStatus,
+  WarmthStage,
 } from "./types";
 
 const BASE_KEY = "cockpit.apiBase";
@@ -181,6 +188,31 @@ export const api = {
       },
     );
   },
+  people: () => request<{ items: Person[] }>("/api/people"),
+  person: (id: string) => request<PersonDetail>(`/api/people/${id}`),
+  personDraft: (id: string, channel?: string) =>
+    request<PersonDraft>(`/api/people/${id}/draft`, {
+      method: "POST",
+      body: JSON.stringify({ channel: channel ?? null }),
+    }),
+  logContact: (id: string, note: string, channel: string) =>
+    request<ContactResult>(`/api/people/${id}/contact`, {
+      method: "POST",
+      body: JSON.stringify({ note, channel }),
+    }),
+  setWarmth: (id: string, stage: WarmthStage) =>
+    request<Person>(`/api/people/${id}/warmth`, {
+      method: "POST",
+      body: JSON.stringify({ stage }),
+    }),
+  enrichPerson: (id: string) =>
+    request<EnrichResult>(`/api/people/${id}/enrich`, { method: "POST" }),
+  voice: () => request<VoiceStatus>("/api/people/voice"),
+  saveVoice: (samples: string[]) =>
+    request<VoiceStatus>("/api/people/voice", {
+      method: "POST",
+      body: JSON.stringify({ samples }),
+    }),
   failed: () => request<{ items: FailedItem[] }>("/api/failed"),
   retry: (id: number) =>
     request<{ ok: boolean }>(`/api/failed/${id}/retry`, { method: "POST" }),

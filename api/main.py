@@ -31,7 +31,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from pipeline import classify, config as config_mod, enrich, intake, route as proute, todos as ptodos, watcher
 
-from . import build_status, google, integrations, notes, selfcheck, service, watchdog
+from . import build_status, google, integrations, notes, people as people_mod, selfcheck, service, watchdog
 
 log = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
@@ -127,6 +127,23 @@ class DraftBody(BaseModel):
     to: str
     subject: str
     text: str
+
+
+class PersonDraftBody(BaseModel):
+    channel: str | None = None
+
+
+class ContactBody(BaseModel):
+    note: str = ""
+    channel: str = ""
+
+
+class StageBody(BaseModel):
+    stage: str
+
+
+class VoiceBody(BaseModel):
+    samples: list[str]
 
 
 def create_app(root: Path | None = None) -> FastAPI:
@@ -435,6 +452,111 @@ def create_app(root: Path | None = None) -> FastAPI:
             raise
         # the inbox is outside the vault — nothing to git-commit here
         return {"id": note_id, "status": "captured"}
+
+    # ---- people (Relationship OS) --------------------------------------------
+
+    def _person_or_404(config, person_id: str):
+        found = people_mod.detail(Path(config.vault_path), person_id)
+        if found is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen — the note may have been renamed or removed.")
+        return found
+
+    @app.get("/api/people")
+    def people_list(config=Depends(require_token)):
+        return {"items": people_mod.list_people(Path(config.vault_path))}
+
+    @app.get("/api/people/voice")
+    def people_voice(config=Depends(require_token)):
+        return people_mod.voice_status(Path(config.vault_path))
+
+    @app.post("/api/people/voice")
+    def people_voice_write(body: VoiceBody, config=Depends(require_token)):
+        try:
+            return people_mod.write_voice(Path(config.vault_path), body.samples)
+        except ValueError:
+            raise Envelope(
+                400, "There were no writing samples to learn from.",
+                "Every sample in the list was empty.",
+                "Paste 3–5 messages you actually sent, then save again.")
+
+    @app.get("/api/people/{person_id}")
+    def person_detail(person_id: str, config=Depends(require_token)):
+        return _person_or_404(config, person_id)
+
+    @app.post("/api/people/{person_id}/draft")
+    def person_draft(person_id: str, body: PersonDraftBody, config=Depends(require_token)):
+        try:
+            result = people_mod.draft(Path(config.vault_path), person_id, body.channel, config)
+        except LookupError:
+            raise Envelope(
+                409, "Drafts need your own voice on file first.",
+                "_System/my-voice.md doesn't exist yet, and a draft written without "
+                "it would sound like a chatbot, not like you.",
+                "Paste 3–5 messages you've actually sent in Settings → My voice, then try again.")
+        if result is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        if not result["text"]:
+            raise Envelope(
+                502, "No model could write the draft.",
+                "Every provider in the chain failed or has no key set.",
+                "Check the model keys in the server's shell, then try again.")
+        return result
+
+    @app.post("/api/people/{person_id}/contact")
+    def person_contact(person_id: str, body: ContactBody, config=Depends(require_token)):
+        updated = people_mod.log_contact(Path(config.vault_path), person_id,
+                                         body.note, body.channel)
+        if updated is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        return updated
+
+    @app.post("/api/people/{person_id}/warmth")
+    def person_warmth(person_id: str, body: StageBody, config=Depends(require_token)):
+        from pipeline import relationships
+        if body.stage not in relationships.WARMTH_STAGES:
+            raise Envelope(
+                400, "That's not a warmth stage the vault knows.",
+                f"'{body.stage}' isn't one of the six stages in SCHEMA-REFERENCE.md.",
+                "Pick one of the stage chips on the person's card.")
+        updated = people_mod.set_stage(Path(config.vault_path), person_id, body.stage)
+        if updated is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        return updated
+
+    @app.post("/api/people/{person_id}/enrich")
+    def person_enrich(person_id: str, config=Depends(require_token)):
+        if not people_mod.pdl_configured():
+            raise Envelope(
+                503, "Enrichment isn't set up yet.",
+                "PDL_API_KEY isn't set in the server's shell, so there's nothing to ask.",
+                "Add a People Data Labs key to the server's environment and restart the API "
+                "— everything else on this card keeps working without it.")
+        try:
+            updated = people_mod.enrich(Path(config.vault_path), person_id)
+        except Exception:
+            log.exception("pdl enrich failed")
+            raise Envelope(
+                502, "People Data Labs didn't answer.",
+                "The lookup failed or the monthly free credits are used up.",
+                "Try again later; the note is unchanged.")
+        if updated is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        return updated
 
     @app.post("/api/failed/{event_id}/retry")
     def retry(event_id: int, config=Depends(require_token)):
