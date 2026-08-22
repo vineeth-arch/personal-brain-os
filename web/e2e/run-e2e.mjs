@@ -67,7 +67,8 @@ function makeRoot() {
       "source: manual", "origin: human", "relationship: client",
       "company: Alserkal Avenue",
       "channels: {whatsapp: +971500000001, email: priya@example.com}",
-      "cadence_days: 3", "last_contact: 2026-06-01", "warmth_stage: conversing",
+      "cadence_days: 3", "last_contact: 2026-06-01", "dex_id: dex-priya",
+      "dex_deeplink:", "warmth_stage: conversing",
       "status: active", "---", "", "# Priya Raman", "", "## Context", "",
       "Met at a studio visit.", "", "## Interaction log", "",
       "- 2026-06-01 — coffee at Alserkal", "", "## Next action", "", "",
@@ -114,6 +115,10 @@ const uvicorn = spawn(uvicornBin,
       // their live form; no real Google call is ever made (see step 5)
       GOOGLE_CLIENT_ID: "e2e-client-id",
       GOOGLE_CLIENT_SECRET: "e2e-client-secret",
+      // Dex "configured" so the push button renders; the contacts scope is
+      // deliberately absent so the honest not-configured pill renders too.
+      // No real Dex call is ever made (the push routes are stubbed in step 8).
+      DEX_API_KEY: "e2e-dex-key",
     },
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -349,6 +354,91 @@ try {
   const vaultLog = execSync(`git -C "${path.join(root, "vault")}" log -1 --format=%s`).toString();
   assert.match(vaultLog, /logged contact/);
   console.log("✓ Log contact resets the counter, appends to the log, commits the vault");
+
+  // ---- 8. Profile push: preview → confirm (Pass D) ---------------------------
+  // Dex itself is stubbed at the cockpit's own routes — what is under test is
+  // the human gate: the exact text must be shown, and the confirmed text must
+  // be what gets posted.
+  let pushedBody = null;
+  await page.route("**/api/people/*/push/preview", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        target: "dex",
+        person_id: "20260701090000",
+        name: "Priya Raman",
+        summary: "Priya runs the artist programme at Alserkal.\nLast spoke on 2026-06-01.",
+        block: "<!-- BRAIN-OS -->\nPriya runs the artist programme at Alserkal.\n"
+          + "Last spoke on 2026-06-01.\n· via Brain OS 2026-08-20\n<!-- /BRAIN-OS -->",
+        destination: "Dex contact dex-priya · description",
+        replaced: "",
+      }),
+    }));
+  await page.route("**/api/people/*/push", (route) => {
+    if (route.request().url().includes("/preview")) return route.fallback();
+    pushedBody = JSON.parse(route.request().postData() || "{}");
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true, target: "dex",
+        changed: "Dex contact dex-priya · description", replaced: false,
+      }),
+    });
+  });
+
+  // step 7's drawer is still open on the "move them to conversing?" question
+  await drawer.getByRole("button", { name: "Not yet" }).click();
+  await page.goto(`${BASE}/#/people`);
+  // step 7 logged contact, so she is inside her cadence now and the default
+  // "Needs you" filter correctly hides her — push is not only for the overdue
+  await page.getByRole("button", { name: "Everyone" }).click();
+  await page.locator("article", { hasText: "Priya Raman" })
+    .getByRole("button", { name: "Draft a message" }).click();
+  const pushDrawer = page.getByRole("dialog");
+  await pushDrawer.getByRole("button", { name: "Push to Dex" }).click();
+
+  // the preview must show the real text BEFORE anything can be confirmed
+  await pushDrawer.getByText("Read it before it goes").waitFor();
+  await pushDrawer.getByText("<!-- BRAIN-OS -->").waitFor();
+  assert.equal(pushedBody, null, "a preview must not write anything");
+
+  // Google contacts isn't connected in this fixture — an honest pill, not a button
+  await pushDrawer.getByText("Reconnect Google for contacts").waitFor();
+
+  await pushDrawer.getByRole("button", { name: "Confirm push" }).click();
+  await page.getByText("✅ Updated Dex contact dex-priya · description").waitFor();
+  assert.equal(pushedBody?.target, "dex", "the confirmed push named the wrong target");
+  assert.match(pushedBody?.text ?? "", /artist programme at Alserkal/,
+    "the text posted was not the text the human read");
+  console.log("✓ Profile push previews the exact text and only writes on confirm");
+
+  // ---- 9. Quick-add a warm-up target (Pass X) --------------------------------
+  // One name, one channel, one tap — and a schema-correct note on disk.
+  await page.keyboard.press("Escape");   // the drawer closes on Escape
+  await page.goto(`${BASE}/#/people`);
+  await page.getByRole("button", { name: "+ Target" }).click();
+  await page.getByLabel("Name").fill("Sara Khalid");
+  await page.getByRole("button", { name: "email", exact: true }).click();
+  await page.getByLabel("Email").fill("sara@example.com");
+  await page.getByRole("button", { name: "Add target" }).click();
+  await page.getByText("✅ Added Sara Khalid").waitFor();
+
+  const peopleDir = path.join(root, "vault", "07-People");
+  const targetFile = fs.readdirSync(peopleDir).find((f) => f.includes("sara-khalid"));
+  assert.ok(targetFile, `no note written for the new target (saw ${fs.readdirSync(peopleDir)})`);
+  const targetText = fs.readFileSync(path.join(peopleDir, targetFile), "utf8");
+  assert.match(targetText, /type: person/);
+  assert.match(targetText, /origin: human/);          // the owner typed it
+  assert.match(targetText, /warmth_stage: identified/); // spotted, not researched
+  assert.match(targetText, /channels: \{email: sara@example\.com\}/);
+  for (const section of ["## Context", "## Needs", "## Interaction log", "## Next action"]) {
+    assert.ok(targetText.includes(section), `${section} missing from the new note`);
+  }
+  const addLog = execSync(`git -C "${path.join(root, "vault")}" log -1 --format=%s`).toString();
+  assert.match(addLog, /added target Sara Khalid/);
+  console.log("✓ Quick-add writes a schema-correct person note and commits the vault");
 
   console.log("\nE2E: all checks passed.");
 } catch (err) {

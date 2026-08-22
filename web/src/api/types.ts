@@ -217,6 +217,8 @@ export interface AppConfig {
     apify_last_call: string | null;
     youtube_keyless: boolean;
   };
+  // Pass D — which push targets are wired up. Booleans only, never key values.
+  push: PushAvailability;
 }
 
 // PUT /api/config body — only the fields being changed are sent.
@@ -341,6 +343,10 @@ export interface PersonChannels {
   linkedin?: string;
 }
 
+// mirrors pipeline/relationships.py CHANNEL_PRIORITY, in that order
+export const CHANNEL_KINDS = ["whatsapp", "email", "linkedin"] as const;
+export type ChannelKind = (typeof CHANNEL_KINDS)[number];
+
 export interface Person {
   id: string;
   name: string;
@@ -358,6 +364,8 @@ export interface Person {
   next_action: string;
   sample: boolean;
   file: string;
+  dex_id: string;
+  dex_deeplink: string;
 }
 
 export interface PersonDetail extends Person {
@@ -388,4 +396,40 @@ export interface EnrichResult extends Person {
   enriched: boolean;
   credits_remaining: number | null;
   detail: string;
+}
+
+// Pass D — pushing a profile summary OUT to the owner's own CRM / address book.
+// Nothing here delivers anything to another person (CLAUDE.md §4).
+export const PUSH_TARGETS = ["dex", "contacts"] as const;
+export type PushTarget = (typeof PUSH_TARGETS)[number];
+
+export interface PushPreview {
+  target: PushTarget;
+  person_id: string;
+  name: string;
+  /** the generated summary — this exact text is what gets confirmed and sent */
+  summary: string;
+  /** the marker-delimited block as it will appear in the field */
+  block: string;
+  /** plain-English "where this lands" */
+  destination: string;
+  /** what our previous block said, "" when we own nothing there yet */
+  replaced: string;
+}
+
+export interface PushResult {
+  ok: boolean;
+  target: PushTarget;
+  changed: string;
+  replaced: boolean;
+}
+
+export interface PushAvailability {
+  dex: boolean;
+  contacts_scope: boolean;
+}
+
+export interface PushQueueItem extends Person {
+  targets: PushTarget[];
+  last_pushed: string | null;
 }

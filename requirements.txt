@@ -2,3 +2,8 @@ fastapi
 uvicorn
 anthropic
 pydantic
+# The one dependency added beyond the locked list (CLAUDE.md §7), asked and
+# approved in the Pass X build session: the official MCP SDK, so the protocol
+# handshake, tool schemas and stdio transport are the spec's, not hand-rolled.
+# Used ONLY by scripts/cockpit_mcp.py — the API and pipeline never import it.
+mcp

@@ -27,9 +27,55 @@ def _dotted(raw: dict, field: str):
     return node
 
 
-def _probe_file_exists(root: Path, item: dict, *_):
-    p = root / item["path"]
-    return p.exists(), (f"{item['path']} exists." if p.exists() else f"{item['path']} isn't there yet.")
+def _resolve(root: Path, item: dict, relative: str, config) -> Path:
+    """Repo-relative by default; `"in": "vault"` anchors to the vault instead,
+    so a milestone about a NOTE (my-voice.md) can be probed the same way as one
+    about a source file."""
+    if item.get("in") == "vault":
+        if config is None:
+            raise FileNotFoundError("config.json doesn't exist yet")
+        return Path(config.vault_path) / relative
+    return root / relative
+
+
+def _probe_file_exists(root: Path, item: dict, config, _db):
+    # one "path", or "paths" when a milestone needs several files to be real
+    wanted = item.get("paths") or [item["path"]]
+    try:
+        missing = [p for p in wanted if not _resolve(root, item, p, config).exists()]
+    except FileNotFoundError:
+        return False, "config.json doesn't exist yet."
+    if missing:
+        verb = "isn't" if len(missing) == 1 else "aren't"
+        return False, f"{', '.join(missing)} {verb} there yet."
+    verb = "exists" if len(wanted) == 1 else "both exist" if len(wanted) == 2 else "all exist"
+    return True, f"{', '.join(wanted)} {verb}."
+
+
+def _probe_file_contains(root: Path, item: dict, config, _db):
+    """A file existing doesn't prove a feature shipped when the feature was
+    added to a file that already existed. This looks for the thing itself."""
+    try:
+        path = _resolve(root, item, item["path"], config)
+    except FileNotFoundError:
+        return False, "config.json doesn't exist yet."
+    if not path.is_file():
+        return False, f"{item['path']} isn't there yet."
+    try:
+        found = item["needle"] in path.read_text()
+    except OSError:
+        return False, f"{item['path']} couldn't be read."
+    return found, (f"{item['path']} has it." if found
+                   else f"{item['path']} exists but doesn't have it yet.")
+
+
+def _probe_config_field_contains(root: Path, item: dict, config, _db):
+    if config is None:
+        return False, "config.json doesn't exist yet."
+    value = _dotted(config.raw, item["field"])
+    found = item["needle"] in str(value or "")
+    return found, (f"{item['field']} includes it." if found
+                   else f"{item['field']} doesn't include it yet.")
 
 
 def _probe_endpoint_ok(root: Path, item: dict, *_):
@@ -145,8 +191,10 @@ def _processed_count(db_path: Path) -> int:
 
 _PROBES = {
     "file_exists": _probe_file_exists,
+    "file_contains": _probe_file_contains,
     "endpoint_ok": _probe_endpoint_ok,
     "config_field_set": _probe_config_field_set,
+    "config_field_contains": _probe_config_field_contains,
     "binary_runs": _probe_binary_runs,
     "env_var_set": _probe_env_var_set,
     "git_log_contains": _probe_git_log_contains,

@@ -55,6 +55,7 @@
   },
   "deploy": {
     "tunnel_hostname": "",
-    "public_url": ""
+    "public_url": "",
+    "mcp_connected": false
   }
 }

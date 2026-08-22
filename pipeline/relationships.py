@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 PEOPLE_FOLDER = "07-People"
@@ -66,6 +66,8 @@ class Person:
     cadence_days: int | None = None
     last_contact: date | None = None
     warmth_stage: str = ""
+    dex_id: str = ""
+    dex_deeplink: str = ""
     status: str = "active"
     sample: bool = False
     sections: dict[str, str] = field(default_factory=dict)
@@ -176,6 +178,8 @@ def parse_person(path: Path) -> Person | None:
         cadence_days=cadence,
         last_contact=_parse_date(fm.get("last_contact", "")),
         warmth_stage=(fm.get("warmth_stage") or "").strip().lower(),
+        dex_id=fm.get("dex_id", "").strip(),
+        dex_deeplink=fm.get("dex_deeplink", "").strip(),
         status=(fm.get("status") or "active").strip().lower(),
         sample=(fm.get("sample") or "").strip().lower() == "true",
         sections=_sections(parts[2]),
@@ -322,6 +326,85 @@ def next_stage(stage: str) -> str | None:
         return None
     i = WARMTH_STAGES.index(stage)
     return WARMTH_STAGES[i + 1] if i + 1 < len(WARMTH_STAGES) else None
+
+
+def slug(name: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    return cleaned or "person"
+
+
+def new_person_note(name: str, channel_kind: str, channel_value: str,
+                    when: datetime) -> tuple[str, str]:
+    """(filename, text) for a brand-new warm-up target.
+
+    Schema-exact per SCHEMA-REFERENCE.md §7 — the same field set the seed
+    writes, minus `sample`. It starts at `identified` because that is what a
+    name and one channel IS: someone spotted, not yet researched. The body
+    sections exist but are empty; the point of the quick-add is that adding a
+    target must cost one input and one tap, not a trip to Obsidian.
+    """
+    if not name.strip():
+        raise ValueError("a target needs a name")
+    if channel_kind not in CHANNEL_PRIORITY:
+        raise ValueError(f"{channel_kind!r} is not one of {', '.join(CHANNEL_PRIORITY)}")
+    if not channel_value.strip():
+        raise ValueError("a target needs one way to reach them")
+
+    note_id = when.strftime("%Y%m%d%H%M%S")
+    created = when.date().isoformat()
+    text = (
+        "---\n"
+        f"id: {note_id}\n"
+        "type: person\n"
+        f"created: {created}\n"
+        "source: manual\n"
+        "origin: human\n"          # the owner typed this, not a model
+        "relationship:\n"
+        "company:\n"
+        f"channels: {{{channel_kind}: {channel_value.strip()}}}\n"
+        "dex_id:\n"
+        "dex_deeplink:\n"
+        "cadence_days:\n"
+        "last_contact:\n"
+        "warmth_stage: identified\n"
+        "status: active\n"
+        "categories: []\n"
+        "subjects: []\n"
+        "tags: []\n"
+        "---\n\n"
+        f"# {name.strip()}\n\n"
+        "## Context\n\n\n"
+        "## Needs\n\n\n"
+        "## Interaction log\n\n\n"
+        "## Next action\n\n\n"
+    )
+    return f"{created}-{slug(name)}.md", text
+
+
+def create_person(vault_path: Path, name: str, channel_kind: str, channel_value: str,
+                  when: datetime | None = None) -> Person:
+    """Write the note and hand back the parsed person. Raises ValueError on bad
+    input; the caller turns that into a plain-English refusal and commits."""
+    when = when or datetime.now()
+    folder = Path(vault_path) / PEOPLE_FOLDER
+    folder.mkdir(parents=True, exist_ok=True)
+
+    # The id is the durable handle every link points at (SCHEMA §1), so it has
+    # to be unique even for two targets added inside the same second — step the
+    # timestamp forward until no note in the vault claims it.
+    taken = {p.id for p in load_people(vault_path)}
+    while when.strftime("%Y%m%d%H%M%S") in taken:
+        when += timedelta(seconds=1)
+
+    filename, text = new_person_note(name, channel_kind, channel_value, when)
+    path = folder / filename
+    # two targets with the same name on the same day: never overwrite a note
+    suffix = 2
+    while path.exists():
+        path = folder / f"{filename[:-3]}-{suffix}.md"
+        suffix += 1
+    path.write_text(text)
+    return parse_person(path)
 
 
 def append_context(person: Person, lines: list[str]) -> str:

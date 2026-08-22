@@ -278,7 +278,11 @@ Server config: `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` in the environment
 (the user's own Google Cloud OAuth client — GO-LIVE.md §6). The long-lived
 refresh token is runtime state in `config.json` under
 `google.refresh_token`; access tokens are cached in memory only. Scopes:
-`gmail.readonly`, `gmail.compose`, `calendar.readonly`.
+`gmail.readonly`, `gmail.compose`, `calendar.readonly`, and (Pass D)
+`contacts` — for updating existing contacts' notes, never creating any. What
+Google actually granted is stored alongside the token as `google.scopes`, so
+"is the contacts permission there?" is answerable without a network call; an
+account linked before Pass D reports honestly that it needs one re-consent.
 
 ### `GET /api/google/connect?redirect_uri=<uri>`
 
@@ -415,7 +419,9 @@ in server code.
   "channels": { "whatsapp": "+9715…", "email": "priya@example.com" },
   "next_action": "Send the studio deck today",
   "sample": false,
-  "file": "2026-07-01-priya-raman.md"
+  "file": "2026-07-01-priya-raman.md",
+  "dex_id": "dex-priya",
+  "dex_deeplink": ""
 } ] }
 ```
 
@@ -424,6 +430,26 @@ a month silent outranks a 90-day one a fortnight silent. `cadence_days` is the
 effective figure: the note's `cadence_days` when set, otherwise the default for
 its `warmth_stage`. `days_since_contact` is `null` when `last_contact` is empty,
 which counts as cold. `dormant` people are never flagged.
+
+### `POST /api/people` (Pass X)
+
+Quick-add a warm-up target — one name, one channel, so feeding the warm-up
+engine never requires opening Obsidian.
+
+Body `{"name": "Sara Khalid", "channel": {"kind": "whatsapp"|"email"|"linkedin",
+"value": "…"}}`.
+
+Writes a schema-correct note in `07-People` (`origin: human`, `source: manual`,
+`warmth_stage: identified`, empty Context/Needs/Interaction log/Next action) and
+git-commits the vault (`api: added target <name>`). `201` with the same person
+object `GET /api/people` returns.
+
+The frontmatter `id` is a `YYYYMMDDHHmmss` timestamp and is guaranteed unique —
+two targets added in the same second step the stamp forward rather than sharing
+an id, because every link in the vault points at it (SCHEMA-REFERENCE.md §1).
+
+`400` + envelope for a blank name, a blank channel value, or a channel kind
+outside the three; nothing is written in those cases.
 
 ### `GET /api/people/{id}`
 
@@ -472,6 +498,88 @@ plus `"enriched"`, `"credits_remaining"` and a one-line `"detail"`.
 
 `503` when `PDL_API_KEY` isn't set — the honest not-configured state; every
 other People feature works without it. `502` when the lookup itself fails.
+
+## Profile push — Dex + Google Contacts (Pass D)
+
+Pushes a generated **profile summary** into the owner's own CRM (Dex) and their
+own address book (Google Contacts). This is not a send: nothing reaches another
+person, and no messaging URL is built anywhere
+(`api/tests/test_no_send.py::test_the_push_modules_write_profile_data_never_messages`
+fails the build if `pipeline/dex.py` or `api/google_contacts.py` ever reference
+a messaging surface).
+
+Two properties hold for every push:
+
+- **Append-only.** The app owns the text between `<!-- BRAIN-OS -->` and
+  `<!-- /BRAIN-OS -->` and replaces exactly that on each push. Everything the
+  owner typed into the field themselves is preserved byte for byte
+  (`pipeline/dex.py::merge`).
+- **Human-gated.** `preview` is the dry run of `push` — same summary, same
+  merge, same payload — and `push` writes back **the text the preview
+  returned**. There is no auto-push and no unattended batch (CLAUDE.md §3).
+
+Server config: `DEX_API_KEY` in the environment (env-only, CLAUDE.md §7).
+Contacts rides the existing Google OAuth client with the added
+`https://www.googleapis.com/auth/contacts` scope, so an account linked before
+this pass needs one re-consent — reported as a `409`, never a crash.
+
+### `POST /api/people/{id}/push/preview`
+
+Body `{"target": "dex" | "contacts"}`.
+
+```json
+{ "target": "dex", "person_id": "20260701090000", "name": "Priya Raman",
+  "summary": "Priya runs the artist programme at Alserkal.\n…",
+  "block": "<!-- BRAIN-OS -->\n…\n· via Brain OS 2026-08-20\n<!-- /BRAIN-OS -->",
+  "destination": "Dex contact dex-priya · description",
+  "replaced": "" }
+```
+
+`replaced` is our previous block (`""` when the app owns nothing there yet) so
+the UI can show what is being overwritten. Nothing is written to produce this.
+
+`400` unknown target · `404` unknown person, or (contacts) no matching contact
+in the address book — this app never creates one · `409` no `dex_id` on the
+note, or Google linked without the contacts scope · `503` target not configured
+(checked **before** any model call, so an unconfigured push costs nothing) ·
+`502` every provider in the chain failed.
+
+### `POST /api/people/{id}/push`
+
+Body `{"target": "dex" | "contacts", "text": "<the confirmed summary>"}` —
+`text` is what the preview returned and the human approved; the server never
+regenerates it here, so what was read is what is written.
+
+`200 {"ok": true, "target": "dex", "changed": "Dex contact dex-priya · description", "replaced": false}`
+
+Same error envelopes as the preview. The vault is unchanged by a push (nothing
+was learned about the person); the durable record is one `stage="push"` row in
+events.db.
+
+### `GET /api/push/queue`
+
+The staged half of the batch — who has moved on since their profile last went
+out. Generates no summaries and calls no external API, so it is cheap to poll.
+
+```json
+{ "items": [ { "…person fields…", "targets": ["dex"], "last_pushed": null } ],
+  "available": { "dex": true, "contacts_scope": false } }
+```
+
+A person is staged when they have never been pushed, or when their
+`last_contact` is on/after their last successful push. `dormant` and `sample`
+people are never staged. The morning digest (`pipeline/morning.py::push_section`)
+adds one line naming the count — it rides the existing 8am push and never
+pushes anything itself.
+
+### `GET /api/config` — push block (extension)
+
+```json
+"push": { "dex": false, "contacts_scope": false }
+```
+
+Presence booleans only. The People drawer renders a quiet "not configured" pill
+instead of a button for any target that is false.
 
 ### `GET` / `POST /api/people/voice`
 
@@ -616,3 +724,30 @@ watcher's `--loop` tick.
 ```
 Booleans only — no token values (CLAUDE.md §7). `apify_last_call` = timestamp of
 the most recent Instagram `enrich` event, or null.
+
+## MCP — Claude Desktop (Pass X)
+
+`scripts/cockpit_mcp.py` is a stdio MCP server that **proxies to these same
+routes**. It holds no logic and no data: every tool is one authenticated HTTP
+call to an endpoint above, and the answer is passed back unchanged. It is not
+a second API and adds no route — if a tool needs something, the route has to
+exist here first.
+
+Configured by environment only (CLAUDE.md §7): `COCKPIT_URL`, `COCKPIT_TOKEN`.
+
+| Tool | Route |
+| --- | --- |
+| `cockpit_status` | `GET /api/status` |
+| `people_list(going_cold?, warmth_stage?)` | `GET /api/people` (filters applied in the proxy) |
+| `people_draft(person_id, channel?)` | `POST /api/people/{id}/draft` |
+| `capture_text(text, tag?)` | `POST /api/capture` |
+| `todos_today` | `GET /api/todos?range=today` |
+
+Read-mostly by design: `capture_text` is the only write. `people_draft` returns
+draft **text**, exactly as the cockpit's own drawer does — the MCP layer has no
+way to deliver a message and none may be added (CLAUDE.md §4, pinned by
+`api/tests/test_mcp.py::test_the_mcp_layer_has_no_way_to_send_anything`).
+
+Non-2xx responses keep their `{what,cause,todo}` envelope, re-rendered as the
+tool's error text ("What happened: … / Likely cause: … / What to do: …"), so a
+model holding these tools tells the owner the same thing the cockpit would.

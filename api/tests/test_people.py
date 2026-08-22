@@ -238,3 +238,71 @@ def test_enrich_with_no_match_changes_nothing(vault_env):
     out = people.enrich(vault, "20260701090000", fetch=lambda url: ({"data": {}}, 96), today=TODAY)
     assert out["enriched"] is False and "no match" in out["detail"]
     assert next((vault / "07-People").glob("*.md")).read_text() == before
+
+
+# ---- quick-add (Pass X) ----------------------------------------------------------
+
+def test_quick_add_writes_a_schema_correct_person_note(vault_env):
+    root, vault, folder = vault_env
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/people",
+                           {"name": "Sara Khalid",
+                            "channel": {"kind": "email", "value": "sara@example.com"}})
+        assert code == 201
+        assert body["name"] == "Sara Khalid"
+        # one name + one channel IS "identified" — spotted, not yet researched
+        assert body["warmth_stage"] == "identified" and body["status"] == "active"
+        assert body["channels"] == {"email": "sara@example.com"}
+
+    written = next(p for p in folder.glob("*sara-khalid*.md"))
+    text = written.read_text()
+    assert "type: person" in text
+    assert "origin: human" in text, "the owner typed this — it is not AI-written"
+    assert "source: manual" in text
+    for section in ("## Context", "## Needs", "## Interaction log", "## Next action"):
+        assert section in text, f"{section} is part of the person schema"
+    # the immutable id is a timestamp and the filename is the human-readable half
+    frontmatter_id = next(line for line in text.splitlines() if line.startswith("id: "))
+    assert frontmatter_id.removeprefix("id: ").strip().isdigit()
+    assert len(frontmatter_id.removeprefix("id: ").strip()) == 14
+
+
+def test_quick_add_commits_the_vault(vault_env):
+    root, vault, _ = vault_env
+    with Server(root) as s:
+        s.req("POST", "/api/people",
+              {"name": "Sara Khalid", "channel": {"kind": "email", "value": "s@e.com"}})
+    log = subprocess.run(["git", "-C", str(vault), "log", "-1", "--format=%s"],
+                         capture_output=True, text=True).stdout
+    assert "added target Sara Khalid" in log
+
+
+def test_quick_add_refuses_blank_and_unknown_input(vault_env):
+    root, _, folder = vault_env
+    before = len(list(folder.glob("*.md")))
+    with Server(root) as s:
+        for payload in (
+            {"name": "  ", "channel": {"kind": "email", "value": "s@e.com"}},
+            {"name": "Sara", "channel": {"kind": "email", "value": "   "}},
+            {"name": "Sara", "channel": {"kind": "carrier-pigeon", "value": "x"}},
+        ):
+            code, body = s.req("POST", "/api/people", payload)
+            assert code == 400, payload
+            assert set(body["error"]) == {"what", "cause", "todo"}
+    assert len(list(folder.glob("*.md"))) == before, "a refused add must write nothing"
+
+
+def test_two_targets_with_the_same_name_never_overwrite_each_other(vault_env):
+    root, _, folder = vault_env
+    with Server(root) as s:
+        first = s.req("POST", "/api/people",
+                      {"name": "Sara Khalid",
+                       "channel": {"kind": "email", "value": "sara@one.com"}})[1]
+        second = s.req("POST", "/api/people",
+                       {"name": "Sara Khalid",
+                        "channel": {"kind": "email", "value": "sara@two.com"}})[1]
+    # the id is what every link points at, so it must be unique even for two
+    # targets added inside the same second
+    assert first["id"] != second["id"]
+    assert first["file"] != second["file"]
+    assert len(list(folder.glob("*sara-khalid*.md"))) == 2

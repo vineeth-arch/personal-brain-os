@@ -7,8 +7,19 @@
 // a human tap. There is no send button anywhere in this file.
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { ContactResult, Person, PersonDetail, PersonDraft, WarmthStage } from "../api/types";
-import { WARMTH_STAGES } from "../api/types";
+import type {
+  ContactResult,
+  Person,
+  PersonDetail,
+  PersonDraft,
+  PushAvailability,
+  PushPreview,
+  PushQueueItem,
+  PushTarget,
+  ChannelKind,
+  WarmthStage,
+} from "../api/types";
+import { CHANNEL_KINDS, WARMTH_STAGES } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
 import { toast } from "../components/Toast";
 import { usePolling } from "../hooks/usePolling";
@@ -62,6 +73,152 @@ function channelLabel(channel: string): string {
   return "Open";
 }
 
+// Pass D — pushing a profile summary OUT to the owner's own CRM / address book.
+// This is not a send: no message reaches another person, and the human reads
+// the exact text before anything leaves (CLAUDE.md §3, §4).
+const PUSH_LABELS: Record<PushTarget, string> = {
+  dex: "Push to Dex",
+  contacts: "Push to Contacts",
+};
+
+function pushUnavailableReason(
+  target: PushTarget,
+  person: Person,
+  available: PushAvailability | null,
+): string | null {
+  if (!available) return null;
+  if (target === "dex") {
+    if (!available.dex) return "Dex not configured";
+    if (!person.dex_id) return "No dex_id on the note";
+    return null;
+  }
+  if (!available.contacts_scope) return "Reconnect Google for contacts";
+  if (!person.channels.email && !person.channels.whatsapp) return "No email or phone on the note";
+  return null;
+}
+
+function PushRow({
+  person,
+  available,
+  onPushed,
+}: {
+  person: Person;
+  available: PushAvailability | null;
+  onPushed: () => void;
+}) {
+  const [preview, setPreview] = useState<PushPreview | null>(null);
+  const [busy, setBusy] = useState<PushTarget | null>(null);
+  const [confirming, setConfirming] = useState(false);
+
+  const envelopeOf = (err: unknown) =>
+    (err as { envelope?: { what: string; cause: string; todo: string } }).envelope;
+
+  const startPreview = async (target: PushTarget) => {
+    setBusy(target);
+    setPreview(null);
+    try {
+      setPreview(await api.pushPreview(person.id, target));
+    } catch (err) {
+      const envelope = envelopeOf(err);
+      toast(
+        envelope ? `${envelope.what} ${envelope.todo}` : "Couldn't prepare that push.",
+        "error",
+      );
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const confirm = async () => {
+    if (!preview) return;
+    setConfirming(true);
+    try {
+      // the CONFIRMED text goes back — what was read is what is written
+      const result = await api.push(person.id, preview.target, preview.summary);
+      toast(`✅ Updated ${result.changed}`);
+      setPreview(null);
+      onPushed();
+    } catch (err) {
+      const envelope = envelopeOf(err);
+      toast(envelope ? `${envelope.what} ${envelope.todo}` : "The push didn't go through.", "error");
+    } finally {
+      setConfirming(false);
+    }
+  };
+
+  return (
+    <div className="border-subtle mt-5 border-t pt-4">
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+        Profile · push out
+      </p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        {(Object.keys(PUSH_LABELS) as PushTarget[]).map((target) => {
+          const blockedReason = pushUnavailableReason(target, person, available);
+          if (blockedReason) {
+            return (
+              <span
+                key={target}
+                className="bg-subtle text-muted border-subtle inline-flex min-h-11 items-center rounded-full border px-4 text-xs font-semibold"
+              >
+                {blockedReason}
+              </span>
+            );
+          }
+          return (
+            <button
+              key={target}
+              type="button"
+              disabled={busy !== null}
+              onClick={() => void startPreview(target)}
+              className="border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold disabled:opacity-60"
+            >
+              {busy === target ? "Preparing…" : PUSH_LABELS[target]}
+            </button>
+          );
+        })}
+      </div>
+
+      {preview && (
+        <div className="bg-cal-muted border-emphasis mt-3 rounded-xl border p-4">
+          <p className="text-emphasis text-sm font-bold">Read it before it goes</p>
+          <p className="text-subtle mt-1 text-sm">
+            This replaces only the Brain OS section of {preview.destination}. Anything you
+            typed there yourself is left exactly as it is.
+          </p>
+          <pre className="text-default bg-subtle border-subtle mt-3 max-h-56 overflow-y-auto whitespace-pre-wrap rounded-xl border p-3 text-sm">
+            {preview.block}
+          </pre>
+          {preview.replaced && (
+            <details className="mt-2">
+              <summary className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+                What it replaces
+              </summary>
+              <pre className="text-muted mt-2 whitespace-pre-wrap text-sm">{preview.replaced}</pre>
+            </details>
+          )}
+          <div className="mt-3 flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={confirming}
+              onClick={() => void confirm()}
+              className="bg-inverted text-inverted min-h-11 rounded-xl px-5 text-sm font-bold disabled:opacity-60"
+            >
+              {confirming ? "Pushing…" : "Confirm push"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setPreview(null)}
+              className="border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PersonCard({
   person,
   lit,
@@ -113,10 +270,14 @@ function DraftDrawer({
   person,
   onClose,
   onChanged,
+  pushAvailable,
+  onPushed,
 }: {
   person: Person;
   onClose: () => void;
   onChanged: (updated: Person) => void;
+  pushAvailable: PushAvailability | null;
+  onPushed: () => void;
 }) {
   const [detail, setDetail] = useState<PersonDetail | null>(null);
   const [draft, setDraft] = useState<PersonDraft | null>(null);
@@ -331,6 +492,8 @@ function DraftDrawer({
           </>
         )}
 
+        <PushRow person={person} available={pushAvailable} onPushed={onPushed} />
+
         {detail?.interaction_log && (
           <details className="mt-5">
             <summary className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
@@ -374,11 +537,170 @@ function StageRow({ person, onChanged }: { person: Person; onChanged: (p: Person
   );
 }
 
+// Quick-add (Pass X): one name, one channel, one tap. Adding someone to the
+// warm-up engine should never require opening Obsidian. The note the server
+// writes is schema-correct and git-committed like any other vault write.
+function AddTarget({
+  open,
+  onClose,
+  onAdded,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onAdded: (person: Person) => void;
+}) {
+  const [name, setName] = useState("");
+  const [kind, setKind] = useState<ChannelKind>("whatsapp");
+  const [value, setValue] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const person = await api.addTarget(name.trim(), kind, value.trim());
+      onAdded(person);
+      toast(`✅ Added ${person.name}`);
+      setName("");
+      setValue("");
+      onClose();
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(envelope ? `${envelope.what} ${envelope.todo}` : "Couldn't add that target.", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <form onSubmit={submit} className="border-subtle mt-3 w-full rounded-xl border p-4">
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+        New warm-up target
+      </p>
+      <label className="text-default mt-3 block text-sm font-semibold" htmlFor="target-name">
+        Name
+      </label>
+      <input
+        id="target-name"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        autoFocus
+        className="bg-subtle border-subtle text-emphasis mt-1 w-full rounded-xl border p-3 text-base"
+      />
+      <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Channel">
+        {CHANNEL_KINDS.map((c) => (
+          <button
+            key={c}
+            type="button"
+            aria-pressed={kind === c}
+            onClick={() => setKind(c)}
+            className={`min-h-11 rounded-full border px-4 text-sm font-semibold ${
+              kind === c
+                ? "bg-emphasis border-emphasis text-emphasis"
+                : "bg-subtle border-subtle text-default"
+            }`}
+          >
+            {c}
+          </button>
+        ))}
+      </div>
+      <label className="text-default mt-3 block text-sm font-semibold" htmlFor="target-channel">
+        {kind === "whatsapp" ? "Phone number" : kind === "email" ? "Email" : "LinkedIn"}
+      </label>
+      <input
+        id="target-channel"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        className="bg-subtle border-subtle text-emphasis mt-1 w-full rounded-xl border p-3 text-base"
+      />
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="submit"
+          disabled={saving || !name.trim() || !value.trim()}
+          className="bg-inverted text-inverted min-h-11 rounded-xl px-5 text-sm font-bold disabled:opacity-60"
+        >
+          {saving ? "Adding…" : "Add target"}
+        </button>
+        <button
+          type="button"
+          onClick={onClose}
+          className="border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold"
+        >
+          Cancel
+        </button>
+      </div>
+      <p className="text-muted mt-2 text-[11px]">
+        Starts at “identified” — spotted, not yet researched. Everything else can be filled
+        in later, here or in Obsidian.
+      </p>
+    </form>
+  );
+}
+
+// The staged half of the nightly batch: the server works out who has moved on
+// since their last push, and this lists them. Nothing pushes itself — each row
+// opens the same preview → confirm as the drawer (CLAUDE.md §3).
+function PushQueue({
+  items,
+  onOpen,
+}: {
+  items: PushQueueItem[];
+  onOpen: (person: PushQueueItem) => void;
+}) {
+  if (items.length === 0) return null;
+  return (
+    <section className="border-subtle rounded-xl border p-4">
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+        Ready to push · {items.length}
+      </p>
+      <p className="text-default mt-1 text-sm">
+        These have moved on since their profile last went out. Each one still shows you the
+        text before anything is written.
+      </p>
+      <ul className="mt-3 space-y-2">
+        {items.map((item) => (
+          <li key={item.id} className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-emphasis text-sm font-semibold">
+              {item.name}
+              <span className="text-subtle font-normal"> · {item.targets.join(" + ")}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => onOpen(item)}
+              className="border-emphasis text-emphasis min-h-11 rounded-xl border px-4 text-sm font-bold"
+            >
+              Review
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 export function People() {
   const { data, error, loading, refetch } = usePolling(api.people, 60_000);
   const [filter, setFilter] = useState<Filter>("attention");
   const [open, setOpen] = useState<Person | null>(null);
   const [overrides, setOverrides] = useState<Record<string, Person>>({});
+  const [pushAvailable, setPushAvailable] = useState<PushAvailability | null>(null);
+  const [queue, setQueue] = useState<PushQueueItem[]>([]);
+  const [adding, setAdding] = useState(false);
+
+  const loadQueue = () => {
+    void api
+      .pushQueue()
+      .then((q) => {
+        setQueue(q.items);
+        setPushAvailable(q.available);
+      })
+      // a cockpit with no push target configured is a normal state, not an error
+      .catch(() => setPushAvailable({ dex: false, contacts_scope: false }));
+  };
+
+  useEffect(loadQueue, []);
 
   if (loading && !data) {
     return <div aria-hidden="true" className="bg-subtle h-40 animate-pulse rounded-xl" />;
@@ -394,7 +716,25 @@ export function People() {
   return (
     <div className="space-y-6">
       <section>
-        <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">People</p>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">People</p>
+          <button
+            type="button"
+            onClick={() => setAdding((v) => !v)}
+            aria-expanded={adding}
+            className="border-emphasis text-emphasis min-h-11 rounded-xl border px-4 text-sm font-bold"
+          >
+            + Target
+          </button>
+        </div>
+        <AddTarget
+          open={adding}
+          onClose={() => setAdding(false)}
+          onAdded={(person) => {
+            record(person);
+            refetch();
+          }}
+        />
         <div className="mt-2 flex flex-wrap gap-2" role="group" aria-label="Filter">
           {FILTERS.map((f) => (
             <button
@@ -413,6 +753,8 @@ export function People() {
           ))}
         </div>
       </section>
+
+      <PushQueue items={queue} onOpen={(item) => setOpen(item)} />
 
       {shown.length === 0 ? (
         <section className="bg-subtle border-subtle rounded-xl border p-5">
@@ -445,6 +787,8 @@ export function People() {
           person={overrides[open.id] ?? open}
           onClose={() => setOpen(null)}
           onChanged={record}
+          pushAvailable={pushAvailable}
+          onPushed={loadQueue}
         />
       )}
     </div>
