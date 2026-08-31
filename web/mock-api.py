@@ -578,6 +578,14 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/capture":
                 print("CAPTURE", self.rfile.read(int(self.headers.get("Content-Length", 0))))
                 return self._send(201, {"id": "20260703061500", "status": "captured"})
+            if path == "/api/capture/image":
+                # not parsed — the mock just proves the browser sent a real
+                # multipart body (matters for e2e, which asserts on it)
+                length = int(self.headers.get("Content-Length", 0))
+                raw = self.rfile.read(length)
+                print("CAPTURE IMAGE", f"{length} bytes",
+                     "boundary ok" if b"Content-Disposition" in raw else "MALFORMED")
+                return self._send(201, {"id": "20260703061600", "status": "captured"})
             if path.startswith("/api/review/") and path.endswith("/approve"):
                 note_id = path.split("/")[3]
                 raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))

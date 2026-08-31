@@ -239,6 +239,33 @@ try {
   }
   console.log("✓ No send route exists on the API");
 
+  // ---- 6. Image capture (Pass 13): photo -> real inbox write ---------------------
+  await page.goto(`${BASE}/#/today`);
+  const tinyPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64",
+  );
+  await page.setInputFiles('input[type="file"][accept="image/*"]',
+    { name: "test-photo.png", mimeType: "image/png", buffer: tinyPng });
+  await page.getByAltText("Selected photo").waitFor();  // preview rendered
+  await page.getByLabel("Quick capture").fill("a nice sunset over the marina");
+  await page.getByRole("button", { name: "#resource" }).click();
+  await page.getByRole("button", { name: "Capture" }).click();
+  await page.getByText("✅ Captured").waitFor();
+
+  // the browser-side downscale (Today.tsx's downscaleForUpload) always
+  // re-encodes to JPEG regardless of the source format, so the file that
+  // lands in the inbox is a .jpg even though a .png was picked above
+  const capturedImages = fs.readdirSync(path.join(root, "inbox")).filter((f) => f.endsWith(".jpg"));
+  const capturedSidecars = fs.readdirSync(path.join(root, "inbox")).filter((f) => f.endsWith(".meta.json"));
+  assert.equal(capturedImages.length, 1, "the image never reached the real inbox");
+  assert.equal(capturedSidecars.length, 1, "the sidecar never reached the real inbox");
+  assert.ok(capturedImages[0].includes("#resource"), "the tag wasn't applied to the capture");
+  const sidecar = JSON.parse(
+    fs.readFileSync(path.join(root, "inbox", capturedSidecars[0]), "utf8"));
+  assert.equal(sidecar.text, "a nice sunset over the marina");
+  console.log("✓ Image capture reaches the real inbox with its sidecar and tag");
+
   console.log("\nE2E: all checks passed.");
 } catch (err) {
   failed = true;

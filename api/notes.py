@@ -553,8 +553,16 @@ def list_resources(vault: Path, *, category: str | None = None, status: str | No
             continue
         if status and item["status"] != status:
             continue
-        if q and q.lower() not in item["title"].lower():
-            continue
+        if q:
+            # search matches how the owner actually thinks about a resource:
+            # not just its title, but the description, the type-extra fields
+            # (a recipe's ingredients, a movie's where_to_watch, ...), the
+            # insight, and the full note body — the body already contains the
+            # insight section, so it isn't searched twice.
+            extras = " ".join(fm.get(k, "") for k in RESOURCE_EXTRA_FIELDS)
+            haystack = f"{item['title']} {fm.get('description', '')} {extras} {body}".lower()
+            if q.lower() not in haystack:
+                continue
         if has_insight is not None and item["has_insight"] != has_insight:
             continue
         items.append(item)

@@ -686,7 +686,7 @@ export function Resources() {
             type="search"
             value={filters.q}
             onChange={(e) => update({ q: e.target.value })}
-            placeholder="Search titles…"
+            placeholder="Search title, description, insight…"
             aria-label="Search resources"
             className="bg-subtle border-subtle text-emphasis min-h-11 w-full rounded-xl border px-4 text-sm"
           />

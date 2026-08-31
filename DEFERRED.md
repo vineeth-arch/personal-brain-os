@@ -38,3 +38,4 @@
 - Pass 13: Apify setup for real Instagram captions/thumbnails — the seam already exists (pipeline/enrich.py); fallback-first (owner's own words + AI description) ships without it.
 - Pass 13: the iOS Shortcut has no offline queue / auto-retry — a failed POST (no signal, server down) is lost from the Shortcut's perspective; the user would need to re-share.
 - Pass 13: cross-type search (currently resources only) — a photo classified to todo/musing/etc. isn't covered by GET /api/resources?q=.
+- Pass 13: mock-api.py never got GET /api/resources (a Pass 6 gap, found while screenshotting for this pass's render gate) — Resources.tsx dev/mock-driven work requires the real API server; the mock only serves an honest 404 there today.

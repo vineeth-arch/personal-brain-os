@@ -114,6 +114,44 @@ def test_resources_filters(env):
         assert code == 400 and set(body["error"]) == {"what", "cause", "todo"}
 
 
+def test_search_matches_description_insight_extras_and_body(env):
+    """Pass 13: ?q= used to match the title only — the owner wants to find
+    things by what they actually remember about them."""
+    tmp, vault, *_ = env
+    res = vault / "04-Resources"
+    _write_resource(res, "20260601120000", rt="recipe", status="inbox",
+                    title="Weeknight Dinner", sample=True, created="2026-06-01",
+                    extra={"ingredients": "eggs, tomato, peppers, cumin"})
+    _write_resource(res, "20260602120000", rt="book", status="inbox",
+                    title="A Design Book", sample=True, created="2026-06-02",
+                    description="Great chapter on typographic rhythm.")
+    _write_resource(res, "20260603120000", rt="article", status="inbox",
+                    title="Untitled Save", sample=True, created="2026-06-03",
+                    insight="Reminds me of the Bauhaus movement.")
+    _write_resource(res, "20260604120000", rt="tool", status="inbox",
+                    title="Some Tool", sample=True, created="2026-06-04")
+
+    with Server(tmp) as s:
+        # matches a type-extra field (recipe ingredients), not the title
+        _, body = s.req("GET", "/api/resources?q=cumin")
+        assert [i["title"] for i in body["items"]] == ["Weeknight Dinner"]
+        # matches the frontmatter description
+        _, body = s.req("GET", "/api/resources?q=typographic")
+        assert [i["title"] for i in body["items"]] == ["A Design Book"]
+        # matches the insight (body text)
+        _, body = s.req("GET", "/api/resources?q=bauhaus")
+        assert [i["title"] for i in body["items"]] == ["Untitled Save"]
+        # still matches the title (regression)
+        _, body = s.req("GET", "/api/resources?q=Some%20Tool")
+        assert [i["title"] for i in body["items"]] == ["Some Tool"]
+        # no match anywhere
+        _, body = s.req("GET", "/api/resources?q=nonexistent-term-xyz")
+        assert body["items"] == []
+        # case-insensitive
+        _, body = s.req("GET", "/api/resources?q=CUMIN")
+        assert [i["title"] for i in body["items"]] == ["Weeknight Dinner"]
+
+
 def test_missing_folder_is_empty_not_error(env):
     tmp, *_ = env  # env does not create 04-Resources
     with Server(tmp) as s:

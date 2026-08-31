@@ -118,7 +118,11 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...init,
       cache: "no-store", // live data always — the SW additionally never touches API requests
       headers: {
-        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        // FormData sets its own Content-Type (with the multipart boundary) —
+        // forcing application/json on it would break image capture uploads.
+        ...(init.body && !(init.body instanceof FormData)
+          ? { "Content-Type": "application/json" }
+          : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...init.headers,
       },
@@ -165,6 +169,21 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text, tag }),
     }),
+  // Image capture (Pass 13): multipart, not JSON — the one exception to
+  // "every route is JSON in, JSON out" (see API-CONTRACT.md). `ocr` is
+  // reserved for on-device text extraction (the iOS Shortcut); the browser
+  // capture box always sends "" since it has no OCR of its own.
+  captureImage: (file: Blob, text: string, tag: CaptureTag | null, ocr = "") => {
+    const form = new FormData();
+    form.append("file", file, "photo.jpg");
+    form.append("text", text);
+    form.append("tag", tag ?? "");
+    form.append("ocr", ocr);
+    return request<{ id: string; status: string }>("/api/capture/image", {
+      method: "POST",
+      body: form,
+    });
+  },
   failed: () => request<{ items: FailedItem[] }>("/api/failed"),
   retry: (id: number) =>
     request<{ ok: boolean }>(`/api/failed/${id}/retry`, { method: "POST" }),
