@@ -8,6 +8,7 @@ never explodes into the pipeline.
 """
 from __future__ import annotations
 
+import pathlib
 from dataclasses import dataclass
 from datetime import datetime
 
@@ -87,14 +88,19 @@ def test_from_directory_recognises_a_transcript_only_bundle(tmp_path):
     assert bundle.transcript is not None
 
 
-def test_from_directory_rejects_a_plain_audio_only_folder(tmp_path):
-    """Audio with nothing alongside it is not a Plaud bundle — ingest.sweep's
-    ordinary file-copy path should see this folder as unrecognised, not steal
-    it from whatever else handles bare audio drops."""
-    folder = tmp_path / "2026-04-11_random"
+def test_from_directory_accepts_an_audio_only_folder_still_processing(tmp_path):
+    """Audio with no sidecars yet is a Plaud recording that hasn't finished
+    transcribing on the device's side, not an unrelated folder — this function
+    is only ever pointed at a watched Plaud folder (ingest.folders), so there
+    is no other reasonable owner for it. It must still be importable, with the
+    caller falling back to whisper exactly as for any other lone recording."""
+    folder = tmp_path / "2026-04-11_still_processing"
     folder.mkdir()
     (folder / "audio.ogg").write_bytes(b"\x00")
-    assert plaud.from_directory(folder, AUDIO_EXT) is None
+    bundle = plaud.from_directory(folder, AUDIO_EXT)
+    assert bundle is not None
+    assert bundle.audio.name == "audio.ogg"
+    assert bundle.transcript is None
 
 
 def test_from_directory_rejects_an_empty_or_unrelated_folder(tmp_path):
@@ -106,6 +112,12 @@ def test_from_directory_rejects_an_empty_or_unrelated_folder(tmp_path):
     other.mkdir()
     (other / "readme.md").write_text("hello", encoding="utf-8")
     assert plaud.from_directory(other, AUDIO_EXT) is None
+
+
+def test_from_directory_rejects_metadata_only_with_nothing_else(tmp_path):
+    folder = _write_applaud_bundle(tmp_path, audio=False, transcript=None,
+                                   metadata='{"id": "1"}')
+    assert plaud.from_directory(folder, AUDIO_EXT) is None
 
 
 def test_from_directory_on_a_file_not_a_folder_is_none(tmp_path):
@@ -397,3 +409,67 @@ def test_match_people_ignores_speakers_and_people_with_no_name():
 
 def test_match_people_handles_an_empty_people_list():
     assert plaud.match_people(["Anyone"], []) == {}
+
+
+# ---- inbox sidecars -----------------------------------------------------------
+
+def test_sidecar_paths_are_hidden_dotfiles_beside_the_audio(tmp_path):
+    audio_dest = tmp_path / "2026-08-30-0900 Product sync.ogg"
+    transcript_p, summary_p = plaud.sidecar_paths(audio_dest)
+    assert transcript_p.name.startswith(".")
+    assert summary_p.name.startswith(".")
+    assert transcript_p.parent == audio_dest.parent == summary_p.parent
+    assert transcript_p != summary_p
+
+
+def test_read_inbox_sidecars_round_trips_transcript_and_summary(tmp_path):
+    audio_dest = tmp_path / "2026-08-30-0900 Product sync.ogg"
+    audio_dest.write_bytes(b"\x00")
+    t_path, s_path = plaud.sidecar_paths(audio_dest)
+    t_path.write_text("[00:01] Ana: hi\n[00:03] Ben: hey", encoding="utf-8")
+    s_path.write_text("Talked about the roadmap.", encoding="utf-8")
+
+    transcript, summary = plaud.read_inbox_sidecars(audio_dest)
+    assert transcript is not None
+    assert transcript.speakers == ["Ana", "Ben"]
+    assert "hi" in transcript.body
+    assert summary == "Talked about the roadmap."
+
+
+def test_read_inbox_sidecars_absent_is_none_and_empty_string(tmp_path):
+    """The ordinary case: a non-Plaud recording with no sidecars at all."""
+    audio_dest = tmp_path / "2026-08-30-0900 memo.m4a"
+    audio_dest.write_bytes(b"\x00")
+    transcript, summary = plaud.read_inbox_sidecars(audio_dest)
+    assert transcript is None
+    assert summary == ""
+
+
+def test_read_inbox_sidecars_survives_an_empty_transcript_file(tmp_path):
+    audio_dest = tmp_path / "2026-08-30-0900 memo.m4a"
+    audio_dest.write_bytes(b"\x00")
+    t_path, _ = plaud.sidecar_paths(audio_dest)
+    t_path.write_text("   \n", encoding="utf-8")
+    transcript, _ = plaud.read_inbox_sidecars(audio_dest)
+    assert transcript is None
+
+
+def test_read_inbox_sidecars_fails_soft_on_an_unreadable_sidecar(tmp_path):
+    audio_dest = tmp_path / "2026-08-30-0900 memo.m4a"
+    audio_dest.write_bytes(b"\x00")
+    t_path, s_path = plaud.sidecar_paths(audio_dest)
+    t_path.mkdir()          # a directory where a file is expected
+    s_path.mkdir()
+    transcript, summary = plaud.read_inbox_sidecars(audio_dest)
+    assert transcript is None
+    assert summary == ""
+
+
+def test_sidecar_names_never_collide_with_intake_text_ext():
+    """The whole point of the dotfile: intake.poll must never see these as
+    independent captures. Confirmed against the real predicate it uses."""
+    from pipeline import intake
+    audio_dest = pathlib.Path("/inbox/2026-08-30-0900 x.ogg")
+    t_path, s_path = plaud.sidecar_paths(audio_dest)
+    for p in (t_path, s_path):
+        assert p.name.startswith("."), "intake.poll skips names starting with '.'"

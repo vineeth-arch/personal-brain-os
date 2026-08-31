@@ -118,8 +118,15 @@ def parse_folder_name(name: str) -> tuple[datetime | None, str, str]:
 def from_directory(directory: Path, audio_ext: set[str]) -> Bundle | None:
     """A bundle if this directory looks like one, else None.
 
-    The test is deliberately loose — an audio file plus at least one sidecar —
-    because the point is to recognise the shape, not to police it.
+    Deliberately loose: audio alone — no sidecars at all — still counts. This
+    used to require at least one sidecar, which silently dropped a recording
+    still being processed on Plaud's side (audio synced, transcript not written
+    yet): ingest.sweep would see the folder, call this, get None, and move on —
+    the capture never arrived, and there was nothing in the event log to say
+    so. This function is only ever pointed at a watched folder the user
+    configured for Plaud (ingest.folders), so "a directory with just an audio
+    file in it" has one realistic reading here: import it, and let the caller
+    fall back to whisper exactly as it would for any other lone recording.
     """
     try:
         if not directory.is_dir():
@@ -139,10 +146,8 @@ def from_directory(directory: Path, audio_ext: set[str]) -> Bundle | None:
     summary = _first(directory, (SUMMARY_NAME,))
     metadata = _first(directory, (METADATA_NAME,))
 
-    if audio is None and transcript is None:
+    if audio is None and transcript is None and transcript_json is None:
         return None                      # nothing here we know how to import
-    if audio is not None and not any((transcript, transcript_json, summary, metadata)):
-        return None                      # a plain folder of audio, not a bundle
 
     captured, title, plaud_id = parse_folder_name(directory.name)
     return Bundle(audio=audio, transcript=transcript, transcript_json=transcript_json,
@@ -303,6 +308,55 @@ def read_summary(bundle: Bundle) -> str:
         return bundle.summary.read_text(encoding="utf-8").strip()
     except (OSError, UnicodeDecodeError):
         return ""
+
+
+# ---- inbox sidecars ----------------------------------------------------------
+# How a bundle's transcript/summary travel with the audio once ingest.sweep has
+# copied it into the inbox. The sidecar holds the ALREADY-PARSED plaintext body
+# (the same "[HH:MM] Speaker: text" shape read_transcript always returns) —
+# never the original SRT/JSON — so nothing downstream re-parses a shape-
+# unstable format a second time.
+#
+# It travels as a DOTFILE. intake.poll's inbox scan explicitly skips names
+# starting with "." (pipeline/intake.py poll()); without that, a copied
+# transcript.txt would be picked up a second time as an unrelated text
+# capture — one recording becoming two notes.
+
+TRANSCRIPT_SIDECAR_SUFFIX = ".plaud-transcript.txt"
+SUMMARY_SIDECAR_SUFFIX = ".plaud-summary.txt"
+
+
+def sidecar_paths(audio_dest: Path) -> tuple[Path, Path]:
+    """(transcript sidecar, summary sidecar) for an audio file at `audio_dest`
+    — the paths, whether or not either exists yet."""
+    folder, stem = audio_dest.parent, audio_dest.stem
+    return (folder / f".{stem}{TRANSCRIPT_SIDECAR_SUFFIX}",
+            folder / f".{stem}{SUMMARY_SIDECAR_SUFFIX}")
+
+
+def read_inbox_sidecars(audio_path: Path) -> tuple[Transcript | None, str]:
+    """(transcript, summary) ingest.sweep deposited beside `audio_path`, or
+    (None, "") for an ordinary, non-Plaud recording — the common case.
+
+    Speakers are RE-DERIVED from the sidecar body via parse_text_transcript
+    rather than stored separately, so there is exactly one place that decides
+    who was speaking and it can never drift from the text a human can open and
+    read.
+    """
+    t_path, s_path = sidecar_paths(audio_path)
+    transcript = None
+    try:
+        body = t_path.read_text(encoding="utf-8")
+        if body.strip():
+            transcript = parse_text_transcript(body)
+    except (OSError, UnicodeDecodeError):
+        pass
+    summary = ""
+    try:
+        summary = s_path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        pass
+    return transcript, summary
 
 
 # ---- matching speakers to the vault ----------------------------------------
