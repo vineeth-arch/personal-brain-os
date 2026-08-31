@@ -10,8 +10,9 @@ export interface ErrorEnvelope {
   todo: string;
 }
 
-// The 11 note TYPES — a distinct vocabulary from capture tags
-// (pipeline/classify.py NOTE_TYPES, SCHEMA-REFERENCE.md §2).
+// The 12 note TYPES — a distinct vocabulary from capture tags
+// (pipeline/classify.py NOTE_TYPES, SCHEMA-REFERENCE.md §2). "company" is
+// never classified by the LLM router — only handshake or manual creation.
 export const NOTE_TYPES = [
   "musing",
   "learning",
@@ -24,6 +25,7 @@ export const NOTE_TYPES = [
   "principle",
   "insight",
   "reflection",
+  "company",
 ] as const;
 export type NoteType = (typeof NOTE_TYPES)[number];
 
@@ -217,6 +219,8 @@ export interface AppConfig {
     apify_last_call: string | null;
     youtube_keyless: boolean;
   };
+  // Pass D — which push targets are wired up. Booleans only, never key values.
+  push: PushAvailability;
 }
 
 // PUT /api/config body — only the fields being changed are sent.
@@ -320,4 +324,114 @@ export interface SamplePurgeResult {
   titles: string[];
   scope: SampleScope;
   message: string;
+}
+
+
+// ---- People (Relationship OS) -------------------------------------------------
+
+export const WARMTH_STAGES = [
+  "identified",
+  "researched",
+  "engaging",
+  "conversing",
+  "warm",
+  "ready",
+] as const;
+export type WarmthStage = (typeof WARMTH_STAGES)[number];
+
+export interface PersonChannels {
+  whatsapp?: string;
+  email?: string;
+  linkedin?: string;
+}
+
+// mirrors pipeline/relationships.py CHANNEL_PRIORITY, in that order
+export const CHANNEL_KINDS = ["whatsapp", "email", "linkedin"] as const;
+export type ChannelKind = (typeof CHANNEL_KINDS)[number];
+
+export interface Person {
+  id: string;
+  name: string;
+  relationship: string;
+  company: string;
+  warmth_stage: WarmthStage | "";
+  status: string;
+  cadence_days: number;
+  last_contact: string | null;
+  days_since_contact: number | null;
+  going_cold: boolean;
+  warmup_due: boolean;
+  commitment_due: boolean;
+  channels: PersonChannels;
+  next_action: string;
+  sample: boolean;
+  file: string;
+  dex_id: string;
+  dex_deeplink: string;
+}
+
+export interface PersonDetail extends Person {
+  context: string;
+  needs: string;
+  interaction_log: string;
+}
+
+export interface PersonDraft {
+  text: string;
+  channel: string;
+  // raw values only — the deep link is built in the browser (CLAUDE.md §4)
+  channels: PersonChannels;
+  provider: string | null;
+}
+
+export interface ContactResult extends Person {
+  suggest_stage: WarmthStage | null;
+}
+
+export interface VoiceStatus {
+  exists: boolean;
+  file: string;
+  samples: number;
+}
+
+export interface EnrichResult extends Person {
+  enriched: boolean;
+  credits_remaining: number | null;
+  detail: string;
+}
+
+// Pass D — pushing a profile summary OUT to the owner's own CRM / address book.
+// Nothing here delivers anything to another person (CLAUDE.md §4).
+export const PUSH_TARGETS = ["dex", "contacts"] as const;
+export type PushTarget = (typeof PUSH_TARGETS)[number];
+
+export interface PushPreview {
+  target: PushTarget;
+  person_id: string;
+  name: string;
+  /** the generated summary — this exact text is what gets confirmed and sent */
+  summary: string;
+  /** the marker-delimited block as it will appear in the field */
+  block: string;
+  /** plain-English "where this lands" */
+  destination: string;
+  /** what our previous block said, "" when we own nothing there yet */
+  replaced: string;
+}
+
+export interface PushResult {
+  ok: boolean;
+  target: PushTarget;
+  changed: string;
+  replaced: boolean;
+}
+
+export interface PushAvailability {
+  dex: boolean;
+  contacts_scope: boolean;
+}
+
+export interface PushQueueItem extends Person {
+  targets: PushTarget[];
+  last_pushed: string | null;
 }

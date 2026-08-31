@@ -12,19 +12,45 @@ logs a plain-English event, pushes one ntfy, and the loop moves on.
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import archive, classify as classify_mod, config as config_mod, enrich, errors, extract, intake, photo, route, todos, vision
+from . import (archive, classify as classify_mod, config as config_mod, enrich, errors,
+               extract, ingest, intake, photo, route, todos, transliterate, vision)
 from .events import EventLog
+from . import transcribe as transcribe_mod
 from .transcribe import Transcriber, build_transcriber
+
+log = logging.getLogger("pipeline")
 
 POLL_SECONDS = 5 * 60
 BATCH_SIZE = 25
-DB_PATH = Path("events.db")
-HEARTBEAT_PATH = Path(".watcher-heartbeat")
+
+# Where the pipeline's own state lives. This MUST resolve to the same directory
+# the API uses (api/main.py's state root), or the API reads one events.db while
+# the watcher writes another — which is precisely what the container did:
+# BRAIN_COCKPIT_ROOT=/data for the API, WORKDIR=/app for the watcher, so the
+# cockpit showed "the pipeline has never checked in" forever and the ingest
+# de-dupe table was thrown away on every restart.
+#
+# Unset (the launchd path), both fall back to the CWD — the plists set
+# WorkingDirectory to the repo for the API and the watcher alike, so they have
+# always agreed there.
+DB_NAME = "events.db"
+HEARTBEAT_NAME = ".watcher-heartbeat"
+
+
+def state_root() -> Path:
+    return Path(os.environ.get("BRAIN_COCKPIT_ROOT") or ".")
+
+
+DB_PATH = state_root() / DB_NAME
+HEARTBEAT_PATH = state_root() / HEARTBEAT_NAME
+
 RETRY_ATTEMPTS = 3          # total tries for a transient failure before quarantine
 RETRY_BASE_SECONDS = 2      # backoff: 2s, then 4s, between tries
 
@@ -38,6 +64,7 @@ class Deps:
     enrich_fetch: object = None       # fetch(url, data=, timeout=) -> bytes; None = real HTTP
     enrich_router: object = None      # router(prompt, config, validate) -> (data, provider, attempts)
     vision_router: object = None      # router(image_bytes, mime, config) -> (data, provider, attempts)
+    transliterate_fn: object = None   # caller(text, block) -> str; None = the configured engine
     sleep: object = time.sleep        # retry backoff seam (tests inject a recorder)
 
 
@@ -51,13 +78,24 @@ class Result:
     error: str = ""
 
 
-def _transcribe(item, deps: Deps) -> str:
+def _transcribe(item, deps: Deps, events: EventLog | None = None) -> str:
+    """Text passes through; audio goes to the engine — whole for a normal
+    recording, in stitched 10-minute segments once it is long enough that one
+    request would be refused or crawl (Pass P)."""
     if item.kind in ("text", "link"):
-        return item.path.read_text()
+        return item.path.read_text(encoding="utf-8")
+    duration = transcribe_mod.probe_duration_seconds(item.path)
+    if transcribe_mod.is_long(item.path, duration):
+        def on_event(message, ok):
+            if events:
+                events.log(str(item.path), "transcribe", "ok" if ok else "failed", message=message)
+        return transcribe_mod.transcribe_long(
+            item.path, deps.transcriber, sleep=deps.sleep, on_event=on_event,
+            attempts=RETRY_ATTEMPTS, backoff_base=RETRY_BASE_SECONDS)
     return deps.transcriber.transcribe(item.path)
 
 
-def _transcribe_with_retry(item, deps: Deps) -> str:
+def _transcribe_with_retry(item, deps: Deps, events: EventLog | None = None) -> str:
     """Retry policy: transient failures (network, 5xx, rate limits) get
     RETRY_ATTEMPTS tries with exponential backoff BEFORE quarantine; permanent
     ones (bad audio, missing binary, bad key) escape on the first try.
@@ -66,7 +104,7 @@ def _transcribe_with_retry(item, deps: Deps) -> str:
     file."""
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
-            return _transcribe(item, deps)
+            return _transcribe(item, deps, events)
         except errors.StageError as e:
             e.attempts = attempt
             if not e.transient or attempt == RETRY_ATTEMPTS:
@@ -115,16 +153,43 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
                 paths = [photo.route_image_resource(item, structured, transcript,
                                                     sidecar_data["text"], config.vault_path, cover_rel)]
             else:
-                body = photo.generic_image_body(cover_rel, sidecar_data["text"], transcript)
-                paths = route.route(item, cls, body, config.vault_path)
+                image_body = photo.generic_image_body(cover_rel, sidecar_data["text"], transcript)
+                paths = route.route(item, cls, image_body, config.vault_path)
             events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
                        message=f"wrote {', '.join(p.name for p in paths)}")
         else:
             # Stage 2 — transcribe (text skips inside _transcribe); transient
             # failures are retried with backoff before they can reach quarantine
             t0 = time.monotonic()
-            transcript = _transcribe_with_retry(item, deps)
+            transcript = _transcribe_with_retry(item, deps, events)
             events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000))
+
+            # Stage 2b — transliterate. Hindi speech comes back in Devanagari;
+            # the note leads with Roman Hindi/Hinglish and keeps the original
+            # below it. Everything downstream (classify, todos) reads the
+            # Hinglish text.
+            duration_min = None
+            body = transcript
+            if item.kind == "audio":
+                seconds = transcribe_mod.probe_duration_seconds(item.path)
+                if seconds:
+                    duration_min = max(1, round(seconds / 60))
+                if transliterate.has_devanagari(transcript):
+                    t0 = time.monotonic()
+                    hinglish = transliterate.to_hinglish(transcript, config,
+                                                         caller=deps.transliterate_fn)
+                    if hinglish:
+                        body = transliterate.compose_body(hinglish, transcript)
+                        transcript = hinglish
+                        events.log(fkey, "transliterate", "ok",
+                                   int((time.monotonic() - t0) * 1000),
+                                   message="devanagari → hinglish")
+                    else:
+                        # never a lost capture: the note keeps the Devanagari body
+                        events.log(fkey, "transliterate", "failed",
+                                   int((time.monotonic() - t0) * 1000),
+                                   message="no transliteration engine answered — "
+                                           "note kept in Devanagari")
 
             if item.kind == "link":
                 # A link IS a resource — no classify LLM, no review gate. Enrich
@@ -158,7 +223,7 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
 
                 # Stage 4 — route
                 t0 = time.monotonic()
-                paths = route.route(item, cls, transcript, config.vault_path)
+                paths = route.route(item, cls, body, config.vault_path, duration_min)
                 events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
                            message=f"wrote {', '.join(p.name for p in paths)}")
 
@@ -206,17 +271,39 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
 
 def _fail(item, config, events, res: Result, what: str, plain: str,
           kind: str = "permanent", attempts: int = 1, detail: str = "") -> Result:
+    """Record one file's failure and move on.
+
+    This runs INSIDE process_file's except handler, so it must not raise: a full
+    disk, a read-only failed/ folder or a locked database would otherwise escape
+    the handler and abort the whole run_once comprehension — one unquarantinable
+    file stopping the entire batch, which is the opposite of this module's
+    "one bad file never stops the run" contract. Each step is therefore
+    independently best-effort, and the Result is always returned."""
     fkey = str(item.path)
-    # The source may already be quarantined if it moved; guard on existence.
-    if item.path.exists():
-        errors.quarantine(item.path, config.failed_path)
+    res.status, res.error = "failed", what
     message = f"{what} kind={kind} attempts={attempts}"
     if detail:
         message += f" — {detail}"
-    events.log(fkey, "pipeline", "failed", message=message, plain_english_error=plain)
-    errors.ntfy(config.ntfy_url, config.ntfy_topic, plain, title="Brain Cockpit — file failed")
-    events.append_capture_log(f"❌ {item.path.name} — {what}")
-    res.status, res.error = "failed", what
+
+    try:
+        # The source may already be quarantined if it moved; guard on existence.
+        if item.path.exists():
+            errors.quarantine(item.path, config.failed_path)
+    except Exception:
+        log.exception("could not quarantine %s — it stays in the inbox", fkey)
+        message += " — quarantine failed, the file is still in the inbox"
+
+    for step, action in (
+        ("event log", lambda: events.log(fkey, "pipeline", "failed", message=message,
+                                         plain_english_error=plain)),
+        ("ntfy", lambda: errors.ntfy(config.ntfy_url, config.ntfy_topic, plain,
+                                     title="Brain Cockpit — file failed")),
+        ("capture log", lambda: events.append_capture_log(f"❌ {item.path.name} — {what}")),
+    ):
+        try:
+            action()
+        except Exception:
+            log.exception("failure bookkeeping (%s) failed for %s", step, fkey)
     return res
 
 
@@ -237,13 +324,29 @@ def run_once(config, events: EventLog, deps: Deps) -> list[Result]:
 
 
 def run_loop(config, events, deps) -> None:
+    """Poll forever. A tick may fail; the loop may not.
+
+    An unmounted inbox makes intake.poll raise FileNotFoundError, which used to
+    kill the watcher process outright — the pipeline then stayed dead until
+    someone noticed, and the only signal was the API watchdog's push half an
+    hour later. A transient condition must cost one tick, not the daemon."""
     print(f"Watching {config.inbox_path} — polling every {POLL_SECONDS // 60} min. Ctrl-C to stop.")
     while True:
-        results = run_once(config, events, deps)
-        if results:
-            print(f"Processed {len(results)} file(s).")
-        todos.tick(config, events)              # reminders + optional digest
-        enrich.retry_pending(config, events)    # one re-attempt for stale enriched:false notes
+        try:
+            # pull anything new out of the app-owned folders (Plaud Desktop,
+            # Note Pro exports, Voice Memos) before polling the inbox
+            ingest.sweep(config, events)
+            results = run_once(config, events, deps)
+            if results:
+                print(f"Processed {len(results)} file(s).")
+            todos.tick(config, events)              # reminders + optional digest
+            enrich.retry_pending(config, events)    # one re-attempt for stale enriched:false notes
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            # the heartbeat deliberately is NOT refreshed on a failed tick, so a
+            # persistently broken loop still reads as stale in the cockpit
+            log.exception("watcher tick failed — retrying at the next poll")
         time.sleep(POLL_SECONDS)
 
 

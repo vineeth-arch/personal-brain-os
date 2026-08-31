@@ -42,7 +42,7 @@ def _write_resource(folder: Path, note_id: str, *, rt: str, status: str, title: 
     body = "About the thing."
     if insight:
         body += f"\n\n## Insight\n{insight}"
-    (folder / f"{created}-{note_id}.md").write_text("\n".join(lines) + body + "\n")
+    (folder / f"{created}-{note_id}.md").write_text("\n".join(lines) + body + "\n", encoding="utf-8")
 
 
 def _git_log(vault: Path) -> list[str]:
@@ -236,7 +236,7 @@ def test_status_advance_restamps_and_commits(env):
         assert code == 200 and body["status"] == "consumed"
         # frontmatter actually restamped on disk
         note = next((res).glob("*.md"))
-        text = note.read_text()
+        text = note.read_text(encoding="utf-8")
         assert "status: consumed" in text and "consumed: " in text
         assert "type: resource" in text  # type untouched
         assert _git_log(vault)[0] == "api: resource 20260101120000 → consumed"
@@ -256,7 +256,7 @@ def test_insight_write_creates_section_origin_human_and_commits(env):
                            {"text": "Opinionated defaults make me faster."})
         assert code == 200 and body["has_insight"] is True
         note = next((res).glob("*.md"))
-        text = note.read_text()
+        text = note.read_text(encoding="utf-8")
         assert "## Insight" in text
         assert "Opinionated defaults make me faster." in text
         assert "origin: human" in text  # firewall: never flipped to ai
@@ -310,7 +310,7 @@ def test_purge_all_removes_only_samples_real_note_survives(env):
     # only the real note remains on disk
     remaining = [p.name for p in res.glob("*.md")]
     assert len(remaining) == 1
-    assert "My Real Note" in (res / remaining[0]).read_text()
+    assert "My Real Note" in (res / remaining[0]).read_text(encoding="utf-8")
     # the purge was git-committed, pre-purge first (one revert away from undone)
     log = _git_log(vault)
     assert "pre-purge: 3 sample notes, scope=all" in log
@@ -325,7 +325,7 @@ def test_purge_month_scope_spares_recent_and_real(env):
         code, body = s.req("DELETE", "/api/resources/sample?older_than=1m")
         assert code == 200 and body["removed"] == 2
         assert set(body["titles"]) == {"Old Sample A", "Old Sample B"}
-    titles_left = {(res / p.name).read_text() for p in res.glob("*.md")}
+    titles_left = {(res / p.name).read_text(encoding="utf-8") for p in res.glob("*.md")}
     joined = "\n".join(titles_left)
     assert "My Real Note" in joined  # real note untouched
     assert "Recent Sample" in joined  # recent sample untouched by month scope
@@ -341,7 +341,7 @@ def test_real_note_only_purge_is_a_noop(env):
     with Server(tmp) as s:
         code, body = s.req("DELETE", "/api/resources/sample?older_than=all")
         assert code == 200 and body["removed"] == 0
-    assert any("My Real Note" in (res / p.name).read_text() for p in res.glob("*.md"))
+    assert any("My Real Note" in (res / p.name).read_text(encoding="utf-8") for p in res.glob("*.md"))
 
 
 # ---- seed idempotency -------------------------------------------------------

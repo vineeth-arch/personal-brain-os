@@ -10,9 +10,13 @@ from dataclasses import dataclass, field
 from . import llm
 from .errors import StageError
 
-# The 11 note TYPES (SCHEMA-REFERENCE.md §2) — a distinct vocabulary from tags.
+# The 12 note TYPES (SCHEMA-REFERENCE.md §2) — a distinct vocabulary from tags.
+# "company" is never voice-captured or classified by the LLM router — it only
+# ever arrives from handshake or manual creation — but it has to be in this
+# list or validate_classification() and route() would both reject it.
 NOTE_TYPES = ["musing", "learning", "todo", "journal", "project", "person",
-              "resource", "decision", "principle", "insight", "reflection"]
+              "resource", "decision", "principle", "insight", "reflection",
+              "company"]
 
 # The 8 capture/routing TAGS (SCHEMA-REFERENCE.md §4) → the note type they route to.
 TAG_TO_TYPE = {
@@ -91,8 +95,26 @@ def classify(item, transcript: str, config, llm_fn=None) -> Classification:
     )
 
 
+# A 2-hour meeting is ~20k words. Classification only needs to know what the
+# recording IS, and the opening and closing minutes carry that; sending the
+# whole thing to every provider in the chain buys nothing. Todo extraction
+# still reads the FULL transcript — that's where the middle matters.
+CLASSIFY_WINDOW_WORDS = 2000
+
+
+def window_for_classification(transcript: str, window: int = CLASSIFY_WINDOW_WORDS) -> str:
+    words = transcript.split()
+    if len(words) <= window * 2:
+        return transcript
+    head = " ".join(words[:window])
+    tail = " ".join(words[-window:])
+    elided = len(words) - window * 2
+    return f"{head}\n\n[... {elided} words of the middle omitted for classification ...]\n\n{tail}"
+
+
 def build_prompt(transcript: str) -> str:
     """The ONE classification prompt — identical to every provider in the chain."""
+    transcript = window_for_classification(transcript)
     return (
         "Classify this captured note. Return ONLY JSON with keys: "
         'type, categories, subjects, tags, confidence, title.\n'

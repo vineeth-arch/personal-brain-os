@@ -21,6 +21,13 @@ CREATE TABLE IF NOT EXISTS reminders (
     key TEXT PRIMARY KEY,            -- todo block-id, or digest-<date>
     fired_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ingested_files (
+    src TEXT NOT NULL,               -- absolute path in a watched app folder
+    mtime_ns INTEGER NOT NULL,       -- (src, mtime, size) identifies one recording
+    size INTEGER NOT NULL,
+    copied_at TEXT NOT NULL,
+    PRIMARY KEY (src, mtime_ns, size)
+);
 """
 
 
@@ -28,8 +35,10 @@ class EventLog:
     def __init__(self, db_path: Path, vault_path: Path):
         self.db_path = Path(db_path)
         self.vault = Path(vault_path)
+        # _System is created when something is actually written there, not on
+        # open: the API constructs an EventLog per push request, and opening a
+        # log should not reach into the vault at all.
         self._system = self.vault / "_System"
-        self._system.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path)
         self.conn.executescript(_SCHEMA)
         self.conn.commit()
@@ -44,9 +53,26 @@ class EventLog:
         )
         self.conn.commit()
 
+    def already_ingested(self, src: str, mtime_ns: int, size: int) -> bool:
+        """Has this exact file (path + mtime + size) been copied in already?
+        Pipeline bookkeeping only — the recording itself lives in the inbox and
+        the vault, never here (CLAUDE.md §1)."""
+        cur = self.conn.execute(
+            "SELECT 1 FROM ingested_files WHERE src = ? AND mtime_ns = ? AND size = ?",
+            (src, mtime_ns, size))
+        return cur.fetchone() is not None
+
+    def mark_ingested(self, src: str, mtime_ns: int, size: int) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO ingested_files (src, mtime_ns, size, copied_at) "
+            "VALUES (?,?,?,?)",
+            (src, mtime_ns, size, datetime.now().isoformat(timespec="seconds")))
+        self.conn.commit()
+
     def append_capture_log(self, line: str) -> None:
         stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        with (self._system / "capture_log.md").open("a") as f:
+        self._system.mkdir(parents=True, exist_ok=True)
+        with (self._system / "capture_log.md").open("a", encoding="utf-8") as f:
             f.write(f"- {stamp} — {line}\n")
 
     def reminder_fired(self, key: str) -> bool:
@@ -60,7 +86,7 @@ class EventLog:
         self.conn.commit()
 
     def heartbeat(self, path: Path) -> None:
-        Path(path).write_text(datetime.now().isoformat(timespec="seconds") + "\n")
+        Path(path).write_text(datetime.now().isoformat(timespec="seconds") + "\n", encoding="utf-8")
 
     def _count(self, where: str, params: tuple = ()) -> int:
         cur = self.conn.execute(f"SELECT COUNT(*) FROM events WHERE {where}", params)
@@ -74,15 +100,18 @@ class EventLog:
         return cur.fetchone()[0]
 
     def _failed_latest(self) -> list[tuple[str, str]]:
-        """Latest failure per file with its reason."""
+        """Files whose LATEST event is a failure, with the reason.
+
+        It used to take the latest *failure* per file, which never forgot: a
+        file that failed and was then retried successfully stayed on the list
+        forever, so PIPELINE-STATUS.md and the 08:00 digest kept reporting
+        failures that GET /api/status had already cleared. Same query as
+        api/service.failed_items now, so every surface agrees."""
         cur = self.conn.execute(
-            "SELECT file, message FROM events WHERE status='failed' ORDER BY id DESC")
-        seen, failed_rows = set(), []
-        for f, msg in cur.fetchall():
-            if f not in seen:
-                seen.add(f)
-                failed_rows.append((f, msg))
-        return failed_rows
+            "SELECT e.file, e.message FROM events e "
+            "JOIN (SELECT file, MAX(id) AS mid FROM events GROUP BY file) m "
+            "ON e.id = m.mid WHERE e.status='failed' ORDER BY e.id DESC")
+        return [(f, msg) for f, msg in cur.fetchall()]
 
     def digest_stats(self, day: date) -> dict:
         """The pipeline half of the morning digest: captures on `day`, plus
@@ -112,7 +141,9 @@ class EventLog:
             lines.append("## Failed files")
             for f, msg in failed_rows:
                 lines.append(f"- `{Path(f).name}` — {msg}")
-        (self._system / "PIPELINE-STATUS.md").write_text("\n".join(lines) + "\n")
+        self._system.mkdir(parents=True, exist_ok=True)
+        (self._system / "PIPELINE-STATUS.md").write_text("\n".join(lines) + "\n",
+                                                         encoding="utf-8")
 
     def close(self) -> None:
         self.conn.close()

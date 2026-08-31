@@ -230,7 +230,7 @@ def _existing_sample_titles(folder: Path) -> set[str]:
     if not folder.is_dir():
         return titles
     for path in folder.glob("*.md"):
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
         if not text.startswith("---\n"):
             continue
         block = text.split("---\n", 2)
@@ -306,7 +306,7 @@ def seed(vault_path: Path, *, commit: bool = True, today: date | None = None) ->
         while path.exists():
             n += 1
             path = folder / f"{when.strftime('%Y-%m-%d')}-{_slug(entry['title'])}-{n}.md"
-        path.write_text(_build_note(entry, when))
+        path.write_text(_build_note(entry, when), encoding="utf-8")
         written.append({
             "title": entry["title"], "type": entry["rt"], "status": entry["status"],
             "insight": bool(entry.get("insight")), "file": path.name,

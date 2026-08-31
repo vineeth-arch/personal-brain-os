@@ -39,7 +39,7 @@ def test_put_config_openai_with_key_switches_live(env, monkeypatch):
         code, body = s.req("PUT", "/api/config", {"engine": "openai"})
         assert code == 200 and body["engine"] == "openai"
         # the write landed in config.json…
-        saved = json.loads((root / "config.json").read_text())
+        saved = json.loads((root / "config.json").read_text(encoding="utf-8"))
         assert saved["transcription"]["engine"] == "openai"
         # …and integrations reflect it without a restart or fresh=1
         _, body = s.req("GET", "/api/integrations")
@@ -88,15 +88,15 @@ def test_ntfy_test_send_failure_mocked(env, monkeypatch):
 
 def test_unknown_link_keys_render(env):
     root, _, _, _ = env
-    config = json.loads((root / "config.json").read_text())
+    config = json.loads((root / "config.json").read_text(encoding="utf-8"))
     config["links"] = {"dex": "https://getdex.com/", "notion": "https://www.notion.so/x",
                        "empty": ""}
-    (root / "config.json").write_text(json.dumps(config))
+    (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
     with Server(root) as s:
         _, body = s.req("GET", "/api/integrations")
         health = [c for c in body["cards"] if c["group"] == "health"]
         links = {c["id"]: c for c in body["cards"] if c["group"] == "link"}
-        assert len(health) == 7  # unknown links never grow the health set
+        assert len(health) == 9  # unknown links never grow the health set
         assert {"obsidian", "dex", "notion"} <= set(links)
         assert "empty" not in links  # blank urls are skipped
         notion = links["notion"]
@@ -106,7 +106,7 @@ def test_unknown_link_keys_render(env):
 
 def test_git_dirty_clean_truthfully_reported(env):
     root, vault, _, _ = env
-    (vault / "seed.md").write_text("seed\n")
+    (vault / "seed.md").write_text("seed\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(vault), "add", "-A"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(vault), "commit", "-qm", "seed"], check=True,
                    capture_output=True)
@@ -116,7 +116,7 @@ def test_git_dirty_clean_truthfully_reported(env):
         assert git_card["meta"]["dirty"] is False
         assert git_card["status"] == "ok" and git_card["badge"] == "Clean"
         # dirty the vault → the card must say so
-        (vault / "uncommitted.md").write_text("new\n")
+        (vault / "uncommitted.md").write_text("new\n", encoding="utf-8")
         _, body = s.req("GET", "/api/integrations?fresh=1")
         git_card = next(c for c in body["cards"] if c["id"] == "git")
         assert git_card["meta"]["dirty"] is True
@@ -129,9 +129,9 @@ def test_config_providers_chain(env):
         _, body = s.req("GET", "/api/config")
         assert body["providers"] == ["gemini-flash", "groq-llama-3.3-70b",
                                      "openrouter-free", "claude-haiku"]  # default chain
-    config = json.loads((root / "config.json").read_text())
+    config = json.loads((root / "config.json").read_text(encoding="utf-8"))
     config["classification"]["providers"] = ["claude-haiku"]
-    (root / "config.json").write_text(json.dumps(config))
+    (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
     with Server(root) as s:
         _, body = s.req("GET", "/api/config")
         assert body["providers"] == ["claude-haiku"]

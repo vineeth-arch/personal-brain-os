@@ -4,12 +4,24 @@
   "archive_path": "",
   "failed_path": "",
   "transcription": {
-    "engine": "whispercpp",
+    "engine": "openai",
+    "language": "hi",
     "whispercpp": {
       "binary_path": "",
       "model_path": ""
     }
   },
+  "transliteration": {
+    "engine": "",
+    "ollama": {
+      "url": "http://localhost:11434",
+      "model": ""
+    },
+    "openrouter": {
+      "model": ""
+    }
+  },
+  "watch_folders": [],
   "ntfy": {
     "url": "",
     "topic": ""
@@ -27,6 +39,7 @@
     ]
   },
   "links": {
+    "handshake": "https://handshake.designinnsaeit.com",
     "dex": "https://getdex.com/",
     "gmail": "https://mail.google.com/",
     "gcal": "https://calendar.google.com/",
@@ -43,6 +56,7 @@
   },
   "deploy": {
     "tunnel_hostname": "",
-    "public_url": ""
+    "public_url": "",
+    "mcp_connected": false
   }
 }

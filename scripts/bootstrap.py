@@ -39,7 +39,7 @@ def _example_config() -> dict:
     for candidate in (REPO_ROOT / "config.example.json",
                       Path("/app/config.example.json")):
         if candidate.exists():
-            return json.loads(candidate.read_text())
+            return json.loads(candidate.read_text(encoding="utf-8"))
     print("Could not find config.example.json — is the install incomplete?",
           file=sys.stderr)
     raise SystemExit(1)
@@ -48,7 +48,7 @@ def _example_config() -> dict:
 def _write_config(root: Path, config: dict) -> Path:
     path = root / "config.json"
     tmp = path.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(config, indent=2) + "\n")
+    tmp.write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
     return path
 

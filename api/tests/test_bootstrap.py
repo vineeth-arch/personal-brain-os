@@ -36,7 +36,7 @@ def _run(root: Path, env_extra: dict | None = None) -> subprocess.CompletedProce
 def test_first_boot_writes_a_usable_config(tmp_path):
     proc = _run(tmp_path)
     assert proc.returncode == 0, proc.stderr
-    config = json.loads((tmp_path / "config.json").read_text())
+    config = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
 
     # the four folders are configured AND created — the selfcheck refuses the
     # boot on any missing one, which is what this whole script exists to avoid
@@ -58,18 +58,18 @@ def test_token_is_unique_per_boot(tmp_path):
     a, b = tmp_path / "a", tmp_path / "b"
     _run(a)
     _run(b)
-    ta = json.loads((a / "config.json").read_text())["api"]["auth_token"]
-    tb = json.loads((b / "config.json").read_text())["api"]["auth_token"]
+    ta = json.loads((a / "config.json").read_text(encoding="utf-8"))["api"]["auth_token"]
+    tb = json.loads((b / "config.json").read_text(encoding="utf-8"))["api"]["auth_token"]
     assert ta != tb
 
 
 def test_second_boot_never_overwrites_an_existing_config(tmp_path):
     _run(tmp_path)
-    original = (tmp_path / "config.json").read_text()
+    original = (tmp_path / "config.json").read_text(encoding="utf-8")
     proc = _run(tmp_path)
     assert proc.returncode == 0
     # the token (i.e. the user's password) must survive a container restart
-    assert (tmp_path / "config.json").read_text() == original
+    assert (tmp_path / "config.json").read_text(encoding="utf-8") == original
     assert "already exists" in proc.stdout
 
 
@@ -78,7 +78,7 @@ def test_engine_follows_the_openai_key(tmp_path, key, expected):
     """G2: cloud transcription when a key is present (fast on a small VPS),
     local whisper.cpp otherwise — a missing key must never block the boot."""
     _run(tmp_path, {"OPENAI_API_KEY": key} if key else {})
-    config = json.loads((tmp_path / "config.json").read_text())
+    config = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
     assert config["transcription"]["engine"] == expected
     # whisper stays pre-wired either way, so the toggle works with no edits
     assert config["transcription"]["whispercpp"]["model_path"].endswith(".bin")

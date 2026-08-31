@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import errors
+from . import errors, morning
 
 TZ = ZoneInfo("Asia/Kolkata")
 TODOS_FOLDER = "06-Todos"
@@ -67,7 +67,11 @@ def scan(vault: Path) -> list[Todo]:
         return []
     out: list[Todo] = []
     for path in sorted(todos_dir.glob("*.md")):
-        for i, line in enumerate(path.read_text().splitlines()):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue        # one unreadable day must not empty the agenda
+        for i, line in enumerate(text.splitlines()):
             parsed = parse_line(line)
             if parsed:
                 task, done, due, time, block = parsed
@@ -80,13 +84,13 @@ def toggle(vault: Path, block_id: str) -> bool:
     state. Raises LookupError if no line carries that id."""
     for todo in scan(vault):
         if todo.block_id == block_id:
-            lines = todo.file.read_text().splitlines()
+            lines = todo.file.read_text(encoding="utf-8").splitlines()
             line = lines[todo.line_no]
             if todo.done:
                 lines[todo.line_no] = line.replace("- [x]", "- [ ]", 1)
             else:
                 lines[todo.line_no] = line.replace("- [ ]", "- [x]", 1)
-            todo.file.write_text("\n".join(lines) + "\n")
+            todo.file.write_text("\n".join(lines) + "\n", encoding="utf-8")
             return not todo.done
     raise LookupError(block_id)
 
@@ -161,7 +165,10 @@ def _tick(config, events, now: datetime) -> None:
     overdue = [t for t in todos if in_range(t, "overdue", today)]
     stats = events.digest_stats(today - timedelta(days=1))
     quiet_pipeline = not (stats["captured"] or stats["needs_review"] or stats["failed"])
-    if not due_today and not overdue and quiet_pipeline:
+    # the relationship half of the morning — folded into THIS push, never a second one
+    people_lines = morning.people_section(config, today)
+    people_lines += morning.push_section(config, events.db_path)
+    if not due_today and not overdue and quiet_pipeline and not people_lines:
         events.mark_reminder(digest_key)  # nothing to say today; don't re-check
         return
     lines = []
@@ -178,6 +185,7 @@ def _tick(config, events, now: datetime) -> None:
     if due_today:
         lines.append("Today:")
         lines += [f"• {t.task}" + (f" at {t.time}" if t.time else "") for t in due_today]
+    lines += people_lines
     errors.ntfy(config.ntfy_url, config.ntfy_topic, "\n".join(lines),
                 title="Brain Cockpit — today")
     events.mark_reminder(digest_key)

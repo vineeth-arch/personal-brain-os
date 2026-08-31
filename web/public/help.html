@@ -77,7 +77,7 @@
   <header>
     <div class="eyebrow">Personal Brain OS · Field Manual · v3</div>
     <h1><span class="muted">How to live with it —</span>The Operating Manual</h1>
-    <p class="lede">The system's job: you speak, it remembers, it files, it resurfaces. Your job is four habits and two rituals. Sections 01–06 are today; 07–09 are what each coming pass adds to your day, so you always know what's next and why.</p>
+    <p class="lede">The system's job: you speak, it remembers, it files, it resurfaces. Your job is four habits and two rituals. Sections 01–06 are the daily reality; 07–09 are what each pass added and what is still ahead — so you always know what's next and why.</p>
   </header>
 
   <!-- ============ 01 DAILY LOOP ============ -->
@@ -96,6 +96,14 @@
         <div class="who">You · 2 taps per memo, batch anytime</div>
         <div class="when">Send to Brain</div>
         <p>Voice Memos → share → <kbd>→ Brain</kbd> → optional name, optional tag → "✅ Captured". Recordings are safe in Voice Memos until you do this; batching at lunch or evening is fine. Capture never waits on filing.</p>
+        <p class="fine"><b>Already at the cockpit?</b> The mic button beside the capture box records straight into the pipeline — tap to start, tap to stop, same tag chips. It needs the HTTPS tunnel address (browsers block the mic on a plain <code>http://</code> one), and it can't record with the screen locked — that's still the Action Button's job.</p>
+        <p class="fine"><b>Plaud:</b> export from the Plaud app and share into <code>CaptureInbox/plaud/</code> — that works day one. Once you've checked the real path in Plaud Desktop → Preferences, put it in <code>watch_folders</code> and new recordings copy themselves in, originals untouched.</p>
+      </div>
+      <div class="tick">
+        <div class="who">System · when you speak Hindi</div>
+        <div class="when">Hindi → Hinglish</div>
+        <p>Hindi is transcribed in Devanagari, then rewritten in Roman Hindi. The Hinglish is the note body and the Devanagari original stays in the same note under <code>## Original (Devanagari)</code> — one note, both halves, nothing lost. Classification and action items read the Hinglish.</p>
+        <p class="fine">No engine configured, or it can't be reached? The note is still written, in Devanagari. A capture is never lost to a formatting step.</p>
       </div>
       <div class="tick">
         <div class="who">System · Mac, every 5 min</div>
@@ -179,6 +187,25 @@
         <li>Build "→ Brain": accept audio → optional name → tag menu (8 tags, skippable) → rename <code>YYYY-MM-DD-HHmm name #tag</code> → save to CaptureInbox → ✅</li>
         <li>Test end-to-end: record → share → file on Mac</li>
       </ul></div>
+      <div class="card"><div class="tool-eyebrow">Device</div><h3>Plaud</h3><ul>
+        <li><b>Works day one:</b> export the recording from the Plaud app/Desktop and share it into <code>CaptureInbox/plaud/</code> — anything in that folder is stamped <code>source: plaud</code></li>
+        <li><b>Hands-off:</b> add the folder Plaud Desktop already writes to under <code>watch_folders</code> in config.json (<code>{"path": "…", "source": "plaud"}</code>) — every tick copies new recordings in and never touches your originals. Check the real path in Plaud Desktop → Preferences before you set it</li>
+        <li>Note Pro: sync to the app, point <code>watch_folders</code> at that export folder — same deal</li>
+        <li>A long meeting is transcribed in 10-minute segments and stitched into <b>one</b> note with <code>[hh:mm]</code> markers; it takes a few ticks, and one bad segment never costs the rest</li>
+        <li>The Plaud SDK (pulling straight off the device) is deliberately deferred — see DEFERRED.md</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Mic</div><h3>Record in the cockpit</h3><ul>
+        <li>Today screen → the mic button beside the capture box: tap to start, tap to stop</li>
+        <li>Tag chips apply to the recording the same way they apply to typed text</li>
+        <li>Needs the HTTPS (tunnel) address — browsers block the mic on a plain <code>http://192.168…</code> address</li>
+        <li>For capture that survives a locked screen, keep using the Action Button flow</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Language</div><h3>Hindi → Hinglish</h3><ul>
+        <li>Hindi speech is transcribed in Devanagari (OpenAI whisper, <code>transcription.language: "hi"</code>)</li>
+        <li>It is then rewritten in Roman Hindi, which becomes the note body; the Devanagari original stays in the same note under <code>## Original (Devanagari)</code></li>
+        <li>Pick the engine in Settings: Ollama (local, name the model) or OpenRouter (needs <code>OPENROUTER_API_KEY</code>)</li>
+        <li>Engine off or unreachable → the note is still written, in Devanagari. A capture is never lost to a formatting step</li>
+      </ul></div>
       <div class="card"><div class="tool-eyebrow">Terminal</div><h3>Run it</h3><ul>
         <li>First: the Backlog Ritual (04)</li>
         <li>Daily: <code>.venv/bin/python -m pipeline --loop</code> in a tab that stays open</li>
@@ -190,7 +217,7 @@
         <li>Install to home screen (browser menu → Add to Home Screen)</li>
         <li>Settings (gear, top right): connection, deep links, where every key lives</li>
       </ul></div>
-      <div class="card"><div class="tool-eyebrow">Mac</div><h3>API (Pass 2 — next build)</h3><ul>
+      <div class="card"><div class="tool-eyebrow">Mac</div><h3>API (Pass 2)</h3><ul>
         <li><code>.venv/bin/uvicorn api.main:app</code> — the server the Cockpit talks to</li>
         <li>Until it's built, the Cockpit shows its designed "can't reach the server" card — expected, not broken</li>
         <li>The contract it must implement: <code>web/API-CONTRACT.md</code></li>
@@ -224,6 +251,13 @@
       <tr><td>Notes stopped appearing</td><td>Watcher not running / Mac asleep</td><td>Check <code>.watcher-heartbeat</code> age; rerun <code>--loop</code>; disable sleep while plugged in</td></tr>
       <tr><td>Note in <code>00-Inbox</code></td><td>Classifier under 0.7 — by design</td><td>Triage, not an error. Approve or retype</td></tr>
       <tr><td>File in <code>_failed/</code></td><td>Read its plain-English reason</td><td>Fix the cause, move back to inbox (or retry via API/UI)</td></tr>
+      <tr><td>Mic button does nothing / no mic</td><td>Page is on a plain <code>http://</code> address</td><td>Open the cockpit on the HTTPS tunnel address — browsers only allow recording on a secure one</td></tr>
+      <tr><td>Mic says access was blocked</td><td>Permission denied for this site</td><td>Allow the microphone for this address in browser/phone settings, then tap the mic again</td></tr>
+      <tr><td>Recording didn't upload</td><td>Server unreachable mid-upload</td><td>The take is still held in the page — press Retry upload. Over ~100 MB, copy the file into the inbox folder instead</td></tr>
+      <tr><td>A long meeting takes a while to appear</td><td>It transcribes in 10-minute segments</td><td>Expected — it lands as one note. Watch the Pipeline screen for per-chunk events</td></tr>
+      <tr><td>Part of a meeting reads "unintelligible"</td><td>One segment failed permanently</td><td>By design: the rest of the meeting is kept. The audio is archived if you want to redo that stretch</td></tr>
+      <tr><td>Hindi note is still in Devanagari</td><td>No transliteration engine, or it was unreachable</td><td>Set Ollama or OpenRouter in Settings; the note was written rather than lost — check Integrations → Hindi → Hinglish</td></tr>
+      <tr><td>Plaud files never arrive</td><td>Wrong <code>watch_folders</code> path</td><td>Check the real recordings folder in Plaud Desktop's preferences, then fix the path in config.json</td></tr>
       <tr><td>Transcript is garbage</td><td>Muffled audio / model too small</td><td>Speak near the mic up-front; consider <code>medium.en</code></td></tr>
       <tr><td>Haiku errors / 429s</td><td>Key missing or rate-limited</td><td>Check env key; transient errors auto-retry then quarantine</td></tr>
       <tr><td>No ntfy pushes ever</td><td>Wrong topic / not subscribed</td><td>Match topic in config + app; manual test push</td></tr>
@@ -231,6 +265,11 @@
       <tr><td>Cockpit rejects the token</td><td>Token ≠ <code>api.auth_token</code> in config.json</td><td>Copy it from config.json into Settings → Connection</td></tr>
       <tr><td>Cockpit looks stale after an update</td><td>Old app shell cached by the service worker</td><td>Reload twice (the new shell installs on the first, shows on the second)</td></tr>
       <tr><td>Sample resources still showing</td><td>Seed data not purged yet</td><td>Resources screen → Sample data card → Remove (git-committed first)</td></tr>
+      <tr><td>Push to Dex says "not configured"</td><td>No <code>DEX_API_KEY</code> in the server's shell</td><td><code>export DEX_API_KEY=…</code> in <code>~/.zshrc</code> and restart the API. Everything else on the People card keeps working without it</td></tr>
+      <tr><td>Push to Dex says "No dex_id on the note"</td><td>That person isn't linked to a Dex contact</td><td>Open them in Dex, copy the contact id into the note's <code>dex_id</code> field</td></tr>
+      <tr><td>Push to Contacts says to reconnect Google</td><td>The Google link predates the contacts permission</td><td>Integrations → Disconnect → Connect Google. One re-consent, once — Gmail and Calendar keep working meanwhile</td></tr>
+      <tr><td>"No matching contact in your Google account"</td><td>Nothing matches their email or phone</td><td>By design — the app never adds to your address book. Add them in Google Contacts once, or fix the channels on their note</td></tr>
+      <tr><td>Claude Desktop can't connect to the cockpit</td><td>Wrong <code>COCKPIT_URL</code>/<code>COCKPIT_TOKEN</code>, or the API isn't running</td><td>Check the API is up, then the two env values in the <code>brain-cockpit</code> block (§08c); restart Claude Desktop after editing</td></tr>
     </table>
   </section>
 
@@ -249,8 +288,8 @@
   <!-- ============ 07 THE COCKPIT (PASSES 3–5) ============ -->
   <section>
     <div class="eyebrow">07 · The Cockpit</div>
-    <h2>Pass 3 is live; what 4–5 add next</h2>
-    <p class="sub">Same loop, better instrument. Nothing below changes the habits — it removes friction from them.</p>
+    <h2>All three passes are live</h2>
+    <p class="sub">Same loop, better instrument. None of this changed the habits — it removed friction from them.</p>
     <div class="rail">
       <div class="tick you">
         <div class="who">Pass 3 · Cockpit UI · shipped</div>
@@ -258,12 +297,12 @@
         <p>The morning check is a PWA on your home screen: traffic-light health card (calm / teal "needs your call" / pink "needs a look"), capture streak in big numerals with the 30-day dot row, one resurfaced note with an Open-in-Obsidian link, the triage queue as one-tap cards, quick text capture with the 8 tag chips, and a Settings screen (gear icon) with the connection, deep links, and a map of where every key and path lives. <b>You do:</b> install it to the home screen once; the 2-minute morning ritual now takes 60 seconds. It needs the Pass 2 API running to have data — until then it shows the plain-English "can't reach the server" card.</p>
       </div>
       <div class="tick">
-        <div class="who">Pass 4 · Integrations</div>
+        <div class="who">Pass 4 · Integrations · shipped</div>
         <div class="when">One pane of truth</div>
         <p>Status cards for every moving part — whisper.cpp, OpenAI fallback toggle, Claude key, ntfy, Syncthing, git, watcher heartbeat — plus deep links out to Obsidian, Dex, Gmail, Calendar, cal.diy, n8n, ZimaOS. <b>You do:</b> nothing daily; visit when something feels off instead of guessing.</p>
       </div>
       <div class="tick">
-        <div class="who">Pass 5 · Hardening</div>
+        <div class="who">Pass 5 · Hardening · shipped</div>
         <div class="when">It watches itself</div>
         <p>Watchdog pings if the watcher dies, optional 8am digest, auto-retry on transient failures, startup self-check, backup card. <b>You do:</b> trust the silence even more.</p>
       </div>
@@ -304,17 +343,117 @@
     </div>
   </section>
 
+  <!-- ============ 08b RELATIONSHIP OS ============ -->
+  <section>
+    <div class="eyebrow">08b · Relationship OS · Pass MW</div>
+    <h2>Nobody good slips away quietly</h2>
+    <p class="sub">Every person note in 07-People carries a cadence and a warmth stage. The system watches the clock so you don't have to hold it in your head.</p>
+    <div class="rail">
+      <div class="tick">
+        <div class="who">System · 8am, in the digest you already get</div>
+        <div class="when">The People section</div>
+        <p>The top three who need you — furthest past their <b>own</b> cadence first, so a 3-day friend a month silent outranks a quarterly contact a fortnight silent. It rides the existing morning push; there is never a second notification.</p>
+      </div>
+      <div class="tick you">
+        <div class="who">You · once, before drafting works</div>
+        <div class="when">Teach it your voice</div>
+        <p>Settings → My voice: paste 3–5 messages you have actually sent. Until that file exists, drafting <b>refuses</b> — a message that doesn't sound like you is worse than no message.</p>
+      </div>
+      <div class="tick you">
+        <div class="who">You · People screen</div>
+        <div class="when">Draft a message</div>
+        <p>One tap writes a reconnection message in your voice, referencing the last real thing that happened. If the interaction log is empty it says less rather than inventing a shared history. Edit it in the drawer — it's a draft, not a decree.</p>
+      </div>
+      <div class="tick you">
+        <div class="who">You · same drawer</div>
+        <div class="when">Send it yourself</div>
+        <p>Copy, or tap the channel button to open WhatsApp / your mail app / LinkedIn <b>with the draft already in it</b>. Nothing is ever sent by the app (§02 — the rule holds here too). You press send, in their app.</p>
+      </div>
+      <div class="tick you">
+        <div class="who">You · after you actually reach out</div>
+        <div class="when">Log contact</div>
+        <p>Appends a dated line to the interaction log, resets the counter, commits the vault. If the relationship has moved on, it offers the next warmth stage for one tap — offered, never assumed.</p>
+      </div>
+      <div class="tick">
+        <div class="who">System · on request only</div>
+        <div class="when">Enrich</div>
+        <p>With a People Data Labs key set, a card can fill in role and company under ## Context, marked <code>origin: ai</code>. Without the key the button says so plainly and everything else keeps working.</p>
+      </div>
+      <div class="tick you">
+        <div class="who">You · one tap, from the People screen</div>
+        <div class="when">+ Target</div>
+        <p>A name and one channel is enough to start. It writes a proper person note at warmth stage <b>identified</b> — spotted, not yet researched — and commits the vault. Adding someone to the warm-up engine no longer means opening Obsidian; everything else about them can be filled in later, either place.</p>
+      </div>
+      <div class="tick you">
+        <div class="who">You · when their profile is stale</div>
+        <div class="when">Push to Dex · Push to Contacts</div>
+        <p>Sends a short factual summary of who they are, when you last spoke, what's open, and the next step — <b>out</b> to your own Dex contact and your own Google contact. Updating the Google contact is how it reaches your iPhone, through the Google account you already sync.</p>
+        <p class="fine"><b>The preview is the gate.</b> Tapping the button shows you the exact text first; nothing is written until you press <kbd>Confirm push</kbd>. This is not a send — no message goes to the person, ever (§02 holds here too). It updates a contact record, nothing more.</p>
+        <p class="fine"><b>It cannot overwrite your own notes.</b> The app owns only what sits between its <code>&lt;!-- BRAIN-OS --&gt;</code> markers and replaces exactly that. Anything you typed into that Dex description or contact note yourself is left untouched, push after push.</p>
+        <p class="fine">Not set up yet? The buttons become quiet "not configured" pills that say which piece is missing — a Dex key, a <code>dex_id</code> on the note, or one re-consent for Google contacts. Everything else on the card keeps working.</p>
+      </div>
+      <div class="tick">
+        <div class="who">System · in the 8am digest you already get</div>
+        <div class="when">Ready to push</div>
+        <p>When people have moved on since their profile last went out, the morning push adds one line naming the count, and the People screen lists them under <b>Ready to push</b>. It stages; it never pushes. Each one still shows you its text and waits for your tap — the constitution's "never bulk-write unreviewed content" applies to what leaves the vault as much as to what enters it.</p>
+      </div>
+    </div>
+    <p class="sub">Empty vault? <code>python scripts/seed_people.py</code> writes six sample people (and <code>--purge</code> removes them) so the screen has something to show before your real ones are in.</p>
+  </section>
+
+  <!-- ============ 08c MCP ============ -->
+  <section>
+    <div class="eyebrow">08c · MCP · Pass X</div>
+    <h2>Ask Claude Desktop about your own brain</h2>
+    <p class="sub">A small server that lets Claude Desktop read the cockpit directly — your status, your people, your todos — and drop a capture in. It holds no data of its own: every answer is a live call to the cockpit you're already running.</p>
+    <div class="grid">
+      <div class="card"><div class="tool-eyebrow">Claude Desktop</div><h3>The config block</h3>
+        <p style="font-size:13.5px;color:var(--text-subtle)">Settings → Developer → Edit Config, then restart Claude Desktop:</p>
+        <pre><code>{
+  "mcpServers": {
+    "brain-cockpit": {
+      "command": "/path/to/brain-cockpit/.venv/bin/python",
+      "args": ["/path/to/brain-cockpit/scripts/cockpit_mcp.py"],
+      "env": {
+        "COCKPIT_URL": "https://your-tunnel-hostname",
+        "COCKPIT_TOKEN": "the api.auth_token from config.json"
+      }
+    }
+  }
+}</code></pre>
+        <p class="fine" style="color:var(--text-subtle);font-size:13px">Use the tunnel address if you want it working when the Mac isn't on your LAN; <code>http://127.0.0.1:8000</code> is fine on the machine itself.</p>
+      </div>
+      <div class="card"><div class="tool-eyebrow">What it can do</div><h3>Five tools</h3><ul>
+        <li><b>cockpit_status</b> — pipeline health, counts, last run</li>
+        <li><b>people_list</b> — who's gone quiet, filterable by stage</li>
+        <li><b>people_draft</b> — a reconnection message in your voice, <b>as text</b></li>
+        <li><b>capture_text</b> — drops a thought in the capture inbox</li>
+        <li><b>todos_today</b> — today's todos from the vault</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">What it cannot do</div><h3>The limits are structural</h3><ul>
+        <li><b>It cannot send anything.</b> A draft comes back as text for you to send yourself, exactly like the cockpit's own drawer. There is no tool that contacts anybody, and a test fails the build if one appears</li>
+        <li><b>It barely writes.</b> <code>capture_text</code> is the only write, and it writes where your own capture box writes</li>
+        <li>It cannot reach your vault except through the cockpit's own routes — no second copy of your notes exists</li>
+        <li>Errors come through in the same plain English the cockpit uses: what happened, likely cause, what to do</li>
+      </ul></div>
+    </div>
+    <p class="note">The cockpit has to be running for any of this to answer. If Claude says it can't connect, that's the first thing to check — then the URL and token in the config block.</p>
+  </section>
+
   <!-- ============ 09 THE ROAD AFTER ============ -->
   <section>
     <div class="eyebrow">09 · The Road After</div>
     <h2>What comes next, in order</h2>
     <p class="sub">So the future stops occupying working memory. Each unlocks when the previous is lived-in, not merely built.</p>
-    <div class="phase now"><div class="num">Now</div><div class="body"><b>Wire + backlog + live the loop</b><p>Section 03 → 04 → daily loop. Everything below waits on this being real.</p></div></div>
-    <div class="phase"><div class="num">P 3–5</div><div class="body"><b>Finish the Cockpit</b><p>UI, integrations, hardening — one session each, prompts already written in the build plan.</p></div></div>
-    <div class="phase"><div class="num">P 6</div><div class="body"><b>Resource OS dashboard</b><p>Spec written (PASS-6-RESOURCE-OS-BUILD.md). Seed → explore → purge samples as real data arrives.</p></div></div>
-    <div class="phase"><div class="num">P 7</div><div class="body"><b>Relationship OS surfaces</b><p>07-People views, cadence board, warm-up stages for the Dubai pipeline — after Dex sync + the proactive engine exist. Deliberately later, at your call.</p></div></div>
-    <div class="phase"><div class="num">P 8–9</div><div class="body"><b>Decision views + /query</b><p>Calibration charts over the decision journal; ask-your-vault with cited answers.</p></div></div>
-    <div class="phase"><div class="num">P 10</div><div class="body"><b>ZimaOS deploy</b><p>Docker Compose + Cloudflare Tunnel — the whole Cockpit, anywhere, always-on. This one can move earlier; it's deployment, not features.</p></div></div>
+    <div class="phase now"><div class="num">Now</div><div class="body"><b>[YOU] Wire + backlog + live the loop</b><p>Section 03 → 04 → daily loop, then the 30-day gate (§06). The building has run well ahead of the living; this is the only row that still needs you, and nothing below it matters until it's real.</p></div></div>
+    <div class="phase"><div class="num">P 3–6</div><div class="body"><b>The Cockpit — shipped</b><p>UI, integrations, hardening, and the Resource OS gallery. Seed → explore → purge samples as real resources arrive.</p></div></div>
+    <div class="phase"><div class="num">P 10–11</div><div class="body"><b>Deploy — shipped</b><p>Docker Compose, launchd, Cloudflare Tunnel. Reachable-from-a-phone is a manual tick on the Build screen: only a device off your LAN can prove it.</p></div></div>
+    <div class="phase"><div class="num">P 12</div><div class="body"><b>Google read + draft — shipped</b><p>Unread mail and the next 7 days in Integrations, plus Gmail drafts. Deliberately no send route, then or now.</p></div></div>
+    <div class="phase"><div class="num">P V · P</div><div class="body"><b>Capture everywhere — shipped</b><p>Record in the cockpit itself; Plaud and long meetings ingest as one whole note; Hindi lands as Hinglish with the Devanagari kept beside it.</p></div></div>
+    <div class="phase"><div class="num">P MW</div><div class="body"><b>Relationship OS surfaces — shipped</b><p>The People screen, the morning People section, one-tap drafts in your voice, warm-up stages.</p></div></div>
+    <div class="phase"><div class="num">P D</div><div class="body"><b>Dex + Contacts write-back — shipped</b><p>Profile summaries push out to your own CRM and address book behind a preview-and-confirm gate, replacing only what the app owns. Dex is no longer just a launcher tile.</p></div></div>
+    <div class="phase"><div class="num">P X</div><div class="body"><b>MCP + tracker + this manual — shipped</b><p>Claude Desktop can read the cockpit and drop a capture in; the Build screen probes every pass; quick-add feeds the warm-up engine without Obsidian.</p></div></div>
+    <div class="phase"><div class="num">P 8–9</div><div class="body"><b>Decision views + /query</b><p>Calibration charts over the decision journal; ask-your-vault with cited answers. Wants a vault with real decisions in it — which is what the row at the top buys.</p></div></div>
     <div class="phase"><div class="num">P ∞</div><div class="body"><b>The unified graph</b><p>The capstone. Needs a rich, lived-in vault or it's noise. Last, on purpose.</p></div></div>
   </section>
 

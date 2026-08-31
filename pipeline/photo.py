@@ -44,7 +44,7 @@ def read_sidecar(image_path: Path) -> dict:
     if not path.exists():
         return {"text": "", "ocr": "", "source": "photo"}
     try:
-        data = json.loads(path.read_text())
+        data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("sidecar is not a JSON object")
     except (OSError, ValueError):
@@ -215,7 +215,7 @@ def route_image_resource(item, structured: dict, extracted_text: str, user_text:
         i += 1
         path = dest_dir / f"{base}-{i}.md"
     path.write_text(build_image_resource_note(item, structured, extracted_text, user_text,
-                                              note_id, created, cover_rel))
+                                              note_id, created, cover_rel), encoding="utf-8")
     return path
 
 

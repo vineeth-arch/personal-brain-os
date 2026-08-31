@@ -15,7 +15,7 @@ CONFIG = SimpleNamespace(ntfy_url="https://ntfy.example", ntfy_topic="t")
 
 def _heartbeat(tmp_path, age: timedelta):
     hb = tmp_path / ".watcher-heartbeat"
-    hb.write_text((NOW - age).isoformat(timespec="seconds") + "\n")
+    hb.write_text((NOW - age).isoformat(timespec="seconds") + "\n", encoding="utf-8")
     return hb
 
 
@@ -67,7 +67,7 @@ def test_alert_works_on_fresh_db(tmp_path):
 
 def test_unreadable_heartbeat_counts_as_stale(tmp_path):
     hb = tmp_path / ".watcher-heartbeat"
-    hb.write_text("not a timestamp\n")
+    hb.write_text("not a timestamp\n", encoding="utf-8")
     pushes = []
     assert watchdog.maybe_alert(tmp_path / "events.db", hb, CONFIG, now=NOW,
                                 push=lambda *a, **k: pushes.append(a)) is True

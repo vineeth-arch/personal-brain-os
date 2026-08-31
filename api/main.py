@@ -16,6 +16,7 @@ import os
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -30,13 +31,24 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from pipeline import classify, config as config_mod, enrich, intake, route as proute, sidecar, todos as ptodos, watcher
 
-from . import build_status, google, integrations, multipart, notes, selfcheck, service, watchdog
+from . import (build_status, google, integrations, multipart, notes, people as people_mod,
+               push as push_mod, selfcheck, service, watchdog)
 
 log = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
 
-# repo root by default; BRAIN_COCKPIT_ROOT overrides it (deploy/test knob)
+# Two different roots, deliberately. In a dev checkout they are the same
+# directory, which is why they were conflated; in the container they are not.
+#
+#   STATE root — config.json, events.db, the heartbeat, backups/. Mutable,
+#     persisted, mounted (/data). BRAIN_COCKPIT_ROOT points here, and the
+#     watcher anchors to the same env var (pipeline/watcher.py) so both
+#     processes read and write ONE database.
+#   APP root — web/dist, checks.json, and the source files the build probes
+#     inspect. Read-only, shipped inside the image (/app), and always found
+#     relative to this file rather than to a mount or the CWD.
 DEFAULT_ROOT = Path(os.environ.get("BRAIN_COCKPIT_ROOT") or Path(__file__).resolve().parents[1])
+APP_ROOT = Path(__file__).resolve().parents[1]
 
 
 class Envelope(Exception):
@@ -128,8 +140,45 @@ class DraftBody(BaseModel):
     text: str
 
 
-def create_app(root: Path | None = None) -> FastAPI:
-    root = Path(root or DEFAULT_ROOT)
+class PersonDraftBody(BaseModel):
+    channel: str | None = None
+
+
+class ContactBody(BaseModel):
+    note: str = ""
+    channel: str = ""
+
+
+class StageBody(BaseModel):
+    stage: str
+
+
+class VoiceBody(BaseModel):
+    samples: list[str]
+
+
+class PushPreviewBody(BaseModel):
+    target: str
+
+
+class PushBody(BaseModel):
+    target: str
+    text: str
+
+
+class ChannelBody(BaseModel):
+    kind: str
+    value: str
+
+
+class NewPersonBody(BaseModel):
+    name: str
+    channel: ChannelBody
+
+
+def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAPI:
+    root = Path(root or DEFAULT_ROOT)          # state: config, db, heartbeat, backups
+    app_root = Path(app_root or APP_ROOT)      # code: web/dist, checks.json, probes
 
     # Startup self-check (Pass 5): refuse to boot on structural problems and
     # print exactly what to fix. Softer conditions (no whisper binary, no ntfy)
@@ -142,6 +191,7 @@ def create_app(root: Path | None = None) -> FastAPI:
 
     app = FastAPI(title="Brain Cockpit API", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.root = root
+    app.state.app_root = app_root
     app.state.run_proc = None
     app.state.run_lock = threading.Lock()
     app.state.integrations_cache = {}
@@ -151,8 +201,11 @@ def create_app(root: Path | None = None) -> FastAPI:
     app.state.build_cache = {}
 
     config_path = root / "config.json"
-    db_path = root / watcher.DB_PATH
-    heartbeat_path = root / watcher.HEARTBEAT_PATH
+    # by NAME, not by the watcher's resolved path — the watcher anchors those to
+    # BRAIN_COCKPIT_ROOT, and joining an already-absolute path onto `root` here
+    # would silently ignore an explicit create_app(root=...) in a test
+    db_path = root / watcher.DB_NAME
+    heartbeat_path = root / watcher.HEARTBEAT_NAME
 
     def load_config():
         try:
@@ -226,7 +279,7 @@ def create_app(root: Path | None = None) -> FastAPI:
     def status(config=Depends(require_token)):
         heartbeat = None
         if heartbeat_path.exists():
-            heartbeat = heartbeat_path.read_text().strip() or None
+            heartbeat = heartbeat_path.read_text(encoding="utf-8").strip() or None
         try:
             pending = len(intake.poll(config.inbox_path))
         except OSError:
@@ -310,7 +363,10 @@ def create_app(root: Path | None = None) -> FastAPI:
         now = time.monotonic()
         if not fresh and cache.get("payload") and now - cache.get("ts", 0) < 60:
             return cache["payload"]
-        items = build_status.run_probes(root, config, db_path)
+        try:
+            items = build_status.run_probes(app_root, config, db_path)
+        except build_status.ManifestError as e:
+            raise Envelope(500, **e.envelope)
         unfinished = next((i for i in items if not i["done"]), None)
         payload = {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -338,8 +394,12 @@ def create_app(root: Path | None = None) -> FastAPI:
             outcome = fields.get("outcome", "")
             if outcome == "served":
                 st["served"] += 1
-                if "confidence" in fields:
+                # the message is parsed log text, not a schema — a malformed
+                # token must not 500 the whole stats page
+                try:
                     st["confidences"].append(float(fields["confidence"]))
+                except (KeyError, ValueError):
+                    pass
             elif outcome in ("invalid-json", "schema"):
                 st["invalid_json"] += 1
                 st["fell_through"] += 1
@@ -449,6 +509,210 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "else, resize the image first.")
         return {"id": note_id, "status": "captured"}
 
+    @app.post("/api/capture/audio", status_code=201)
+    async def capture_audio(request: Request, config=Depends(require_token)):
+        """A recording from the cockpit's mic button. The body is the raw audio
+        (no multipart — python-multipart isn't a locked dependency, CLAUDE.md
+        §7), streamed to the inbox so a long recording never sits in memory."""
+        ext = notes.audio_extension(request.headers.get("content-type"))
+        if ext is None:
+            raise Envelope(
+                400, "That recording isn't in a format the pipeline can read.",
+                f"The upload's Content-Type was '{request.headers.get('content-type') or 'missing'}'.",
+                "Record again with the mic button, or drop the audio file into the inbox folder instead.")
+        tag = request.query_params.get("tag") or None
+        if not notes.valid_tag(tag):
+            raise Envelope(
+                400, "That's not a capture tag the pipeline knows.",
+                f"'{tag}' isn't one of the 8 capture tags in SCHEMA-REFERENCE.md.",
+                "Pick one of the tag chips, or send no tag and let the classifier decide.")
+
+        inbox = Path(config.inbox_path)
+        path, note_id = notes.audio_capture_path(inbox, ext, request.query_params.get("name"), tag)
+        fd, tmp = tempfile.mkstemp(dir=inbox, prefix=".capture-", suffix=".tmp")
+        written = 0
+        try:
+            with os.fdopen(fd, "wb") as f:
+                async for chunk in request.stream():
+                    written += len(chunk)
+                    if written > notes.MAX_AUDIO_BYTES:
+                        raise Envelope(
+                            413, "That recording is too large to upload.",
+                            f"The upload passed the {notes.MAX_AUDIO_BYTES // (1024 * 1024)} MB limit "
+                            "this server accepts.",
+                            "Record in shorter takes, or copy the file straight into the inbox folder "
+                            "— the watcher picks it up from there with no size limit.")
+                    f.write(chunk)
+            if written == 0:
+                raise Envelope(
+                    400, "There was nothing to capture.",
+                    "The recording arrived empty — the mic may have been blocked mid-recording.",
+                    "Check the microphone permission, then record again.")
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        # the inbox is outside the vault — nothing to git-commit here
+        return {"id": note_id, "status": "captured"}
+
+    # ---- people (Relationship OS) --------------------------------------------
+
+    def _person_or_404(config, person_id: str):
+        found = people_mod.detail(Path(config.vault_path), person_id)
+        if found is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen — the note may have been renamed or removed.")
+        return found
+
+    @app.get("/api/people")
+    def people_list(config=Depends(require_token)):
+        return {"items": people_mod.list_people(Path(config.vault_path))}
+
+    @app.post("/api/people", status_code=201)
+    def people_create(body: NewPersonBody, config=Depends(require_token)):
+        """Quick-add a warm-up target (Pass X): one name, one channel. Feeding
+        the warm-up engine should not require opening Obsidian."""
+        try:
+            return people_mod.create_target(Path(config.vault_path), body.name,
+                                            body.channel.kind, body.channel.value)
+        except ValueError as e:
+            raise Envelope(
+                400, "That target couldn't be added.",
+                str(e).capitalize() + ".",
+                "Give them a name and one way to reach you — WhatsApp, email, or LinkedIn.")
+
+    @app.get("/api/people/voice")
+    def people_voice(config=Depends(require_token)):
+        return people_mod.voice_status(Path(config.vault_path))
+
+    @app.post("/api/people/voice")
+    def people_voice_write(body: VoiceBody, config=Depends(require_token)):
+        try:
+            return people_mod.write_voice(Path(config.vault_path), body.samples)
+        except ValueError:
+            raise Envelope(
+                400, "There were no writing samples to learn from.",
+                "Every sample in the list was empty.",
+                "Paste 3–5 messages you actually sent, then save again.")
+
+    @app.get("/api/people/{person_id}")
+    def person_detail(person_id: str, config=Depends(require_token)):
+        return _person_or_404(config, person_id)
+
+    @app.post("/api/people/{person_id}/draft")
+    def person_draft(person_id: str, body: PersonDraftBody, config=Depends(require_token)):
+        try:
+            result = people_mod.draft(Path(config.vault_path), person_id, body.channel, config)
+        except LookupError:
+            raise Envelope(
+                409, "Drafts need your own voice on file first.",
+                "_System/my-voice.md doesn't exist yet, and a draft written without "
+                "it would sound like a chatbot, not like you.",
+                "Paste 3–5 messages you've actually sent in Settings → My voice, then try again.")
+        if result is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        if not result["text"]:
+            raise Envelope(
+                502, "No model could write the draft.",
+                "Every provider in the chain failed or has no key set.",
+                "Check the model keys in the server's shell, then try again.")
+        return result
+
+    @app.post("/api/people/{person_id}/contact")
+    def person_contact(person_id: str, body: ContactBody, config=Depends(require_token)):
+        updated = people_mod.log_contact(Path(config.vault_path), person_id,
+                                         body.note, body.channel)
+        if updated is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        return updated
+
+    @app.post("/api/people/{person_id}/warmth")
+    def person_warmth(person_id: str, body: StageBody, config=Depends(require_token)):
+        from pipeline import relationships
+        if body.stage not in relationships.WARMTH_STAGES:
+            raise Envelope(
+                400, "That's not a warmth stage the vault knows.",
+                f"'{body.stage}' isn't one of the six stages in SCHEMA-REFERENCE.md.",
+                "Pick one of the stage chips on the person's card.")
+        updated = people_mod.set_stage(Path(config.vault_path), person_id, body.stage)
+        if updated is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        return updated
+
+    @app.post("/api/people/{person_id}/enrich")
+    def person_enrich(person_id: str, config=Depends(require_token)):
+        if not people_mod.pdl_configured():
+            raise Envelope(
+                503, "Enrichment isn't set up yet.",
+                "PDL_API_KEY isn't set in the server's shell, so there's nothing to ask.",
+                "Add a People Data Labs key to the server's environment and restart the API "
+                "— everything else on this card keeps working without it.")
+        try:
+            updated = people_mod.enrich(Path(config.vault_path), person_id)
+        except Exception:
+            log.exception("pdl enrich failed")
+            raise Envelope(
+                502, "People Data Labs didn't answer.",
+                "The lookup failed or the monthly free credits are used up.",
+                "Try again later; the note is unchanged.")
+        if updated is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        return updated
+
+    # ---- profile push (Pass D) -------------------------------------------------
+    # Writes PROFILE DATA into the owner's own CRM/address book. Nothing is
+    # delivered to another person here (CLAUDE.md §4), and nothing is written
+    # without a human confirming the exact text first (CLAUDE.md §3).
+
+    def _push_event_log(config):
+        from pipeline.events import EventLog
+        return EventLog(db_path, Path(config.vault_path))
+
+    @app.post("/api/people/{person_id}/push/preview")
+    def person_push_preview(person_id: str, body: PushPreviewBody,
+                            config=Depends(require_token)):
+        try:
+            return push_mod.preview(Path(config.vault_path), person_id, body.target,
+                                    config, app.state.google_tokens)
+        except push_mod.PushError as e:
+            raise Envelope(e.status, **e.envelope)
+
+    @app.post("/api/people/{person_id}/push")
+    def person_push(person_id: str, body: PushBody, config=Depends(require_token)):
+        event_log = None
+        try:
+            event_log = _push_event_log(config)
+        except Exception:
+            log.exception("push event log unavailable")   # never block the push on bookkeeping
+        try:
+            return push_mod.push(Path(config.vault_path), person_id, body.target,
+                                 body.text, config, app.state.google_tokens,
+                                 event_log=event_log)
+        except push_mod.PushError as e:
+            raise Envelope(e.status, **e.envelope)
+        finally:
+            if event_log is not None:
+                event_log.close()
+
+    @app.get("/api/push/queue")
+    def push_queue(config=Depends(require_token)):
+        return {"items": push_mod.queue(Path(config.vault_path), db_path, config),
+                "available": push_mod.availability(config)}
+
     @app.post("/api/failed/{event_id}/retry")
     def retry(event_id: int, config=Depends(require_token)):
         row = service.failed_row(db_path, event_id)
@@ -494,8 +758,17 @@ def create_app(root: Path | None = None) -> FastAPI:
             # ponytail: a --loop watcher may poll the same inbox concurrently;
             # sqlite's busy timeout covers the db, double-processing is a
             # pre-existing pipeline property, not an API concern.
+            #
+            # cwd is the APP root: `-m pipeline` has to import the package, and
+            # in the container the state root (/data) holds no code, so running
+            # from there died with ModuleNotFoundError into a DEVNULL'd stderr —
+            # "Run now" silently did nothing. The state root travels in the
+            # environment and in --config instead, so this run writes the same
+            # events.db the loop and the API use.
+            env = {**os.environ, "BRAIN_COCKPIT_ROOT": str(root)}
             app.state.run_proc = subprocess.Popen(
-                [sys.executable, "-m", "pipeline"], cwd=root,
+                [sys.executable, "-m", "pipeline", "--config", str(config_path)],
+                cwd=app_root, env=env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return {"started": True}
 
@@ -505,7 +778,7 @@ def create_app(root: Path | None = None) -> FastAPI:
         target = None
         if folder.is_dir():
             for path in folder.glob("*.md"):
-                fm, _ = notes.parse_frontmatter(path.read_text())
+                fm, _ = notes.parse_frontmatter(path.read_text(encoding="utf-8"))
                 if fm.get("id") == note_id and fm.get("type") == "resource":
                     target = path
                     break
@@ -625,6 +898,7 @@ def create_app(root: Path | None = None) -> FastAPI:
             "apify_last_call": last_ig,
             "youtube_keyless": True,
         }
+        safe["push"] = push_mod.availability(config)   # presence booleans only
         return safe
 
     @app.get("/api/config")
@@ -778,7 +1052,7 @@ def create_app(root: Path | None = None) -> FastAPI:
 
     # ---- static app shell (mounted last so /api/* wins) ------------------------------
 
-    dist = root / "web" / "dist"
+    dist = app_root / "web" / "dist"
     if dist.is_dir():
         app.mount("/", StaticFiles(directory=dist, html=True), name="app")
     else:

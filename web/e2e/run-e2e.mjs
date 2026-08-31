@@ -40,7 +40,7 @@ function loadPlaywright() {
 function makeRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-e2e-"));
   for (const d of ["vault/00-Inbox", "vault/02-Musings", "vault/03-Learnings", "vault/wiki",
-                   "inbox", "archive", "failed"]) {
+                   "vault/07-People", "inbox", "archive", "failed"]) {
     fs.mkdirSync(path.join(root, d), { recursive: true });
   }
   const vault = path.join(root, "vault");
@@ -59,6 +59,22 @@ function makeRoot() {
       links: { dex: "https://getdex.com/", notion: "https://www.notion.so/x" },
     }, null, 2),
   );
+  // a person well past a 3-day cadence — the People screen's whole reason to exist
+  fs.writeFileSync(
+    path.join(root, "vault", "07-People", "2026-07-01-priya-raman.md"),
+    [
+      "---", "id: 20260701090000", "type: person", "created: 2026-07-01",
+      "source: manual", "origin: human", "relationship: client",
+      "company: Alserkal Avenue",
+      "channels: {whatsapp: +971500000001, email: priya@example.com}",
+      "cadence_days: 3", "last_contact: 2026-06-01", "dex_id: dex-priya",
+      "dex_deeplink:", "warmth_stage: conversing",
+      "status: active", "---", "", "# Priya Raman", "", "## Context", "",
+      "Met at a studio visit.", "", "## Interaction log", "",
+      "- 2026-06-01 — coffee at Alserkal", "", "## Next action", "", "",
+    ].join("\n"),
+  );
+
   // create_app serves the built cockpit from <root>/web/dist
   fs.symlinkSync(path.join(repo, "web"), path.join(root, "web"));
   return root;
@@ -99,6 +115,10 @@ const uvicorn = spawn(uvicornBin,
       // their live form; no real Google call is ever made (see step 5)
       GOOGLE_CLIENT_ID: "e2e-client-id",
       GOOGLE_CLIENT_SECRET: "e2e-client-secret",
+      // Dex "configured" so the push button renders; the contacts scope is
+      // deliberately absent so the honest not-configured pill renders too.
+      // No real Dex call is ever made (the push routes are stubbed in step 8).
+      DEX_API_KEY: "e2e-dex-key",
     },
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -110,9 +130,14 @@ try {
   const { chromium } = loadPlaywright();
   // CI images often ship a chromium that predates the installed playwright;
   // COCKPIT_CHROMIUM points at it instead of demanding a matching download.
-  browser = await chromium.launch(
-    process.env.COCKPIT_CHROMIUM ? { executablePath: process.env.COCKPIT_CHROMIUM } : {});
-  const page = await browser.newPage();
+  // --use-fake-* give the headless browser a silent synthetic microphone, so
+  // the mic button's getUserMedia resolves without a real device or a prompt.
+  browser = await chromium.launch({
+    ...(process.env.COCKPIT_CHROMIUM ? { executablePath: process.env.COCKPIT_CHROMIUM } : {}),
+    args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"],
+  });
+  const context = await browser.newContext({ permissions: ["microphone"] });
+  const page = await context.newPage();
   // seed the connection before any script runs — skips the TokenGate screen
   await page.addInitScript(([base, token]) => {
     localStorage.setItem("cockpit.apiBase", base);
@@ -250,7 +275,9 @@ try {
   await page.getByAltText("Selected photo").waitFor();  // preview rendered
   await page.getByLabel("Quick capture").fill("a nice sunset over the marina");
   await page.getByRole("button", { name: "#resource" }).click();
-  await page.getByRole("button", { name: "Capture" }).click();
+  // exact match: "Record a voice capture" (the mic button, added since this
+  // test was written) also matches "Capture" as a substring otherwise
+  await page.getByRole("button", { name: "Capture", exact: true }).click();
   await page.getByText("✅ Captured").waitFor();
 
   // the browser-side downscale (Today.tsx's downscaleForUpload) always
@@ -265,6 +292,185 @@ try {
     fs.readFileSync(path.join(root, "inbox", capturedSidecars[0]), "utf8"));
   assert.equal(sidecar.text, "a nice sunset over the marina");
   console.log("✓ Image capture reaches the real inbox with its sidecar and tag");
+
+  // ---- 7. Mic capture: record in the PWA → a file lands in the inbox (Pass V) ---
+  await page.goto(`${BASE}/#/today`);
+  const micButton = page.getByRole("button", { name: "Record a voice capture" });
+  await micButton.waitFor();
+  await micButton.click();
+  // the running timer is the proof it armed, not just that the button toggled
+  await page.getByRole("button", { name: "Stop recording" }).waitFor();
+  await page.getByText("Tap to stop").waitFor();
+  await new Promise((r) => setTimeout(r, 1200));   // let the recorder collect audio
+  await page.getByRole("button", { name: "Stop recording" }).click();
+  await page.getByText("✅ Captured").waitFor();
+
+  const inboxDir = path.join(root, "inbox");
+  let recorded = null;
+  for (let i = 0; i < 50; i++) {
+    // scoped to audio extensions: step 6 (image capture) already left a
+    // .jpg/.meta.json pair sitting in this same inbox, since nothing drains
+    // it between e2e steps (there's no watcher running here)
+    recorded = fs.readdirSync(inboxDir).filter((f) => /\.(webm|mp4|ogg)$/.test(f));
+    if (recorded.length) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(recorded.length === 1, `expected one recording in the inbox, saw ${JSON.stringify(recorded)}`);
+  const stamped = recorded[0];
+  assert.match(stamped, /^\d{4}-\d{2}-\d{2}-\d{4} voice-note\.(webm|mp4|ogg)$/,
+    `recording filename '${stamped}' is not the stamp intake parses`);
+  assert.ok(fs.statSync(path.join(inboxDir, stamped)).size > 0, "the recording landed empty");
+  console.log(`✓ Mic capture wrote ${stamped} into the inbox`);
+
+  // ---- 8. People: draft refuses without a voice, then works (Pass MW) ----------
+  await page.goto(`${BASE}/#/people`);
+  const card = page.locator("article", { hasText: "Priya Raman" });
+  await card.waitFor();
+  await card.getByText("Past a 3-day cadence").waitFor();
+  console.log("✓ People screen shows the going-cold person with the reason");
+
+  // no my-voice.md yet → the drawer must refuse rather than draft generically
+  await card.getByRole("button", { name: "Draft a message" }).click();
+  await page.getByText("Drafts need your own voice on file first.").waitFor();
+  await page.keyboard.press("Escape");   // the drawer's own escape hatch
+  await page.getByRole("dialog").waitFor({ state: "detached" });
+  console.log("✓ Drafting refuses honestly until my-voice.md exists");
+
+  // teach it a voice through the real Settings card, then assert the vault file
+  await page.goto(`${BASE}/#/settings`);
+  await page.getByLabel("Writing samples").fill(
+    "hey! sorry for the slow reply — this week has been mad\n\nSounds good. Tuesday 4pm works.");
+  await page.getByRole("button", { name: "Save my voice" }).click();
+  await page.getByText("✅ Voice saved").waitFor();
+  const voiceFile = path.join(root, "vault", "_System", "my-voice.md");
+  assert.ok(fs.existsSync(voiceFile), "my-voice.md was not written to the vault");
+  assert.match(fs.readFileSync(voiceFile, "utf8"), /sorry for the slow reply/);
+  console.log("✓ Settings → My voice writes _System/my-voice.md");
+
+  // the model itself is stubbed: this checks the drawer, not the provider chain
+  await page.route("**/api/people/*/draft", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        text: "hey Priya — long time. still thinking about that studio conversation.",
+        channel: "whatsapp",
+        channels: { whatsapp: "+971500000001", email: "priya@example.com" },
+        provider: "claude-haiku",
+      }),
+    }));
+
+  await page.goto(`${BASE}/#/people`);
+  await page.locator("article", { hasText: "Priya Raman" })
+    .getByRole("button", { name: "Draft a message" }).click();
+  const drawer = page.getByRole("dialog");
+  await drawer.getByLabel("Draft message").waitFor();
+  assert.match(await drawer.getByLabel("Draft message").inputValue(), /hey Priya/);
+
+  // CLAUDE.md §4 from the outside: the channel button is a deep link the human
+  // taps, and it must be a link — never a button that posts a send.
+  const channelLink = drawer.getByRole("link", { name: "Open WhatsApp" });
+  const href = await channelLink.getAttribute("href");
+  assert.ok(href.startsWith("https://wa.me/971500000001?text="),
+    `channel deep link was ${href}`);
+  console.log("✓ Draft drawer renders the draft and a tap-to-open channel link");
+
+  // logging contact resets the counter on disk and commits the vault
+  await drawer.getByRole("button", { name: "Log contact" }).click();
+  await page.getByText("✅ Logged").waitFor();
+  const personFile = path.join(root, "vault", "07-People", "2026-07-01-priya-raman.md");
+  const personText = fs.readFileSync(personFile, "utf8");
+  assert.ok(!personText.includes("last_contact: 2026-06-01"), "last_contact was not reset");
+  assert.ok(personText.includes("- 2026-06-01 — coffee at Alserkal"),
+    "the interaction log must be append-only");
+  const vaultLog = execSync(`git -C "${path.join(root, "vault")}" log -1 --format=%s`).toString();
+  assert.match(vaultLog, /logged contact/);
+  console.log("✓ Log contact resets the counter, appends to the log, commits the vault");
+
+  // ---- 9. Profile push: preview → confirm (Pass D) ---------------------------
+  // Dex itself is stubbed at the cockpit's own routes — what is under test is
+  // the human gate: the exact text must be shown, and the confirmed text must
+  // be what gets posted.
+  let pushedBody = null;
+  await page.route("**/api/people/*/push/preview", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        target: "dex",
+        person_id: "20260701090000",
+        name: "Priya Raman",
+        summary: "Priya runs the artist programme at Alserkal.\nLast spoke on 2026-06-01.",
+        block: "<!-- BRAIN-OS -->\nPriya runs the artist programme at Alserkal.\n"
+          + "Last spoke on 2026-06-01.\n· via Brain OS 2026-08-20\n<!-- /BRAIN-OS -->",
+        destination: "Dex contact dex-priya · description",
+        replaced: "",
+      }),
+    }));
+  await page.route("**/api/people/*/push", (route) => {
+    if (route.request().url().includes("/preview")) return route.fallback();
+    pushedBody = JSON.parse(route.request().postData() || "{}");
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: true, target: "dex",
+        changed: "Dex contact dex-priya · description", replaced: false,
+      }),
+    });
+  });
+
+  // step 7's drawer is still open on the "move them to conversing?" question
+  await drawer.getByRole("button", { name: "Not yet" }).click();
+  await page.goto(`${BASE}/#/people`);
+  // step 7 logged contact, so she is inside her cadence now and the default
+  // "Needs you" filter correctly hides her — push is not only for the overdue
+  await page.getByRole("button", { name: "Everyone" }).click();
+  await page.locator("article", { hasText: "Priya Raman" })
+    .getByRole("button", { name: "Draft a message" }).click();
+  const pushDrawer = page.getByRole("dialog");
+  await pushDrawer.getByRole("button", { name: "Push to Dex" }).click();
+
+  // the preview must show the real text BEFORE anything can be confirmed
+  await pushDrawer.getByText("Read it before it goes").waitFor();
+  await pushDrawer.getByText("<!-- BRAIN-OS -->").waitFor();
+  assert.equal(pushedBody, null, "a preview must not write anything");
+
+  // Google contacts isn't connected in this fixture — an honest pill, not a button
+  await pushDrawer.getByText("Reconnect Google for contacts").waitFor();
+
+  await pushDrawer.getByRole("button", { name: "Confirm push" }).click();
+  await page.getByText("✅ Updated Dex contact dex-priya · description").waitFor();
+  assert.equal(pushedBody?.target, "dex", "the confirmed push named the wrong target");
+  assert.match(pushedBody?.text ?? "", /artist programme at Alserkal/,
+    "the text posted was not the text the human read");
+  console.log("✓ Profile push previews the exact text and only writes on confirm");
+
+  // ---- 10. Quick-add a warm-up target (Pass X) --------------------------------
+  // One name, one channel, one tap — and a schema-correct note on disk.
+  await page.keyboard.press("Escape");   // the drawer closes on Escape
+  await page.goto(`${BASE}/#/people`);
+  await page.getByRole("button", { name: "+ Target" }).click();
+  await page.getByLabel("Name").fill("Sara Khalid");
+  await page.getByRole("button", { name: "email", exact: true }).click();
+  await page.getByLabel("Email").fill("sara@example.com");
+  await page.getByRole("button", { name: "Add target" }).click();
+  await page.getByText("✅ Added Sara Khalid").waitFor();
+
+  const peopleDir = path.join(root, "vault", "07-People");
+  const targetFile = fs.readdirSync(peopleDir).find((f) => f.includes("sara-khalid"));
+  assert.ok(targetFile, `no note written for the new target (saw ${fs.readdirSync(peopleDir)})`);
+  const targetText = fs.readFileSync(path.join(peopleDir, targetFile), "utf8");
+  assert.match(targetText, /type: person/);
+  assert.match(targetText, /origin: human/);          // the owner typed it
+  assert.match(targetText, /warmth_stage: identified/); // spotted, not researched
+  assert.match(targetText, /channels: \{email: sara@example\.com\}/);
+  for (const section of ["## Context", "## Needs", "## Interaction log", "## Next action"]) {
+    assert.ok(targetText.includes(section), `${section} missing from the new note`);
+  }
+  const addLog = execSync(`git -C "${path.join(root, "vault")}" log -1 --format=%s`).toString();
+  assert.match(addLog, /added target Sara Khalid/);
+  console.log("✓ Quick-add writes a schema-correct person note and commits the vault");
 
   console.log("\nE2E: all checks passed.");
 } catch (err) {

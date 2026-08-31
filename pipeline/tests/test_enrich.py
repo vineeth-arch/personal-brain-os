@@ -54,7 +54,7 @@ def test_extract_url():
 
 
 def test_youtube_oembed_parse(vault):
-    def fetch(url, data=None, timeout=10):
+    def fetch(url, data=None, timeout=10, headers=None):
         if "oembed" in url:
             return YT_OEMBED
         return b""  # timedtext empty — fine
@@ -66,12 +66,12 @@ def test_youtube_oembed_parse(vault):
 
 
 def test_recipe_detection_writes_sections(vault):
-    def fetch(url, data=None, timeout=10):
+    def fetch(url, data=None, timeout=10, headers=None):
         return YT_OEMBED if "oembed" in url else b""
     enr = enrich.enrich_url("https://youtu.be/abc12345678", config(vault), fetch=fetch)
     structured = enrich.structure("great weeknight recipe", enr, config(vault), router=recipe_router)
     path = enrich.route_link(item(), "great weeknight recipe", enr, structured, vault / "vault")
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     assert path.parent.name == "04-Resources"
     assert "resource_type: recipe" in text and "enriched: true" in text
     assert "## Ingredients" in text and "- 1 cup rice" in text
@@ -80,7 +80,7 @@ def test_recipe_detection_writes_sections(vault):
 
 
 def test_instagram_failure_saves_note_unenriched(vault):
-    def failing_fetch(url, data=None, timeout=10):
+    def failing_fetch(url, data=None, timeout=10, headers=None):
         raise ConnectionError("apify down")
     cfg = config(vault, apify={"actor_id": "some/actor"})
     import os
@@ -94,7 +94,7 @@ def test_instagram_failure_saves_note_unenriched(vault):
     # the note is written ANYWAY, enriched:false, with the plain-English reason
     structured = enrich.structure("saw this reel", enr, config(vault), router=no_router)
     path = enrich.route_link(item(), "saw this reel", enr, structured, vault / "vault")
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     assert "enriched: false" in text
     assert "## Insight" in text and "saw this reel" in text
     assert "## Enrichment" in text  # the quiet reason, in the note not an alarm
@@ -122,12 +122,12 @@ def test_retry_pending_one_reattempt_after_24h(vault, tmp_path):
         f"source: manual\norigin: human\nmeta_origin: ai\ntitle: saw this reel\ncover: \n"
         f"source_url: https://instagram.com/reel/XYZ/\ndescription: \nstatus: inbox\n"
         f"platform: instagram\nenriched: false\nenrich_attempts: 1\nenrich_last: {old}\n"
-        f"categories: []\nsubjects: []\ntags: []\n---\n\n## Insight\n\nsaw this reel\n")
+        f"categories: []\nsubjects: []\ntags: []\n---\n\n## Insight\n\nsaw this reel\n", encoding="utf-8")
     events = EventLog(tmp_path / "events.db", vault / "vault")
     cfg = config(vault, apify={"actor_id": "a/b"})
 
     # this time Apify "works" — the fetch returns a caption payload
-    def working_fetch(url, data=None, timeout=10):
+    def working_fetch(url, data=None, timeout=10, headers=None):
         return json.dumps([{"caption": "a plating tip", "displayUrl": "https://x/i.jpg",
                             "ownerUsername": "chef"}]).encode()
     import os
@@ -137,13 +137,13 @@ def test_retry_pending_one_reattempt_after_24h(vault, tmp_path):
                              fetch=working_fetch, router=no_router)
     finally:
         del os.environ["APIFY_TOKEN"]
-    text = note.read_text()
+    text = note.read_text(encoding="utf-8")
     assert "enriched: true" in text and "enrich_attempts: 2" in text
     assert "## Caption" in text and "a plating tip" in text
     # a second pass does NOT re-attempt (attempts already 2)
     enrich.retry_pending(cfg, events, now=datetime.now() + timedelta(hours=48),
                          fetch=working_fetch, router=no_router)
-    assert "enrich_attempts: 2" in note.read_text()
+    assert "enrich_attempts: 2" in note.read_text(encoding="utf-8")
     events.close()
 
 

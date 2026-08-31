@@ -126,7 +126,9 @@ export function Pipeline() {
   const status = usePolling(api.status, 20_000);
   const failed = usePolling(api.failed, 20_000);
   const [filter, setFilter] = useState<string>("");
-  const events = usePolling(() => api.events(filter || undefined), 20_000);
+  // the filter is a dependency: without it the list kept showing the previous
+  // status until the next 20s tick, so clicking a chip looked like a no-op
+  const events = usePolling(() => api.events(filter || undefined), 20_000, [filter]);
   const [running, setRunning] = useState(false);
   const [retrying, setRetrying] = useState<number | null>(null);
 

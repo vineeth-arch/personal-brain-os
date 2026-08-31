@@ -44,7 +44,7 @@ def _note(path: Path, note_id: str, ntype: str, status: str, body: str, created=
     path.write_text(
         f"---\nid: {note_id}\ntype: {ntype}\ncreated: {created}\nsource: voice\n"
         f"origin: human\nmeta_origin: ai\nstatus: {status}\ncategories: []\n"
-        f"subjects: []\ntags: []\n---\n\n{body}\n")
+        f"subjects: []\ntags: []\n---\n\n{body}\n", encoding="utf-8")
 
 
 class Server:
@@ -82,6 +82,20 @@ class Server:
             raw = e.read()
             return e.code, json.loads(raw) if raw else None
 
+    def raw(self, method: str, path: str, data: bytes, content_type: str, token=TOKEN):
+        """Post a raw (non-JSON) body — how the mic button uploads a recording."""
+        url = f"http://127.0.0.1:{self.port}{path}"
+        headers = {"Content-Type": content_type}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        r = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(r) as resp:
+                return resp.status, json.loads(resp.read() or "null")
+        except urllib.error.HTTPError as e:
+            body = e.read()
+            return e.code, json.loads(body) if body else None
+
 
 @pytest.fixture
 def env(tmp_path):
@@ -106,7 +120,7 @@ def env(tmp_path):
         "ntfy": {"url": "", "topic": ""}, "api": {"auth_token": TOKEN},
         "classification": {"confidence_threshold": 0.7}, "links": {"dex": "https://getdex.com/"},
     }
-    (tmp_path / "config.json").write_text(json.dumps(config))
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
     return tmp_path, vault, inbox, failed
 
 
@@ -141,7 +155,7 @@ def test_status_counts(env):
          "message": "boom", "plain_english_error": "What happened: X\nLikely cause: Y\nWhat to do: Z"},
     ])
     _note(vault / "00-Inbox" / "2026-07-01-x.md", "20260701090000", "learning", "needs-review", "body")
-    (inbox / "2026-07-02-0900 pending #todo.md").write_text("later")
+    (inbox / "2026-07-02-0900 pending #todo.md").write_text("later", encoding="utf-8")
     with Server(root) as s:
         code, body = s.req("GET", "/api/status")
         assert code == 200
@@ -176,7 +190,7 @@ def test_approve_write_path(env):
         assert body["moved_to"] == "03-Learnings/2026-07-01-walk.md"
         moved = vault / "03-Learnings" / "2026-07-01-walk.md"
         assert moved.exists() and not (vault / "00-Inbox" / "2026-07-01-walk.md").exists()
-        text = moved.read_text()
+        text = moved.read_text(encoding="utf-8")
         assert "type: learning" in text and "status: active" in text
         assert "id: 20260701090000" in text and "origin: human" in text  # untouched
         # git committed with the descriptive message
@@ -219,9 +233,60 @@ def test_capture_same_minute_collision(env):
         assert all(i.tag == "todo" for i in intake.poll(inbox))
 
 
+def test_capture_audio_roundtrip(env):
+    root, _, inbox, _ = env
+    from pipeline import intake
+    with Server(root) as s:
+        code, body = s.raw("POST", "/api/capture/audio?tag=idea&name=walk%20thought",
+                           b"\x1aE\xdf\xa3fake webm bytes", "audio/webm;codecs=opus")
+        assert code == 201 and body["status"] == "captured"
+        items = intake.poll(inbox)
+        assert len(items) == 1
+        item = items[0]
+        # a recording is audio the pipeline will transcribe, with the tag free-routing it
+        assert item.kind == "audio" and item.source == "voice" and item.tag == "idea"
+        assert item.path.suffix == ".webm" and "walk-thought" in item.path.name
+        assert body["id"] == item.captured.strftime("%Y%m%d%H%M%S")
+
+
+def test_capture_audio_rejects_bad_input(env):
+    root, _, inbox, _ = env
+    with Server(root) as s:
+        # not audio at all
+        code, body = s.raw("POST", "/api/capture/audio", b"hello", "text/plain")
+        assert code == 400 and set(body["error"]) == {"what", "cause", "todo"}
+        # audio, but a tag outside the 8 capture tags
+        assert s.raw("POST", "/api/capture/audio?tag=bogus", b"x", "audio/webm")[0] == 400
+        # an empty recording
+        assert s.raw("POST", "/api/capture/audio", b"", "audio/webm")[0] == 400
+        # nothing half-written is left behind for the watcher to trip over
+        assert list(inbox.iterdir()) == []
+
+
+def test_capture_audio_size_cap(env, monkeypatch):
+    root, _, inbox, _ = env
+    from api import notes as notes_mod
+    monkeypatch.setattr(notes_mod, "MAX_AUDIO_BYTES", 1024)
+    with Server(root) as s:
+        code, body = s.raw("POST", "/api/capture/audio", b"x" * 4096, "audio/webm")
+        assert code == 413 and body["error"]["todo"]
+        assert list(inbox.iterdir()) == []
+
+
+def test_capture_audio_same_minute_collision(env):
+    root, _, inbox, _ = env
+    from pipeline import intake
+    with Server(root) as s:
+        s.raw("POST", "/api/capture/audio?tag=todo", b"one", "audio/webm")
+        s.raw("POST", "/api/capture/audio?tag=todo", b"two", "audio/webm")
+    names = sorted(p.name for p in inbox.glob("*.webm"))
+    assert len(names) == 2 and any("-2 #todo" in n for n in names)
+    assert all(i.tag == "todo" for i in intake.poll(inbox))
+
+
 def test_failed_and_retry(env):
     root, vault, inbox, failed = env
-    (failed / "memo.m4a").write_text("audio")
+    (failed / "memo.m4a").write_text("audio", encoding="utf-8")
     _seed_events(root / "events.db", [
         {"timestamp": "2026-07-01T05:12:00", "file": str(inbox / "memo.m4a"), "stage": "pipeline",
          "status": "failed", "message": "Could not transcribe the recording.",
@@ -318,7 +383,7 @@ def test_config_get_and_put(env, monkeypatch):
         # a valid change persists and preserves unknown keys (links)
         code, body = s.req("PUT", "/api/config", {"confidence_threshold": 0.8})
         assert code == 200 and body["confidence_threshold"] == 0.8
-        saved = json.loads((root / "config.json").read_text())
+        saved = json.loads((root / "config.json").read_text(encoding="utf-8"))
         assert saved["classification"]["confidence_threshold"] == 0.8
         assert saved["links"] == {"dex": "https://getdex.com/"}
 
@@ -330,7 +395,11 @@ def test_integrations_shape_and_engine_guard(env):
         assert code == 200 and body["engine"] == "whispercpp"
         health = [c for c in body["cards"] if c["group"] == "health"]
         links = [c for c in body["cards"] if c["group"] == "link"]
-        assert len(health) == 7
+        assert len(health) == 9
+        # Hindi → Hinglish is honest about being unset rather than absent
+        transliteration = next(c for c in health if c["id"] == "transliteration")
+        assert transliteration["badge"] == "Not configured"
+        assert set(transliteration["error"]) == {"what", "cause", "todo"}
         assert {"obsidian", "dex"} <= {c["id"] for c in links}  # obsidian + configured links only
         assert all(c["badge"] is None for c in links)
         # engine toggle rejects openai without the key
@@ -352,7 +421,7 @@ def test_todos_ranges_and_toggle(env):
         f"- [ ] book flights 📅 {(today + timedelta(days=4)).isoformat()} ^20260701090000-4",
         "- [ ] undated thing ^20260701090000-5",
     ]
-    (vault / "06-Todos" / f"{today.isoformat()}.md").write_text("\n".join(lines) + "\n")
+    (vault / "06-Todos" / f"{today.isoformat()}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     with Server(root) as s:
         assert [i["id"] for i in s.req("GET", "/api/todos?range=today")[1]["items"]] == ["20260701090000-1"]
         overdue = s.req("GET", "/api/todos?range=overdue")[1]["items"]
@@ -363,7 +432,7 @@ def test_todos_ranges_and_toggle(env):
         # toggle round-trips through the file and git-commits the vault
         code, body = s.req("POST", "/api/todos/20260701090000-1/toggle")
         assert code == 200 and body["done"] is True
-        assert "- [x] pay the electrician" in (vault / "06-Todos" / f"{today.isoformat()}.md").read_text()
+        assert "- [x] pay the electrician" in (vault / "06-Todos" / f"{today.isoformat()}.md").read_text(encoding="utf-8")
         logmsg = subprocess.run(["git", "-C", str(vault), "log", "-1", "--format=%s"],
                                 capture_output=True, text=True).stdout.strip()
         assert logmsg == "api: todo 20260701090000-1 marked done"
@@ -372,8 +441,10 @@ def test_todos_ranges_and_toggle(env):
 
 def test_build_probes_and_providers(env):
     root, vault, _, _ = env
-    import shutil
-    shutil.copy(Path(__file__).resolve().parents[2] / "checks.json", root / "checks.json")
+    # checks.json is deliberately NOT copied into the state root: it ships with
+    # the code, so the probes must find it via the app root. Copying it here is
+    # what used to hide the container bug where the two roots differ.
+    assert not (root / "checks.json").exists()
     _seed_events(root / "events.db", [
         {"timestamp": "2026-07-01T09:00:00", "file": "/in/a.m4a", "stage": "llm", "status": "failed",
          "message": "provider=gemini-flash outcome=invalid-json"},
@@ -408,7 +479,7 @@ def test_resource_enrich_endpoint(env, monkeypatch):
         "source: manual\norigin: human\nmeta_origin: ai\ntitle: a reel\ncover: \n"
         "source_url: https://example.com/x\ndescription: \nstatus: inbox\nplatform: web\n"
         "enriched: false\nenrich_attempts: 1\nenrich_last: 2026-07-04T10:00:00\n"
-        "categories: []\nsubjects: []\ntags: []\n---\n\n## Insight\n\nsaw this\n")
+        "categories: []\nsubjects: []\ntags: []\n---\n\n## Insight\n\nsaw this\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(vault), "add", "-A"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(vault), "commit", "-qm", "seed"], check=True, capture_output=True)
 
@@ -421,7 +492,7 @@ def test_resource_enrich_endpoint(env, monkeypatch):
     with Server(root) as s:
         code, body = s.req("POST", "/api/resources/20260704100000/enrich")
         assert code == 200 and body["enriched"] is True
-        assert "enriched: true" in note.read_text() and "Now Enriched" in note.read_text()
+        assert "enriched: true" in note.read_text(encoding="utf-8") and "Now Enriched" in note.read_text(encoding="utf-8")
         logmsg = subprocess.run(["git", "-C", str(vault), "log", "-1", "--format=%s"],
                                 capture_output=True, text=True).stdout.strip()
         assert logmsg == "api: enriched 20260704100000"

@@ -177,6 +177,53 @@ FAIL_ENVELOPE = {
 
 
 # Note type → folder, mirroring pipeline/route.py TYPE_FOLDER (keep in sync).
+# --- people (Pass MW) --------------------------------------------------------
+def _person(pid, name, relationship, company, stage, cadence, days, action="", channels=None,
+            dex_id=""):
+    return {
+        "id": pid, "name": name, "relationship": relationship, "company": company,
+        "dex_id": dex_id, "dex_deeplink": "",
+        "warmth_stage": stage, "status": "active", "cadence_days": cadence,
+        "last_contact": None if days is None else "2026-07-20",
+        "days_since_contact": days,
+        "going_cold": days is None or days >= cadence,
+        "warmup_due": stage not in ("warm", "ready") and (days is None or days >= cadence),
+        "commitment_due": bool(action),
+        "channels": channels if channels is not None
+        else {"whatsapp": "+971500000001", "email": "priya@example.com"},
+        "next_action": action, "sample": True, "file": f"2026-07-01-{pid}.md",
+    }
+
+
+PEOPLE = [
+    _person("20260701090100", "Priya Raman", "client", "Alserkal Avenue",
+            "conversing", 3, 24, "Send the studio deck today", dex_id="dex-priya"),
+    _person("20260701090200", "Omar Haddad", "prospect", "Tashkeel", "researched", 5, 12,
+            channels={"email": "omar@example.com"}),
+    _person("20260701090300", "Aisha Noor", "prospect", "Dubai Design District",
+            "identified", 7, None, channels={"linkedin": "aishanoor"}),
+    _person("20260701090400", "Tomás Ferreira", "client", "Casa Ferreira", "ready", 14, 2),
+]
+
+PEOPLE_DETAIL_EXTRA = {
+    "context": "Met at a studio visit in Alserkal. Runs the artist programme.",
+    "needs": "A studio partner who can hold a full season.",
+    "interaction_log": "- 2026-07-20 — spoke about the season programme",
+}
+
+VOICE = {"exists": False, "file": "_System/my-voice.md", "samples": 0}
+
+# --- profile push (Pass D) ---------------------------------------------------
+# Mirrors pipeline/dex.py: the app owns what is between these markers and
+# nothing else in the field.
+PUSH_MARKER_OPEN = "<!-- BRAIN-OS -->"
+PUSH_MARKER_CLOSE = "<!-- /BRAIN-OS -->"
+PUSHED: set[str] = set()      # who has been pushed this mock session
+
+# mirrors api/notes.py AUDIO_MIME_EXT — what the mic button may upload
+AUDIO_MIME_TYPES = {"audio/webm", "audio/ogg", "audio/mp4", "audio/m4a",
+                    "audio/x-m4a", "audio/mpeg", "audio/wav", "audio/x-wav"}
+
 TYPE_FOLDER = {
     "journal": "01-Journal", "musing": "02-Musings", "learning": "03-Learnings",
     "insight": "wiki", "resource": "04-Resources", "project": "05-Projects",
@@ -203,6 +250,9 @@ CONFIG = {
         "apify_last_call": None if MODE_EMPTY else iso(now - timedelta(hours=6)),
         "youtube_keyless": True,
     },
+    # Dex on, contacts off — so the working push AND the honest "reconnect
+    # Google" pill are both visible without any real key.
+    "push": {"dex": True, "contacts_scope": False},
 }
 
 PROVIDERS = [] if MODE_EMPTY else [
@@ -436,6 +486,13 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _json_body(self) -> dict:
+        raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
+        try:
+            return json.loads(raw or b"{}")
+        except json.JSONDecodeError:
+            return {}
+
     def do_OPTIONS(self):  # CORS preflight
         self._send(204, {})
 
@@ -460,6 +517,28 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, FAIL_ENVELOPE)
 
         if method == "GET":
+            if path == "/api/people":
+                items = [] if MODE_EMPTY else PEOPLE
+                return self._send(200, {"items": items})
+            if path == "/api/people/voice":
+                return self._send(200, VOICE)
+            if path == "/api/push/queue":
+                # staged, never pushed: whoever has a dex_id and hasn't been
+                # pushed yet this session
+                items = [] if MODE_EMPTY else [
+                    {**p, "targets": ["dex"], "last_pushed": None}
+                    for p in PEOPLE if p["dex_id"] and p["id"] not in PUSHED
+                ]
+                return self._send(200, {"items": items, "available": CONFIG["push"]})
+            if path.startswith("/api/people/"):
+                pid = path.split("/")[3]
+                found = next((p for p in PEOPLE if p["id"] == pid), None)
+                if not found:
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in the vault.",
+                        "cause": f"No note in 07-People has the id {pid}.",
+                        "todo": "Refresh the People screen."}})
+                return self._send(200, {**found, **PEOPLE_DETAIL_EXTRA})
             if path == "/api/status":
                 return self._send(200, {
                     "vault": "Brain",
@@ -575,6 +654,146 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {**CONFIG, "engine": ENGINE})
 
         if method == "POST":
+            if path == "/api/people/voice":
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                samples = [s for s in json.loads(raw or b"{}").get("samples", []) if s.strip()]
+                if not samples:
+                    return self._send(400, {"error": {
+                        "what": "There were no writing samples to learn from.",
+                        "cause": "Every sample in the list was empty.",
+                        "todo": "Paste 3–5 messages you actually sent, then save again."}})
+                VOICE.update(exists=True, samples=len(samples))
+                return self._send(200, dict(VOICE))
+            if path.startswith("/api/people/") and path.endswith("/draft"):
+                pid = path.split("/")[3]
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                found = next((p for p in PEOPLE if p["id"] == pid), None)
+                if not found:
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in the vault.",
+                        "cause": f"No note in 07-People has the id {pid}.",
+                        "todo": "Refresh the People screen."}})
+                if not VOICE["exists"]:
+                    # the real refusal: no voice file, no draft (never a generic one)
+                    return self._send(409, {"error": {
+                        "what": "Drafts need your own voice on file first.",
+                        "cause": "_System/my-voice.md doesn't exist yet, and a draft written "
+                                 "without it would sound like a chatbot, not like you.",
+                        "todo": "Paste 3–5 messages you've actually sent in Settings → My voice, "
+                                "then try again."}})
+                channel = next((c for c in ("whatsapp", "email", "linkedin")
+                                if found["channels"].get(c)), "whatsapp")
+                return self._send(200, {
+                    "text": f"hey {found['name'].split()[0]} — long time. still thinking about "
+                            "that studio conversation. free for a coffee this week?",
+                    "channel": channel, "channels": found["channels"],
+                    "provider": "claude-haiku"})
+            if path.startswith("/api/people/") and path.endswith("/contact"):
+                pid = path.split("/")[3]
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                for person in PEOPLE:
+                    if person["id"] == pid:
+                        person.update(days_since_contact=0, going_cold=False,
+                                      warmup_due=False, commitment_due=False,
+                                      last_contact="2026-08-20")
+                        order = ["identified", "researched", "engaging", "conversing",
+                                 "warm", "ready"]
+                        stage = person["warmth_stage"]
+                        nxt = (order[order.index(stage) + 1]
+                               if stage in order and order.index(stage) + 1 < len(order) else None)
+                        return self._send(200, {**person, "suggest_stage": nxt})
+                return self._send(404, {"error": {
+                    "what": "That person isn't in the vault.", "cause": "Unknown id.",
+                    "todo": "Refresh the People screen."}})
+            if path.startswith("/api/people/") and path.endswith("/warmth"):
+                pid = path.split("/")[3]
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                stage = json.loads(raw or b"{}").get("stage", "")
+                if stage not in ("identified", "researched", "engaging", "conversing",
+                                 "warm", "ready"):
+                    return self._send(400, {"error": {
+                        "what": "That's not a warmth stage the vault knows.",
+                        "cause": f"'{stage}' isn't one of the six stages in SCHEMA-REFERENCE.md.",
+                        "todo": "Pick one of the stage chips on the person's card."}})
+                for person in PEOPLE:
+                    if person["id"] == pid:
+                        person["warmth_stage"] = stage
+                        return self._send(200, dict(person))
+                return self._send(404, {"error": {
+                    "what": "That person isn't in the vault.", "cause": "Unknown id.",
+                    "todo": "Refresh the People screen."}})
+            if path.startswith("/api/people/") and path.endswith("/enrich"):
+                # the mock ships the unconfigured state — that's the honest default
+                return self._send(503, {"error": {
+                    "what": "Enrichment isn't set up yet.",
+                    "cause": "PDL_API_KEY isn't set in the server's shell, so there's "
+                             "nothing to ask.",
+                    "todo": "Add a People Data Labs key to the server's environment and "
+                            "restart the API — everything else on this card keeps working "
+                            "without it."}})
+            if path == "/api/people":
+                body = self._json_body()
+                name = (body.get("name") or "").strip()
+                channel = body.get("channel") or {}
+                kind, value = channel.get("kind", ""), (channel.get("value") or "").strip()
+                if not name or not value or kind not in ("whatsapp", "email", "linkedin"):
+                    return self._send(400, {"error": {
+                        "what": "That target couldn't be added.",
+                        "cause": "A target needs a name and one way to reach them.",
+                        "todo": "Give them a name and one channel — WhatsApp, email, "
+                                "or LinkedIn."}})
+                created = _person(datetime.now().strftime("%Y%m%d%H%M%S"), name, "", "",
+                                  "identified", 7, None, channels={kind: value})
+                created["sample"] = False
+                PEOPLE.insert(0, created)
+                return self._send(201, created)
+
+            # --- profile push (Pass D) ---------------------------------------
+            # The mock ships Dex ON and contacts OFF so both states — a working
+            # preview→confirm and an honest "reconnect Google" pill — are
+            # visible without any real key.
+            if path.startswith("/api/people/") and path.endswith("/push/preview"):
+                body = self._json_body()
+                pid = path.split("/")[3]
+                person = next((p for p in PEOPLE if p["id"] == pid), None)
+                if person is None:
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in the vault.", "cause": "Unknown id.",
+                        "todo": "Refresh the People screen."}})
+                if body.get("target") == "contacts":
+                    return self._send(409, {"error": {
+                        "what": "Google Contacts isn't connected yet.",
+                        "cause": "This cockpit's Google link was made before it could "
+                                 "update contacts, so Google hasn't granted the contacts "
+                                 "permission.",
+                        "todo": "Open Integrations, press Disconnect, then Connect Google "
+                                "again — it's a one-time re-consent."}})
+                summary = (f"{person['name']} runs the artist programme at "
+                           f"{person['company'] or 'their company'}.\n"
+                           "Last spoke on 2026-07-20 about the season programme.\n"
+                           "Open: whether the studio can hold a full season.\n"
+                           f"Next: {person['next_action'] or 'no step owed'}.")
+                block = (f"{PUSH_MARKER_OPEN}\n{summary}\n· via Brain OS 2026-08-20\n"
+                         f"{PUSH_MARKER_CLOSE}")
+                return self._send(200, {
+                    "target": "dex", "person_id": pid, "name": person["name"],
+                    "summary": summary, "block": block,
+                    "destination": f"Dex contact {person['dex_id']} · description",
+                    "replaced": ""})
+            if path.startswith("/api/people/") and path.endswith("/push"):
+                body = self._json_body()
+                pid = path.split("/")[3]
+                person = next((p for p in PEOPLE if p["id"] == pid), None)
+                print("PUSH", pid, body.get("target"), repr(body.get("text", ""))[:80])
+                if person is None:
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in the vault.", "cause": "Unknown id.",
+                        "todo": "Refresh the People screen."}})
+                PUSHED.add(pid)
+                return self._send(200, {
+                    "ok": True, "target": body.get("target", "dex"),
+                    "changed": f"Dex contact {person['dex_id']} · description",
+                    "replaced": False})
             if path == "/api/capture":
                 print("CAPTURE", self.rfile.read(int(self.headers.get("Content-Length", 0))))
                 return self._send(201, {"id": "20260703061500", "status": "captured"})
@@ -586,6 +805,23 @@ class Handler(BaseHTTPRequestHandler):
                 print("CAPTURE IMAGE", f"{length} bytes",
                      "boundary ok" if b"Content-Disposition" in raw else "MALFORMED")
                 return self._send(201, {"id": "20260703061600", "status": "captured"})
+            if path == "/api/capture/audio":
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                print("CAPTURE AUDIO", ctype, len(raw), "bytes")
+                if ctype not in AUDIO_MIME_TYPES:
+                    return self._send(400, {"error": {
+                        "what": "That recording isn't in a format the pipeline can read.",
+                        "cause": f"The upload's Content-Type was '{ctype or 'missing'}'.",
+                        "todo": "Record again with the mic button, or drop the audio file "
+                                "into the inbox folder instead."}})
+                if not raw:
+                    return self._send(400, {"error": {
+                        "what": "There was nothing to capture.",
+                        "cause": "The recording arrived empty — the mic may have been "
+                                 "blocked mid-recording.",
+                        "todo": "Check the microphone permission, then record again."}})
+                return self._send(201, {"id": "20260703061500", "status": "captured"})
             if path.startswith("/api/review/") and path.endswith("/approve"):
                 note_id = path.split("/")[3]
                 raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))

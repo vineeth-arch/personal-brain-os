@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { CaptureTag, Status, TodoItem } from "../api/types";
 import { CAPTURE_TAGS } from "../api/types";
@@ -307,6 +307,233 @@ async function downscaleForUpload(file: File): Promise<Blob> {
   }
 }
 
+// Recording state lives beside the text field: tap to start, tap to stop
+// (never a held gesture — a hold is exactly what an ADHD hand lets go of).
+type MicState =
+  | { kind: "idle" }
+  | { kind: "recording" }
+  | { kind: "pending"; blob: Blob }   // recorded, waiting for the upload to land
+  | { kind: "blocked"; what: string; cause: string; todo: string };
+
+function mimeForRecording(): string {
+  const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+  const supported = candidates.find(
+    (m) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported?.(m),
+  );
+  return supported ?? "";
+}
+
+function elapsedLabel(seconds: number): string {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: () => void }) {
+  const [state, setState] = useState<MicState>({ kind: "idle" });
+  const [seconds, setSeconds] = useState(0);
+  const [level, setLevel] = useState(0);
+  const recorder = useRef<MediaRecorder | null>(null);
+  const stopAudio = useRef<(() => void) | null>(null);
+  const stream = useRef<MediaStream | null>(null);
+
+  // Navigating away mid-recording used to leave the MediaStream open, so the
+  // browser's recording indicator stayed lit with nothing listening. Release
+  // the tracks and the audio graph on unmount, whatever state we are in.
+  useEffect(() => {
+    return () => {
+      stopAudio.current?.();
+      try {
+        recorder.current?.state !== "inactive" && recorder.current?.stop();
+      } catch {
+        // already stopped — nothing to release
+      }
+      stream.current?.getTracks().forEach((t) => t.stop());
+      stream.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (state.kind !== "recording") return;
+    const started = Date.now();
+    const id = window.setInterval(() => {
+      setSeconds(Math.floor((Date.now() - started) / 1000));
+    }, 250);
+    return () => window.clearInterval(id);
+  }, [state.kind]);
+
+  // Everything the browser holds open (tracks, audio graph, timers) is released
+  // here, so a half-finished recording can never keep the mic light on.
+  const teardown = () => {
+    stopAudio.current?.();
+    stopAudio.current = null;
+    recorder.current = null;
+    stream.current = null;
+    setSeconds(0);
+    setLevel(0);
+  };
+
+  const upload = async (blob: Blob, sentTag: CaptureTag | null) => {
+    // Optimistic, like the text capture: the trust signal comes first.
+    setState({ kind: "idle" });
+    toast("✅ Captured");
+    try {
+      await api.captureAudio(blob, sentTag);
+      onCaptured();
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(
+        envelope ? `${envelope.what} ${envelope.todo}` : "The recording didn't reach the server.",
+        "error",
+      );
+      setState({ kind: "pending", blob }); // nothing is lost — one tap retries
+    }
+  };
+
+  const start = async () => {
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setState({
+        kind: "blocked",
+        what: "The mic needs the secure (tunnel) address.",
+        cause: "Browsers only allow recording over HTTPS or on localhost, and this page is on plain http.",
+        todo: "Open the cockpit on your tunnel address, or use the Action Button flow on your phone.",
+      });
+      return;
+    }
+    let media: MediaStream;
+    try {
+      media = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setState({
+        kind: "blocked",
+        what: "Mic access was blocked.",
+        cause: "The browser or the phone's settings denied the microphone permission for this site.",
+        todo: "Allow the microphone for this address in your browser settings, then tap the mic again.",
+      });
+      return;
+    }
+
+    stream.current = media;
+    const mime = mimeForRecording();
+    const rec = new MediaRecorder(media, mime ? { mimeType: mime } : undefined);
+    const parts: BlobPart[] = [];
+    rec.ondataavailable = (e) => {
+      if (e.data.size > 0) parts.push(e.data);
+    };
+    rec.onstop = () => {
+      const blob = new Blob(parts, { type: rec.mimeType || mime || "audio/webm" });
+      teardown();
+      media.getTracks().forEach((t) => t.stop());
+      if (blob.size > 0) void upload(blob, tag);
+      else setState({ kind: "idle" });
+    };
+
+    // A quiet level indicator so it's visibly listening, not just timing.
+    try {
+      const ctx = new AudioContext();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 256;
+      ctx.createMediaStreamSource(media).connect(analyser);
+      const data = new Uint8Array(analyser.frequencyBinCount);
+      let raf = 0;
+      const sample = () => {
+        analyser.getByteTimeDomainData(data);
+        let peak = 0;
+        for (const v of data) peak = Math.max(peak, Math.abs(v - 128) / 128);
+        setLevel(peak);
+        raf = requestAnimationFrame(sample);
+      };
+      raf = requestAnimationFrame(sample);
+      stopAudio.current = () => {
+        cancelAnimationFrame(raf);
+        void ctx.close();
+      };
+    } catch {
+      stopAudio.current = null; // the meter is decoration; recording matters
+    }
+
+    recorder.current = rec;
+    rec.start();
+    setSeconds(0);
+    setState({ kind: "recording" });
+  };
+
+  const stop = () => recorder.current?.stop();
+
+  const recording = state.kind === "recording";
+  const bars = [0, 1, 2, 3];
+
+  return (
+    <div>
+      <div className="flex items-center gap-3">
+        <button
+          type="button"
+          onClick={recording ? stop : () => void start()}
+          aria-pressed={recording}
+          aria-label={recording ? "Stop recording" : "Record a voice capture"}
+          className={`flex min-h-12 w-12 shrink-0 items-center justify-center rounded-full border transition-colors motion-reduce:transition-none ${
+            recording
+              ? "bg-emphasis border-emphasis text-emphasis"
+              : "bg-subtle border-subtle text-default"
+          }`}
+        >
+          {recording ? (
+            <span aria-hidden="true" className="bg-spark h-3.5 w-3.5 rounded-[3px]" />
+          ) : (
+            <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none"
+                 stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+              <rect x="9" y="3" width="6" height="11" rx="3" />
+              <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
+            </svg>
+          )}
+        </button>
+
+        {recording && (
+          <div className="flex items-center gap-3" role="status" aria-live="polite">
+            <span className="font-cal text-emphasis text-2xl font-extrabold -tracking-[0.02em] tabular-nums">
+              {elapsedLabel(seconds)}
+            </span>
+            <span aria-hidden="true" className="flex items-end gap-1">
+              {bars.map((i) => (
+                <span
+                  key={i}
+                  className="bg-cal-muted w-1 rounded-full"
+                  style={{ height: `${6 + Math.min(1, level * (1 + i * 0.4)) * 16}px` }}
+                />
+              ))}
+            </span>
+            <span className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+              Tap to stop
+            </span>
+          </div>
+        )}
+
+        {state.kind === "pending" && (
+          <button
+            type="button"
+            onClick={() => void upload(state.blob, tag)}
+            className="border-emphasis text-emphasis min-h-11 rounded-xl border px-4 text-sm font-bold"
+          >
+            Retry upload
+          </button>
+        )}
+      </div>
+
+      {state.kind === "blocked" && (
+        <div className="border-subtle mt-3 rounded-xl border p-3">
+          <p className="text-emphasis text-sm font-bold">{state.what}</p>
+          <p className="text-subtle mt-1 text-sm">{state.cause}</p>
+          <p className="text-default mt-1 text-sm">{state.todo}</p>
+        </div>
+      )}
+
+      <p className="text-muted mt-2 text-[11px]">
+        For capture that survives a locked screen, use the Action Button flow.
+      </p>
+    </div>
+  );
+}
+
 function QuickCapture() {
   const [text, setText] = useState("");
   const [tag, setTag] = useState<CaptureTag | null>(null);
@@ -439,6 +666,9 @@ function QuickCapture() {
           >
             {busy ? "Saving…" : "Capture"}
           </button>
+        </div>
+        <div className="mt-3">
+          <MicButton tag={tag} onCaptured={() => setTag(null)} />
         </div>
         <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Capture tag (optional)">
           {CAPTURE_TAGS.map((t) => {

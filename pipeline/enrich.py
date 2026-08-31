@@ -11,6 +11,7 @@ test is hermetic. Structuring reuses the Pass B model router.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import urllib.parse
@@ -21,6 +22,8 @@ from pathlib import Path
 
 from . import llm, route
 
+log = logging.getLogger("pipeline")
+
 HTTP_TIMEOUT = 10
 APIFY_TIMEOUT = 60
 
@@ -30,7 +33,7 @@ _URL_RE = re.compile(r"https?://[^\s<>\"')]+")
 _YT_ID_RE = re.compile(r"(?:youtu\.be/|youtube\.com/(?:watch\?v=|shorts/|embed/|live/))([\w-]{11})")
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _OG_IMAGE_RE = re.compile(
-    r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+    r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\'\r\n]+)["\']',
     re.IGNORECASE)
 _TIMEDTEXT_RE = re.compile(r"<text[^>]*>(.*?)</text>", re.IGNORECASE | re.DOTALL)
 
@@ -59,12 +62,15 @@ def is_link_text(text: str) -> bool:
 
 # ---- HTTP seam --------------------------------------------------------------
 
-def _default_fetch(url: str, data: bytes | None = None, timeout: int = HTTP_TIMEOUT) -> bytes:
-    """Injectable in tests. POST when data is given, else GET."""
+def _default_fetch(url: str, data: bytes | None = None, timeout: int = HTTP_TIMEOUT,
+                   headers: dict | None = None) -> bytes:
+    """Injectable in tests: fetch(url, data=, timeout=, headers=).
+    POST when data is given, else GET."""
     req = urllib.request.Request(
         url, data=data,
         headers={"User-Agent": "Mozilla/5.0 (Brain Cockpit)",
-                 **({"Content-Type": "application/json"} if data else {})})
+                 **({"Content-Type": "application/json"} if data else {}),
+                 **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
@@ -110,10 +116,12 @@ def _enrich_instagram(url: str, config, fetch) -> Enrichment:
         return Enrichment("instagram", False, url,
                           detail="Apify isn't configured (APIFY_TOKEN in the environment + apify.actor_id in config.json), so Instagram can't be enriched. The note is saved.")
     try:
-        api = (f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items"
-               f"?token={token}")
+        # the token rides in the Authorization header, never the query string —
+        # a URL carrying a secret ends up in proxy logs and error reports
+        api = f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items"
         body = json.dumps({"directUrls": [url], "resultsLimit": 1}).encode()
-        items = json.loads(fetch(api, data=body, timeout=APIFY_TIMEOUT))
+        items = json.loads(fetch(api, data=body, timeout=APIFY_TIMEOUT,
+                                 headers={"Authorization": f"Bearer {token}"}))
         item = items[0] if isinstance(items, list) and items else {}
         caption = str(item.get("caption") or "")
         cover = str(item.get("displayUrl") or item.get("thumbnailUrl") or "")
@@ -123,6 +131,11 @@ def _enrich_instagram(url: str, config, fetch) -> Enrichment:
                           title=caption[:80] or "instagram-post", caption=caption,
                           cover=cover, author=str(item.get("ownerUsername", "")))
     except Exception:
+        # The broad catch is deliberate — this scraper is ToS-grey and breaks
+        # routinely — but it once swallowed a TypeError from a changed call
+        # signature and reported a code bug as a normal outage. Log the real
+        # reason; keep telling the user the honest, useful version.
+        log.info("instagram enrichment failed", exc_info=True)
         return Enrichment("instagram", False, url,
                           detail="Instagram enrichment failed — this is expected periodically (the scraper is ToS-grey and breaks). The note is saved; it retries later.")
 
@@ -203,13 +216,6 @@ def structure(user_text: str, enr: Enrichment, config, router=None) -> dict:
 
 # ---- note building / routing ------------------------------------------------
 
-def _yaml_list(values) -> str:
-    values = [str(v).strip() for v in (values or []) if str(v).strip()]
-    if not values:
-        return "[]"
-    return "\n" + "\n".join(f"  - {v}" for v in values)
-
-
 def build_resource_note(item, enr: Enrichment, structured: dict, user_text: str,
                         note_id: str, created: str, now_iso: str, attempts: int) -> str:
     rtype = str(structured.get("resource_type", "article")).lower()
@@ -226,12 +232,12 @@ def build_resource_note(item, enr: Enrichment, structured: dict, user_text: str,
         f"source: {item.source}",
         "origin: human",
         "meta_origin: ai",
-        f"title: {title}",
-        f"cover: {enr.cover}",
-        f"source_url: {enr.url}",
-        f"description: {str(structured.get('description', '')).strip()}",
+        f"title: {route._scalar(title)}",
+        f"cover: {route._scalar(enr.cover)}",
+        f"source_url: {route._scalar(enr.url)}",
+        f"description: {route._scalar(structured.get('description', ''))}",
         "status: inbox",
-        f"platform: {enr.platform}",
+        f"platform: {route._scalar(enr.platform)}",
         f"enriched: {'true' if enr.enriched else 'false'}",
         f"enrich_attempts: {attempts}",
         f"enrich_last: {now_iso}",
@@ -276,11 +282,18 @@ def route_link(item, user_text: str, enr: Enrichment, structured: dict,
         i += 1
         path = dest_dir / f"{base}-{i}.md"
     path.write_text(build_resource_note(item, enr, structured, user_text,
-                                        note_id, created, now_iso, attempts))
+                                        note_id, created, now_iso, attempts), encoding="utf-8")
     return path
 
 
 # ---- frontmatter round-trip for retry ---------------------------------------
+
+def _unquote(value: str) -> str:
+    """Give back the string, not the quoting (see api/notes._unquote)."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
+
 
 def _parse_note(text: str) -> tuple[dict, str]:
     if not text.startswith("---\n"):
@@ -292,7 +305,7 @@ def _parse_note(text: str) -> tuple[dict, str]:
     for line in parts[1].splitlines():
         if ":" in line and not line.startswith((" ", "\t")):
             k, _, v = line.partition(":")
-            fm[k.strip()] = v.strip()
+            fm[k.strip()] = _unquote(v.strip())
     return fm, parts[2]
 
 
@@ -301,17 +314,52 @@ def _insight_from_body(body: str) -> str:
     return m.group(1).strip() if m else ""
 
 
-@dataclass
-class _RetryItem:
-    captured: datetime
-    source: str
+# The only frontmatter fields enrichment owns. Everything else on a resource
+# note — status, rating, categories, subjects, tags, consumed, sample, and any
+# field a human added — belongs to the user and is never touched here.
+ENRICHED_FIELDS = ("title", "cover", "description", "platform",
+                   "enriched", "enrich_attempts", "enrich_last")
+
+# Likewise the only body sections enrichment owns.
+ENRICHED_SECTIONS = ("Transcript", "Caption", "Enrichment")
+
+
+def _replace_section(body: str, heading: str, text: str) -> str:
+    """Set (or drop, when text is empty) one '## heading' section, leaving every
+    other section — the user's ## Insight, their own notes — exactly as it is."""
+    kept, skipping = [], False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped == f"## {heading}":
+            skipping = True
+            continue
+        if skipping and stripped.startswith("## "):
+            skipping = False
+        if not skipping:
+            kept.append(line)
+    base = "\n".join(kept).strip()
+    if not text.strip():
+        return base
+    block = f"## {heading}\n\n{text.strip()}"
+    return f"{base}\n\n{block}" if base else block
 
 
 def reenrich_note(path: Path, config, fetch=None, router=None) -> bool:
-    """Re-attempt enrichment for one resource note. Rewrites it in place,
-    bumping enrich_attempts and setting enriched:true on success. Returns the
-    new enriched state. Never raises on enrichment failure."""
-    fm, body = _parse_note(path.read_text())
+    """Re-attempt enrichment for one resource note, MERGING the result in.
+
+    It used to rebuild the note from scratch, which reset status to `inbox`,
+    blanked categories/subjects/tags, and dropped every body section except
+    ## Insight. retry_pending calls this automatically from the watcher loop, so
+    a resource the user had read, rated and tagged was quietly returned to the
+    inbox 24h later. The vault is the source of truth (CLAUDE.md §1): enrichment
+    may only write the fields and sections it owns.
+
+    Returns the new enriched state. Never raises on enrichment failure.
+    """
+    from . import route  # local import: route imports nothing from enrich
+
+    text = path.read_text(encoding="utf-8")
+    fm, body = _parse_note(text)
     url = fm.get("source_url", "")
     if not url:
         return False
@@ -319,15 +367,27 @@ def reenrich_note(path: Path, config, fetch=None, router=None) -> bool:
     user_text = _insight_from_body(body)
     enr = enrich_url(url, config, fetch=fetch)
     structured = structure(user_text, enr, config, router=router)
-    item = _RetryItem(
-        captured=datetime.strptime(fm.get("created", "2000-01-01"), "%Y-%m-%d")
-        if fm.get("created") else datetime.now(),
-        source=fm.get("source", "manual"))
-    note_id = fm.get("id", item.captured.strftime("%Y%m%d%H%M%S"))
-    created = fm.get("created", item.captured.strftime("%Y-%m-%d"))
-    now_iso = datetime.now().isoformat(timespec="seconds")
-    path.write_text(build_resource_note(item, enr, structured, user_text,
-                                        note_id, created, now_iso, attempts))
+
+    fm_block = text.split("---\n", 2)[1]
+    updates = {
+        "title": str(structured.get("title") or enr.title or fm.get("title") or "untitled"),
+        "cover": enr.cover or fm.get("cover", ""),
+        "description": str(structured.get("description", "")).strip() or fm.get("description", ""),
+        "platform": enr.platform,
+        "enriched": "true" if enr.enriched else "false",
+        "enrich_attempts": str(attempts),
+        "enrich_last": datetime.now().isoformat(timespec="seconds"),
+    }
+    for key in ENRICHED_FIELDS:
+        fm_block = route.stamp_field(fm_block, key, route._scalar(updates[key]))
+
+    body = _replace_section(body, "Transcript", enr.transcript)
+    body = _replace_section(body, "Caption", "" if enr.transcript else enr.caption)
+    body = _replace_section(
+        body, "Enrichment", f"> {enr.detail}" if (not enr.enriched and enr.detail) else "")
+
+    path.write_text("---\n" + fm_block.rstrip("\n") + "\n---\n\n" + body.strip() + "\n",
+                    encoding="utf-8")
     return enr.enriched
 
 
@@ -346,7 +406,7 @@ def _retry_pending(config, events, now: datetime, fetch, router) -> None:
     if not folder.is_dir():
         return
     for path in sorted(folder.glob("*.md")):
-        fm, _ = _parse_note(path.read_text())
+        fm, _ = _parse_note(path.read_text(encoding="utf-8"))
         if fm.get("type") != "resource" or fm.get("enriched") != "false":
             continue
         if int(fm.get("enrich_attempts", "1") or "1") >= 2:

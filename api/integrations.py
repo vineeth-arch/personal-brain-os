@@ -34,6 +34,7 @@ _iso = lambda dt: dt.isoformat(timespec="seconds")
 # gmail/gcal are handled by _google_cards below — they upgrade from bare links
 # to live cards once the server has a Google client and the user has connected.
 LINK_DEFS = [
+    ("handshake", "Handshake", "link", "Your relationship OS — people, companies, and the vault sync."),
     ("dex", "Dex", "link", "Your personal CRM for people and relationships."),
     ("caldiy", "cal.diy", "calendar", "Scheduling links."),
     ("n8n", "n8n", "server", "Your automation workflows."),
@@ -91,7 +92,7 @@ def write_config(config_path: Path, config, changes: dict) -> None:
             "Pick a value between 0 and 1 (0.7 is the tested default).",
         )
 
-    raw = json.loads(config_path.read_text())
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
     if engine is not None:
         raw.setdefault("transcription", {})["engine"] = engine
     if threshold is not None:
@@ -103,7 +104,7 @@ def write_config(config_path: Path, config, changes: dict) -> None:
 
     fd, tmp = tempfile.mkstemp(dir=config_path.parent, prefix=".config-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(raw, f, indent=2)
             f.write("\n")
         os.replace(tmp, config_path)
@@ -206,6 +207,70 @@ def _check_key_service(card_id: str, name: str, icon: str, description: str,
         card.update(status="ok" if active else "unknown",
                     badge=("In use" if active else "Key set · untested"),
                     detail="Key present. Press Recheck to run a live test call.")
+    return card
+
+
+def _check_pdl(config, state: dict) -> dict:
+    """People Data Labs (Pass MW). No key is a normal state: the People screen
+    works fully without enrichment, it just can't look up a role or company."""
+    key = os.environ.get("PDL_API_KEY")
+    card = {"id": "pdl", "group": "health", "name": "People Data Labs", "icon": "link",
+            "description": "Looks up role and company for a person card, on demand.",
+            "meta": {"key_present": bool(key)}}
+    if not key:
+        card.update(
+            status="unknown", badge="Not configured",
+            detail="Person cards work without it; enrichment is the only thing missing.",
+            error={
+                "what": "People Data Labs has no API key.",
+                "cause": "PDL_API_KEY isn't set in the server's shell.",
+                "todo": "Add a key (100 free lookups a month) and restart the API, "
+                        "or leave it — nothing else depends on it.",
+            })
+        return card
+    card.update(status="ok", badge="Key set",
+                detail="Enrichment is available from a person's card.")
+    return card
+
+
+def _check_transliteration(config, state: dict) -> dict:
+    """Devanagari → Hinglish (Pass P). Not configured is a normal, honest state:
+    the pipeline still writes the note, just in the script whisper returned."""
+    from pipeline import transliterate as tl
+
+    block = (config.raw.get("transliteration") or {})
+    engine = (block.get("engine") or "").strip().lower()
+    usable = tl.configured_engine(config)
+    card = {"id": "transliteration", "group": "health", "name": "Hindi → Hinglish",
+            "icon": "brain",
+            "description": "Rewrites Hindi transcripts in Roman script before they are filed.",
+            "meta": {"engine": engine, "usable": bool(usable)}}
+    if not engine:
+        card.update(
+            status="unknown", badge="Not configured",
+            detail="Hindi captures stay in Devanagari until an engine is chosen.",
+            error={
+                "what": "No transliteration engine is set.",
+                "cause": "transliteration.engine in config.json is empty.",
+                "todo": "Pick Ollama (local) or OpenRouter in Settings, and name a model.",
+            })
+        return card
+    if not usable:
+        missing = ("a model name" if engine == "ollama"
+                   else "OPENROUTER_API_KEY in the server's shell, or a model name")
+        card.update(
+            status="warn", badge=f"{engine} · incomplete",
+            detail="The engine is chosen but can't run yet.",
+            error={
+                "what": f"The {engine} transliteration engine isn't ready.",
+                "cause": f"It still needs {missing}.",
+                "todo": "Finish the transliteration settings, then Recheck.",
+            })
+        return card
+    where = (block.get("ollama") or {}).get("url") if engine == "ollama" else "openrouter.ai"
+    model = (block.get(engine) or {}).get("model")
+    card.update(status="ok", badge=f"{engine} · ready",
+                detail=f"Using {model} via {where}.")
     return card
 
 
@@ -336,7 +401,7 @@ def _check_watcher(heartbeat_path: Path) -> dict:
                     })
         return card
     try:
-        stamp = datetime.fromisoformat(heartbeat_path.read_text().strip())
+        stamp = datetime.fromisoformat(heartbeat_path.read_text(encoding="utf-8").strip())
         age_min = int((datetime.now() - stamp).total_seconds() / 60)
     except ValueError:
         age_min = -1
@@ -445,6 +510,8 @@ def build_payload(config, heartbeat_path: Path, fresh: bool, state: dict) -> dic
             "claude", "Claude API", "brain",
             "Classifies untagged captures into the right note type.",
             config.anthropic_key, None, fresh, _test_call_anthropic, state),
+        _check_transliteration(config, state),
+        _check_pdl(config, state),
         _check_ntfy(config, state),
         _check_vault_sync(config),
         _check_git(config),

@@ -20,6 +20,8 @@ from pipeline import intake
     "old.mp3",
     "old.wav",
     "old.aac",
+    "2026-07-03-0900 voice-note.webm",   # the cockpit's mic button (MediaRecorder)
+    "2026-07-03-0900 voice-note.mp4",    # the same button on iOS Safari
 ])
 def test_phone_audio_routes_to_audio(tmp_path, name):
     (tmp_path / name).write_bytes(b"not really audio, intake only reads the name")

@@ -34,14 +34,20 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 GMAIL_BASE = "https://gmail.googleapis.com/gmail/v1/users/me"
 CALENDAR_BASE = "https://www.googleapis.com/calendar/v3"
+CONTACTS_SCOPE = "https://www.googleapis.com/auth/contacts"
 SCOPES = " ".join([
     "https://www.googleapis.com/auth/gmail.readonly",
     "https://www.googleapis.com/auth/gmail.compose",
     "https://www.googleapis.com/auth/calendar.readonly",
+    # Pass D: update the notes field of contacts that ALREADY exist. The app
+    # never creates a contact, and never reads the address book into the vault.
+    CONTACTS_SCOPE,
 ])
 TIMEOUT = 10
 STATE_TTL_SECONDS = 600
 INBOX_LIMIT = 10
+# wall-clock budget for the per-message fan-out below
+INBOX_BUDGET_SECONDS = 20
 EVENT_DAYS = 7
 
 
@@ -73,6 +79,19 @@ def refresh_token(config) -> str:
 
 def connected(config) -> bool:
     return bool(refresh_token(config))
+
+
+def granted_scopes(config) -> str:
+    return str((config.raw.get("google") or {}).get("scopes") or "")
+
+
+def has_contacts_scope(config) -> bool:
+    """True only when the stored grant includes the contacts permission.
+
+    An account linked before Pass D has a valid refresh token but no contacts
+    scope — that is a normal state, and the honest answer is "reconnect once",
+    not a failed API call."""
+    return CONTACTS_SCOPE in granted_scopes(config)
 
 
 # ---- OAuth flow ---------------------------------------------------------------
@@ -118,11 +137,15 @@ def finish_connect(states: dict, config_path: Path, state: str, code: str) -> No
             "The token response had no refresh token (the client may be misconfigured).",
             "Remove the app at myaccount.google.com/permissions, then Connect Google again.")
 
-    raw = json.loads(config_path.read_text())
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
     raw.setdefault("google", {})["refresh_token"] = refresh
+    # What Google ACTUALLY granted, so "do we have the contacts permission?"
+    # is answerable without a network call (and so a link made before Pass D
+    # reports honestly that it needs one re-consent).
+    raw["google"]["scopes"] = tokens.get("scope") or ""
     fd, tmp = tempfile.mkstemp(dir=config_path.parent, prefix=".config-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(raw, f, indent=2)
             f.write("\n")
         os.replace(tmp, config_path)
@@ -132,11 +155,11 @@ def finish_connect(states: dict, config_path: Path, state: str, code: str) -> No
 
 
 def disconnect(config_path: Path, token_cache: dict) -> None:
-    raw = json.loads(config_path.read_text())
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
     raw.pop("google", None)
     fd, tmp = tempfile.mkstemp(dir=config_path.parent, prefix=".config-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(raw, f, indent=2)
             f.write("\n")
         os.replace(tmp, config_path)
@@ -208,8 +231,13 @@ def _call(req: urllib.request.Request) -> dict:
     except urllib.error.HTTPError as e:
         log.info("google api call failed: %s %s", e.code, e.read().decode(errors="replace")[:200])
         if e.code in (401, 403):
+            # 502, not 401. 401 is reserved for THIS server rejecting the
+            # cockpit's own bearer token: the client treats any 401 as "our
+            # token is bad", clears it and bounces the user to the connect
+            # screen saying "the server rejected the access token" — which was
+            # a lie when it was only Google's grant that had expired.
             raise GoogleError(
-                401, "Google turned the request away.",
+                502, "Google turned the request away.",
                 "The connection has expired or lost its permissions.",
                 "Open Integrations and press Connect Google to re-link the account.")
         raise GoogleError(
@@ -234,12 +262,24 @@ def _header(msg: dict, name: str) -> str:
 
 
 def unread(config, token_cache: dict) -> list[dict]:
+    """Recent unread mail.
+
+    Gmail has no batch metadata endpoint here, so this is 1 + N sequential
+    requests. At a 10s timeout each that is a ~110s worst case for one route —
+    long enough that the cockpit looks hung — so the per-message fan-out is
+    bounded by a wall-clock budget: whatever arrived by the deadline is
+    returned, and a slow morning shows fewer messages instead of hanging."""
     token = access_token(config, token_cache)
     listing = _get(token, f"{GMAIL_BASE}/messages?"
                           + urllib.parse.urlencode(
                               {"q": "in:inbox is:unread", "maxResults": INBOX_LIMIT}))
+    deadline = time.monotonic() + INBOX_BUDGET_SECONDS
     items = []
     for stub in listing.get("messages") or []:
+        if items and time.monotonic() > deadline:
+            log.info("gmail inbox budget spent — returning %d of %d messages",
+                     len(items), len(listing.get("messages") or []))
+            break
         msg = _get(token, f"{GMAIL_BASE}/messages/{stub['id']}?"
                           + urllib.parse.urlencode(
                               {"format": "metadata",

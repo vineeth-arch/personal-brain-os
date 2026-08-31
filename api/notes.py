@@ -23,13 +23,38 @@ from pipeline import classify, route
 
 log = logging.getLogger("api")
 
-_CONFIDENCE_RE = re.compile(r"confidence=([0-9.]+)")
+_CONFIDENCE_RE = re.compile(r"confidence=(\d+(?:\.\d+)?)")
 _DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
 
 EXCERPT_CHARS = 300
 
 
 # ---- frontmatter ------------------------------------------------------------
+
+def read_note(path: Path) -> str | None:
+    """A note's text, or None when it can't be read.
+
+    The vault is user-managed: a stray binary, a half-synced file, or a note
+    saved in another encoding must cost that ONE note, not the whole screen.
+    Every listing below skips what it cannot read rather than 500-ing."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        log.warning("skipping unreadable note %s", path)
+        return None
+
+
+def _unquote(value: str) -> str:
+    """Strip the surrounding quotes a YAML scalar may carry.
+
+    route._scalar quotes anything that would otherwise be read as structure, and
+    people hand-quote values in Obsidian too, so the reader has to give back the
+    string rather than the quoting."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        inner = value[1:-1]
+        return inner.replace('\\"', '"').replace("\\\\", "\\") if value[0] == '"' else inner
+    return value
+
 
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     """Flat top-level keys only (list values are indented and skipped), matching
@@ -43,7 +68,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     for line in parts[1].splitlines():
         if ":" in line and not line.startswith((" ", "\t")):
             k, _, v = line.partition(":")
-            fm[k.strip()] = v.strip()
+            fm[k.strip()] = _unquote(v.strip())
     return fm, parts[2]
 
 
@@ -130,7 +155,10 @@ def list_review(vault: Path, db_path: Path) -> list[dict]:
     confidences = _confidence_map(db_path)
     items = []
     for path in sorted(inbox_dir.glob("*.md")):
-        fm, body = parse_frontmatter(path.read_text())
+        text = read_note(path)
+        if text is None:
+            continue
+        fm, body = parse_frontmatter(text)
         if fm.get("status") != "needs-review":
             continue
         items.append({
@@ -152,7 +180,10 @@ def count_review(vault: Path) -> int:
         return 0
     n = 0
     for path in inbox_dir.glob("*.md"):
-        fm, _ = parse_frontmatter(path.read_text())
+        text = read_note(path)
+        if text is None:
+            continue
+        fm, _ = parse_frontmatter(text)
         if fm.get("status") == "needs-review":
             n += 1
     return n
@@ -166,7 +197,10 @@ def approve(vault: Path, note_id: str, new_type: str) -> str:
     text = ""
     if inbox_dir.is_dir():
         for path in inbox_dir.glob("*.md"):
-            text = path.read_text()
+            candidate = read_note(path)
+            if candidate is None:
+                continue
+            text = candidate
             fm, _ = parse_frontmatter(text)
             if fm.get("id") == note_id and fm.get("status") == "needs-review":
                 target = path
@@ -183,8 +217,24 @@ def approve(vault: Path, note_id: str, new_type: str) -> str:
         i += 1
         dest = dest_dir / f"{target.stem}-{i}{target.suffix}"
 
-    dest.write_text(_restamp(text, new_type, new_status))
-    target.unlink()
+    # Write to a temp file in the destination folder and rename it into place,
+    # then remove the inbox copy. If the unlink fails the note would exist twice
+    # under one immutable id (SCHEMA §1), which breaks every link pointing at
+    # it — so that failure is surfaced, not swallowed.
+    fd, tmp = tempfile.mkstemp(dir=dest_dir, prefix=".approve-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(_restamp(text, new_type, new_status))
+        os.replace(tmp, dest)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    try:
+        target.unlink()
+    except OSError:
+        dest.unlink(missing_ok=True)   # roll back rather than duplicate the id
+        log.exception("could not remove the inbox copy of %s — approve rolled back", note_id)
+        raise
     git_commit_vault(vault, f"api: filed {note_id} as {new_type}")
     return str(dest.relative_to(vault))
 
@@ -228,7 +278,7 @@ def capture(inbox: Path, text: str, tag: str | None) -> str:
         # break the free tag-route (intake._NAME_RE binds the tag last)
         path = inbox / f"{stamp} {name}-{i}{suffix}.md"
 
-    _atomic_write_bytes(path, (text.rstrip() + "\n").encode(), inbox)
+    _atomic_write_bytes(path, (text.rstrip() + "\n").encode("utf-8"), inbox)
     return now.strftime("%Y%m%d%H%M") + "00"
 
 
@@ -329,9 +379,51 @@ def capture_image(inbox: Path, data: bytes, *, text: str, tag: str | None, ocr: 
         "ocr": ocr.strip()[:SIDECAR_FIELD_CAP],
         "source": "photo",
     })
-    _atomic_write_bytes(sidecar_file, sidecar_payload.encode(), inbox)
+    _atomic_write_bytes(sidecar_file, sidecar_payload.encode("utf-8"), inbox)
     _atomic_write_bytes(path, data, inbox)
     return now.strftime("%Y%m%d%H%M") + "00"
+
+
+# ---- audio capture (Pass V) --------------------------------------------------
+# audio the browser's MediaRecorder can produce, mapped to the extension the
+# intake stage recognises. Safari records mp4/m4a, everything else webm.
+AUDIO_MIME_EXT = {
+    "audio/webm": ".webm",
+    "audio/ogg": ".ogg",
+    "audio/mp4": ".mp4",
+    "audio/m4a": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/mpeg": ".mp3",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+}
+MAX_AUDIO_BYTES = 100 * 1024 * 1024
+
+
+def audio_extension(content_type: str | None) -> str | None:
+    """Extension for a recording's Content-Type, or None if it isn't audio we
+    can hand to the pipeline. Parameters (`;codecs=opus`) are ignored."""
+    base = (content_type or "").split(";")[0].strip().lower()
+    return AUDIO_MIME_EXT.get(base)
+
+
+def audio_capture_path(inbox: Path, ext: str, name: str | None, tag: str | None,
+                       now: datetime | None = None) -> tuple[Path, str]:
+    """Reserve the inbox filename for a recording and return (path, note id).
+
+    Same stamping as capture(): "YYYY-MM-DD-HHmm <name> #tag.<ext>", collision
+    suffix on the NAME (after the #tag it would break the free tag-route)."""
+    inbox.mkdir(parents=True, exist_ok=True)
+    now = now or datetime.now()
+    stamp = now.strftime("%Y-%m-%d-%H%M")
+    slug = _slug(name) if name and name.strip() else "voice-note"
+    suffix = f" #{tag}" if tag else ""
+    path = inbox / f"{stamp} {slug}{suffix}{ext}"
+    i = 1
+    while path.exists():
+        i += 1
+        path = inbox / f"{stamp} {slug}-{i}{suffix}{ext}"
+    return path, now.strftime("%Y%m%d%H%M") + "00"
 
 
 # ---- resurface ----------------------------------------------------------------
@@ -348,12 +440,12 @@ def resurface(vault: Path) -> dict | None:
         for folder in folders
         if folder.is_dir()
         for p in folder.glob("*.md")
-        if p.read_text().startswith("---\n")
+        if (read_note(p) or "").startswith("---\n")
     )
     if not candidates:
         return None
     pick = random.Random(date.today().toordinal()).choice(candidates)
-    fm, body = parse_frontmatter(pick.read_text())
+    fm, body = parse_frontmatter(read_note(pick) or "")
     paragraph = next((p.strip() for p in body.split("\n\n") if p.strip()), "")
     return {
         "id": fm.get("id", ""),
@@ -493,19 +585,9 @@ def _ensure_origin_human(fm_block: str) -> str:
 
 
 def _stamp_field(fm_block: str, key: str, value: str) -> str:
-    """Set a column-0 scalar frontmatter field, appending it if absent."""
-    lines = fm_block.splitlines()
-    out: list[str] = []
-    found = False
-    for line in lines:
-        if line.startswith(f"{key}:"):
-            out.append(f"{key}: {value}")
-            found = True
-        else:
-            out.append(line)
-    if not found:
-        out.append(f"{key}: {value}")
-    return "\n".join(out)
+    """Set a column-0 scalar frontmatter field, appending it if absent.
+    One implementation, in the pipeline's frontmatter authority."""
+    return route.stamp_field(fm_block, key, value)
 
 
 def _resource_summary(vault: Path, path: Path, fm: dict[str, str], body: str) -> dict:
@@ -531,7 +613,10 @@ def _resource_notes(vault: Path):
     if not folder.is_dir():
         return
     for path in sorted(folder.glob("*.md")):
-        fm, body = parse_frontmatter(path.read_text())
+        text = read_note(path)
+        if text is None:
+            continue
+        fm, body = parse_frontmatter(text)
         if fm.get("type") == "resource":
             yield path, fm, body
 
@@ -579,7 +664,7 @@ def resource_detail(vault: Path, note_id: str) -> dict | None:
     path = find_resource(vault, note_id)
     if path is None:
         return None
-    fm, body = parse_frontmatter(path.read_text())
+    fm, body = parse_frontmatter(read_note(path) or "")
     detail = _resource_summary(vault, path, fm, body)
     detail["description"] = fm.get("description") or None
     detail["rating"] = fm.get("rating") or None
@@ -596,7 +681,7 @@ def set_resource_status(vault: Path, note_id: str, new_status: str) -> dict:
     path = find_resource(vault, note_id)
     if path is None:
         raise LookupError(note_id)
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     fm, _ = parse_frontmatter(text)
     new_text = _restamp(text, fm.get("type", "resource"), new_status)
     if new_status == "consumed":
@@ -604,9 +689,9 @@ def set_resource_status(vault: Path, note_id: str, new_status: str) -> dict:
         if split is not None:
             fm_block, body = split
             new_text = _compose_note(_stamp_field(fm_block, "consumed", date.today().isoformat()), body)
-    path.write_text(new_text)
+    path.write_text(new_text, encoding="utf-8")
     git_commit_vault(vault, f"api: resource {note_id} → {new_status}")
-    fm2, body2 = parse_frontmatter(path.read_text())
+    fm2, body2 = parse_frontmatter(path.read_text(encoding="utf-8"))
     return _resource_summary(vault, path, fm2, body2)
 
 
@@ -616,13 +701,13 @@ def set_resource_insight(vault: Path, note_id: str, text: str) -> dict:
     path = find_resource(vault, note_id)
     if path is None:
         raise LookupError(note_id)
-    split = _split_note(path.read_text())
+    split = _split_note(path.read_text(encoding="utf-8"))
     if split is None:
         raise LookupError(note_id)
     fm_block, body = split
-    path.write_text(_compose_note(_ensure_origin_human(fm_block), set_insight_section(body, text)))
+    path.write_text(_compose_note(_ensure_origin_human(fm_block), set_insight_section(body, text)), encoding="utf-8")
     git_commit_vault(vault, f"api: insight on {note_id}")
-    fm2, body2 = parse_frontmatter(path.read_text())
+    fm2, body2 = parse_frontmatter(path.read_text(encoding="utf-8"))
     return _resource_summary(vault, path, fm2, body2)
 
 
@@ -652,6 +737,6 @@ def sample_matching(vault: Path, scope: str) -> list[Path]:
 def sample_titles(paths: list[Path]) -> list[str]:
     titles: list[str] = []
     for path in paths:
-        fm, _ = parse_frontmatter(path.read_text())
+        fm, _ = parse_frontmatter(read_note(path) or "")
         titles.append(_note_title(path, fm))
     return titles
