@@ -33,7 +33,7 @@
 - Pass 12: n8n / Supabase real API integrations — they stay launcher tiles; each needs its own auth story. (Dex left this list in Pass D — its REST API needed a key, not a dependency.)
 - Pass 12: pull Gmail/Calendar items INTO the vault as notes (currently read-only display in Integrations) — needs a routing decision per SCHEMA-REFERENCE before anything is written.
 - Pass P: Plaud SDK ingest (pulling recordings straight off the Note Pro over BLE/Wi-Fi) — the official SDK's binaries are proprietary and need a partner token, so the watched-folder path ships instead.
-- Pass P: speaker diarization ("who said what") on meeting transcripts — needs a second model in the chain; the transcript stays undiarized for now.
+- ~~Pass P: speaker diarization ("who said what") on meeting transcripts~~ — SHIPPED in Pass PN: a Plaud recording's own speaker-labelled transcript is read verbatim (`pipeline/plaud.py`), never re-transcribed, so diarization comes from the device rather than a second model.
 - Pass P: per-chunk resume for a long recording (today a re-run re-transcribes every segment, and one permanently failed segment stays a placeholder).
 - Pass P: transliteration quality dial — no way yet to re-run Hindi → Hinglish on an existing note with a better model.
 - ~~Pass MW: real Dex sync (write-back / CardDAV)~~ — SHIPPED in Pass D as marker-delimited, human-confirmed profile push (Dex REST + Google People API; no CardDAV, no iCloud).
