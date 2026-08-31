@@ -221,8 +221,11 @@ export interface ProviderStat {
 }
 
 // Config (GET/PUT /api/config) — safe values only, never key values.
+export type TransliterationEngine = "" | "ollama" | "openrouter";
+
 export interface AppConfig {
   engine: EngineName;
+  language: string; // whisper language hint ("hi"); "" = auto-detect
   confidence_threshold: number;
   ntfy_url: string;
   ntfy_topic: string;
@@ -236,14 +239,26 @@ export interface AppConfig {
   };
   // Pass D — which push targets are wired up. Booleans only, never key values.
   push: PushAvailability;
+  transliteration: {
+    engine: TransliterationEngine;
+    ollama_url: string;
+    ollama_model: string;
+    openrouter_model: string;
+    openrouter_key_present: boolean;
+  };
 }
 
 // PUT /api/config body — only the fields being changed are sent.
 export interface ConfigWrite {
   engine?: EngineName;
+  language?: string;
   confidence_threshold?: number;
   ntfy_url?: string;
   ntfy_topic?: string;
+  transliteration_engine?: TransliterationEngine;
+  transliteration_ollama_url?: string;
+  transliteration_ollama_model?: string;
+  transliteration_openrouter_model?: string;
 }
 
 // Backup (Pass 5): git-commit the vault + copy events.db to backups/.

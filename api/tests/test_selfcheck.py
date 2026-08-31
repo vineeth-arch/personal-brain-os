@@ -60,6 +60,41 @@ def test_boots_with_empty_whisper_and_ntfy(env):
     assert app is not None
 
 
+def test_openai_engine_without_a_key_is_informational_never_a_boot_refusal(env, monkeypatch):
+    """D18: this is exactly the fresh-install trap — config.example.json
+    defaults to engine=openai. It must warn, never block the boot (every
+    other 'not configured yet' condition in this file is soft too)."""
+    from api import selfcheck
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    root, _, _, _ = env
+    config = json.loads((root / "config.json").read_text())
+    config["transcription"]["engine"] = "openai"
+    (root / "config.json").write_text(json.dumps(config))
+
+    app = create_app(root=root)  # must not raise
+    assert app is not None
+
+    result = selfcheck.run(root)
+    assert result["ok"], result["problems"]  # still not a boot refusal
+    by_id = {c["id"]: c for c in result["checks"]}
+    assert by_id["transcription-engine"]["ok"] is False
+    assert "captures will fail" in by_id["transcription-engine"]["detail"]
+
+
+def test_openai_engine_with_a_key_checks_out(env, monkeypatch):
+    from api import selfcheck
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    root, _, _, _ = env
+    config = json.loads((root / "config.json").read_text())
+    config["transcription"]["engine"] = "openai"
+    (root / "config.json").write_text(json.dumps(config))
+
+    result = selfcheck.run(root)
+    assert {c["id"]: c["ok"] for c in result["checks"]}["transcription-engine"] is True
+
+
 def test_selfcheck_endpoint_shape(env):
     root, _, _, _ = env
     with Server(root) as s:

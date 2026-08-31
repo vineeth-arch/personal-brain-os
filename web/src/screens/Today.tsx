@@ -299,13 +299,25 @@ function elapsedLabel(seconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: () => void }) {
+function MicButton({
+  tag,
+  name,
+  onCaptured,
+}: {
+  tag: CaptureTag | null;
+  name: string;
+  onCaptured: () => void;
+}) {
   const [state, setState] = useState<MicState>({ kind: "idle" });
   const [seconds, setSeconds] = useState(0);
   const [level, setLevel] = useState(0);
   const recorder = useRef<MediaRecorder | null>(null);
   const stopAudio = useRef<(() => void) | null>(null);
   const stream = useRef<MediaStream | null>(null);
+  // read at the moment recording stops, not at the moment it started — the
+  // quick-capture box is still editable while a recording is in progress
+  const nameRef = useRef(name);
+  nameRef.current = name;
 
   // Navigating away mid-recording used to leave the MediaStream open, so the
   // browser's recording indicator stayed lit with nothing listening. Release
@@ -343,12 +355,12 @@ function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: ()
     setLevel(0);
   };
 
-  const upload = async (blob: Blob, sentTag: CaptureTag | null) => {
+  const upload = async (blob: Blob, sentTag: CaptureTag | null, sentName: string) => {
     // Optimistic, like the text capture: the trust signal comes first.
     setState({ kind: "idle" });
     toast("✅ Captured");
     try {
-      await api.captureAudio(blob, sentTag);
+      await api.captureAudio(blob, sentTag, sentName);
       onCaptured();
     } catch (err) {
       const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
@@ -394,7 +406,7 @@ function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: ()
       const blob = new Blob(parts, { type: rec.mimeType || mime || "audio/webm" });
       teardown();
       media.getTracks().forEach((t) => t.stop());
-      if (blob.size > 0) void upload(blob, tag);
+      if (blob.size > 0) void upload(blob, tag, nameRef.current);
       else setState({ kind: "idle" });
     };
 
@@ -481,7 +493,7 @@ function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: ()
         {state.kind === "pending" && (
           <button
             type="button"
-            onClick={() => void upload(state.blob, tag)}
+            onClick={() => void upload(state.blob, tag, nameRef.current)}
             className="border-emphasis text-emphasis min-h-11 rounded-xl border px-4 text-sm font-bold"
           >
             Retry upload
@@ -553,7 +565,7 @@ function QuickCapture() {
           </button>
         </div>
         <div className="mt-3">
-          <MicButton tag={tag} onCaptured={() => setTag(null)} />
+          <MicButton tag={tag} name={text} onCaptured={() => setTag(null)} />
         </div>
         <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Capture tag (optional)">
           {CAPTURE_TAGS.map((t) => {

@@ -184,9 +184,10 @@ export const api = {
   // The recording goes up as the raw body (the server takes no multipart —
   // python-multipart isn't a locked dependency), so the blob's own mime type
   // is what tells the server which extension the inbox file gets.
-  captureAudio: (blob: Blob, tag: CaptureTag | null) => {
+  captureAudio: (blob: Blob, tag: CaptureTag | null, name?: string) => {
     const params = new URLSearchParams();
     if (tag) params.set("tag", tag);
+    if (name && name.trim()) params.set("name", name.trim());
     const query = params.toString();
     return request<{ id: string; status: string }>(
       `/api/capture/audio${query ? `?${query}` : ""}`,

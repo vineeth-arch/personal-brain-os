@@ -39,45 +39,53 @@ function loadPlaywright() {
 // ---- temp server root ---------------------------------------------------------
 function makeRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-e2e-"));
-  for (const d of ["vault/00-Inbox", "vault/02-Musings", "vault/03-Learnings", "vault/wiki",
-                   "vault/07-People", "inbox", "archive", "failed"]) {
-    fs.mkdirSync(path.join(root, d), { recursive: true });
-  }
-  const vault = path.join(root, "vault");
-  execSync(`git -C "${vault}" init -q && git -C "${vault}" config user.email t@t && git -C "${vault}" config user.name t`);
-  fs.writeFileSync(
-    path.join(root, "config.json"),
-    JSON.stringify({
-      vault_path: vault,
-      inbox_path: path.join(root, "inbox"),
-      archive_path: path.join(root, "archive"),
-      failed_path: path.join(root, "failed"),
-      transcription: { engine: "whispercpp", whispercpp: { binary_path: "", model_path: "" } },
-      ntfy: { url: "", topic: "" },
-      api: { auth_token: TOKEN },
-      classification: { confidence_threshold: 0.7 },
-      links: { dex: "https://getdex.com/", notion: "https://www.notion.so/x" },
-    }, null, 2),
-  );
-  // a person well past a 3-day cadence — the People screen's whole reason to exist
-  fs.writeFileSync(
-    path.join(root, "vault", "07-People", "2026-07-01-priya-raman.md"),
-    [
-      "---", "id: 20260701090000", "type: person", "created: 2026-07-01",
-      "source: manual", "origin: human", "relationship: client",
-      "company: Alserkal Avenue",
-      "channels: {whatsapp: +971500000001, email: priya@example.com}",
-      "cadence_days: 3", "last_contact: 2026-06-01", "dex_id: dex-priya",
-      "dex_deeplink:", "warmth_stage: conversing",
-      "status: active", "---", "", "# Priya Raman", "", "## Context", "",
-      "Met at a studio visit.", "", "## Interaction log", "",
-      "- 2026-06-01 — coffee at Alserkal", "", "## Next action", "", "",
-    ].join("\n"),
-  );
+  try {
+    for (const d of ["vault/00-Inbox", "vault/02-Musings", "vault/03-Learnings", "vault/wiki",
+                     "vault/07-People", "inbox", "archive", "failed"]) {
+      fs.mkdirSync(path.join(root, d), { recursive: true });
+    }
+    const vault = path.join(root, "vault");
+    execSync(`git -C "${vault}" init -q && git -C "${vault}" config user.email t@t && git -C "${vault}" config user.name t`);
+    fs.writeFileSync(
+      path.join(root, "config.json"),
+      JSON.stringify({
+        vault_path: vault,
+        inbox_path: path.join(root, "inbox"),
+        archive_path: path.join(root, "archive"),
+        failed_path: path.join(root, "failed"),
+        transcription: { engine: "whispercpp", whispercpp: { binary_path: "", model_path: "" } },
+        ntfy: { url: "", topic: "" },
+        api: { auth_token: TOKEN },
+        classification: { confidence_threshold: 0.7 },
+        links: { dex: "https://getdex.com/", notion: "https://www.notion.so/x" },
+      }, null, 2),
+    );
+    // a person well past a 3-day cadence — the People screen's whole reason to exist
+    fs.writeFileSync(
+      path.join(root, "vault", "07-People", "2026-07-01-priya-raman.md"),
+      [
+        "---", "id: 20260701090000", "type: person", "created: 2026-07-01",
+        "source: manual", "origin: human", "relationship: client",
+        "company: Alserkal Avenue",
+        "channels: {whatsapp: +971500000001, email: priya@example.com}",
+        "cadence_days: 3", "last_contact: 2026-06-01", "dex_id: dex-priya",
+        "dex_deeplink:", "warmth_stage: conversing",
+        "status: active", "---", "", "# Priya Raman", "", "## Context", "",
+        "Met at a studio visit.", "", "## Interaction log", "",
+        "- 2026-06-01 — coffee at Alserkal", "", "## Next action", "", "",
+      ].join("\n"),
+    );
 
-  // create_app serves the built cockpit from <root>/web/dist
-  fs.symlinkSync(path.join(repo, "web"), path.join(root, "web"));
-  return root;
+    // create_app serves the built cockpit from <root>/web/dist
+    fs.symlinkSync(path.join(repo, "web"), path.join(root, "web"));
+    return root;
+  } catch (err) {
+    // D23: without this, a missing `git` (or any setup failure) leaves the
+    // mkdtemp'd directory on disk forever and crashes with a raw Node trace
+    // instead of the same clean "E2E FAILED" the rest of the run reports.
+    fs.rmSync(root, { recursive: true, force: true });
+    throw new Error(`Could not set up the e2e temp root (is git installed?): ${err.message}`);
+  }
 }
 
 async function waitForHealth() {
@@ -98,34 +106,47 @@ if (!fs.existsSync(dist)) {
   process.exit(2);
 }
 
-const root = makeRoot();
-// prefer the repo venv; fall back to whatever uvicorn is on PATH (CI/containers
-// install the deps system-wide and have no .venv)
-const venvUvicorn = path.join(repo, ".venv", "bin", "uvicorn");
-const uvicornBin = fs.existsSync(venvUvicorn) ? venvUvicorn : "uvicorn";
-const uvicorn = spawn(uvicornBin,
-  ["api.main:app", "--host", "127.0.0.1", "--port", String(PORT)],
-  {
-    cwd: repo,
-    env: {
-      ...process.env,
-      BRAIN_COCKPIT_ROOT: root,
-      OPENAI_API_KEY: "sk-e2e-dummy",
-      // a Google client is "configured" so the Gmail/Calendar cards render in
-      // their live form; no real Google call is ever made (see step 5)
-      GOOGLE_CLIENT_ID: "e2e-client-id",
-      GOOGLE_CLIENT_SECRET: "e2e-client-secret",
-      // Dex "configured" so the push button renders; the contacts scope is
-      // deliberately absent so the honest not-configured pill renders too.
-      // No real Dex call is ever made (the push routes are stubbed in step 8).
-      DEX_API_KEY: "e2e-dex-key",
-    },
-    stdio: ["ignore", "inherit", "inherit"],
-  });
-
+let root;
+let uvicorn;
 let browser;
 let failed = false;
 try {
+  root = makeRoot();
+  // prefer the repo venv; fall back to whatever uvicorn is on PATH (CI/containers
+  // install the deps system-wide and have no .venv)
+  const venvUvicorn = path.join(repo, ".venv", "bin", "uvicorn");
+  const uvicornBin = fs.existsSync(venvUvicorn) ? venvUvicorn : "uvicorn";
+  uvicorn = spawn(uvicornBin,
+    ["api.main:app", "--host", "127.0.0.1", "--port", String(PORT)],
+    {
+      cwd: repo,
+      env: {
+        ...process.env,
+        BRAIN_COCKPIT_ROOT: root,
+        OPENAI_API_KEY: "sk-e2e-dummy",
+        // a Google client is "configured" so the Gmail/Calendar cards render in
+        // their live form; no real Google call is ever made (see step 5)
+        GOOGLE_CLIENT_ID: "e2e-client-id",
+        GOOGLE_CLIENT_SECRET: "e2e-client-secret",
+        // Dex "configured" so the push button renders; the contacts scope is
+        // deliberately absent so the honest not-configured pill renders too.
+        // No real Dex call is ever made (the push routes are stubbed in step 8).
+        DEX_API_KEY: "e2e-dex-key",
+      },
+      stdio: ["ignore", "inherit", "inherit"],
+    });
+  // D23: spawn() failing outright (binary not found, permission denied) fires
+  // an async 'error' event on its own tick — a throw here would NOT be caught
+  // by the try/catch below (it isn't on that call stack), and with no
+  // listener at all Node crashes the whole process unhandled, skipping the
+  // finally cleanup. So this listener does the cleanup itself.
+  uvicorn.on("error", (err) => {
+    console.error(`\nE2E FAILED: uvicorn failed to start (${uvicornBin}): ${err.message}`);
+    if (browser) browser.close().catch(() => {});
+    fs.rmSync(root, { recursive: true, force: true });
+    process.exit(1);
+  });
+
   await waitForHealth();
   const { chromium } = loadPlaywright();
   // CI images often ship a chromium that predates the installed playwright;
@@ -265,7 +286,11 @@ try {
   console.log("✓ No send route exists on the API");
 
   // ---- 6. Mic capture: record in the PWA → a file lands in the inbox (Pass V) ---
+  // Typing into the quick-capture box first also exercises D22: that text is
+  // sent as ?name= when the recording stops, so the stamped filename carries
+  // it instead of the generic "voice-note" fallback.
   await page.goto(`${BASE}/#/today`);
+  await page.getByLabel("Quick capture").fill("garden notes for later");
   const micButton = page.getByRole("button", { name: "Record a voice capture" });
   await micButton.waitFor();
   await micButton.click();
@@ -285,10 +310,13 @@ try {
   }
   assert.ok(recorded.length === 1, `expected one recording in the inbox, saw ${JSON.stringify(recorded)}`);
   const stamped = recorded[0];
-  assert.match(stamped, /^\d{4}-\d{2}-\d{2}-\d{4} voice-note\.(webm|mp4|ogg)$/,
-    `recording filename '${stamped}' is not the stamp intake parses`);
+  assert.match(stamped, /^\d{4}-\d{2}-\d{2}-\d{4} garden-notes-for-later\.(webm|mp4|ogg)$/,
+    `recording filename '${stamped}' doesn't carry the quick-capture text (D22)`);
   assert.ok(fs.statSync(path.join(inboxDir, stamped)).size > 0, "the recording landed empty");
-  console.log(`✓ Mic capture wrote ${stamped} into the inbox`);
+  // the text box is deliberately NOT cleared by a recording — it may still
+  // become its own separate text capture
+  assert.equal(await page.getByLabel("Quick capture").inputValue(), "garden notes for later");
+  console.log(`✓ Mic capture wrote ${stamped} into the inbox, carrying the quick-capture text`);
 
   // ---- 7. People: draft refuses without a voice, then works (Pass MW) ----------
   await page.goto(`${BASE}/#/people`);
@@ -446,7 +474,7 @@ try {
   console.error("\nE2E FAILED:", err);
 } finally {
   if (browser) await browser.close();
-  uvicorn.kill("SIGTERM");
-  fs.rmSync(root, { recursive: true, force: true });
+  if (uvicorn) uvicorn.kill("SIGTERM");
+  if (root) fs.rmSync(root, { recursive: true, force: true });
 }
 process.exit(failed ? 1 : 0);

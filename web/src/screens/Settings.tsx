@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { api, DEFAULT_API_BASE, getApiBase, getToken, saveConnection } from "../api/client";
-import type { ConfigWrite, EngineName, ErrorEnvelope } from "../api/types";
+import type { ConfigWrite, EngineName, ErrorEnvelope, TransliterationEngine } from "../api/types";
 import { CloudEngineConfirm } from "../components/CloudEngineConfirm";
 import { toast } from "../components/Toast";
 import { usePolling } from "../hooks/usePolling";
@@ -168,6 +168,8 @@ export function Settings() {
       </Card>
 
       <PipelineSettingsCard onSaved={() => status.refetch()} />
+
+      <HinglishSettingsCard />
 
       <Card title="Deep links">
         <ul className="space-y-2">
@@ -487,6 +489,187 @@ function PipelineSettingsCard({ onSaved }: { onSaved: () => void }) {
           </div>
         </form>
       )}
+    </Card>
+  );
+}
+
+// D2: Hindi speech comes back from whisper in Devanagari; this engine rewrites
+// it as Roman Hindi/Hinglish for the note body. Off is a real, valid choice —
+// the note just keeps the Devanagari transcript. Same validated PUT
+// /api/config writer as Pipeline settings above.
+function HinglishSettingsCard() {
+  const { data, refetch } = usePolling(api.config, 60_000);
+  const [engine, setEngine] = useState<TransliterationEngine | null>(null);
+  const [ollamaUrl, setOllamaUrl] = useState<string | null>(null);
+  const [ollamaModel, setOllamaModel] = useState<string | null>(null);
+  const [openrouterModel, setOpenrouterModel] = useState<string | null>(null);
+  const [language, setLanguage] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<ErrorEnvelope | null>(null);
+
+  if (!data) {
+    return (
+      <Card title="Hindi → Hinglish">
+        <div className="bg-default h-24 animate-pulse rounded-xl" aria-hidden="true" />
+      </Card>
+    );
+  }
+
+  const chosen = engine ?? data.transliteration.engine;
+
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const changes: ConfigWrite = {};
+    if (engine !== null && engine !== data.transliteration.engine) changes.transliteration_engine = engine;
+    if (ollamaUrl !== null && ollamaUrl !== data.transliteration.ollama_url)
+      changes.transliteration_ollama_url = ollamaUrl;
+    if (ollamaModel !== null && ollamaModel !== data.transliteration.ollama_model)
+      changes.transliteration_ollama_model = ollamaModel;
+    if (openrouterModel !== null && openrouterModel !== data.transliteration.openrouter_model)
+      changes.transliteration_openrouter_model = openrouterModel;
+    if (language !== null && language !== data.language) changes.language = language;
+    if (Object.keys(changes).length === 0) {
+      toast("Nothing changed — settings already match.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.putConfig(changes);
+      toast("Saved Hindi → Hinglish settings.");
+      setEngine(null);
+      setOllamaUrl(null);
+      setOllamaModel(null);
+      setOpenrouterModel(null);
+      setLanguage(null);
+      refetch();
+    } catch (err) {
+      const envelope = (err as { envelope?: ErrorEnvelope }).envelope;
+      setError(
+        envelope ?? {
+          what: "The settings didn't save.",
+          cause: "The server answered in a way the app didn't expect.",
+          todo: "Check the server logs, then try again.",
+        },
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card title="Hindi → Hinglish">
+      <form onSubmit={save} className="space-y-5">
+        <label className="block">
+          <span className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+            Whisper language hint
+          </span>
+          <input
+            type="text"
+            value={language ?? data.language}
+            onChange={(e) => setLanguage(e.target.value)}
+            placeholder="hi (empty = auto-detect)"
+            autoComplete="off"
+            className="bg-default border-subtle text-emphasis mt-1.5 block w-full rounded-xl border px-4 py-3 text-base"
+          />
+        </label>
+
+        <div>
+          <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+            Transliteration engine
+          </p>
+          <div className="mt-1.5 flex gap-2" role="group" aria-label="Transliteration engine">
+            {(["", "ollama", "openrouter"] as TransliterationEngine[]).map((opt) => (
+              <button
+                key={opt || "off"}
+                type="button"
+                onClick={() => setEngine(opt)}
+                disabled={busy}
+                aria-pressed={chosen === opt}
+                className={`min-h-11 flex-1 rounded-xl border px-3 text-sm font-bold disabled:opacity-60 ${
+                  chosen === opt
+                    ? "bg-emphasis text-emphasis border-emphasis"
+                    : "border-subtle text-subtle"
+                }`}
+              >
+                {opt === "" ? "Off" : opt === "ollama" ? "Ollama (local)" : "OpenRouter (cloud)"}
+              </button>
+            ))}
+          </div>
+          {chosen === "openrouter" && !data.transliteration.openrouter_key_present && (
+            <p className="text-subtle mt-1.5 text-xs">
+              Needs OPENROUTER_API_KEY set in the server's shell.
+            </p>
+          )}
+        </div>
+
+        {chosen === "ollama" && (
+          <>
+            <label className="block">
+              <span className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+                Ollama URL
+              </span>
+              <input
+                type="url"
+                value={ollamaUrl ?? data.transliteration.ollama_url}
+                onChange={(e) => setOllamaUrl(e.target.value)}
+                placeholder="http://localhost:11434"
+                autoComplete="off"
+                className="bg-default border-subtle text-emphasis mt-1.5 block w-full rounded-xl border px-4 py-3 text-base"
+              />
+            </label>
+            <label className="block">
+              <span className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+                Ollama model
+              </span>
+              <input
+                type="text"
+                value={ollamaModel ?? data.transliteration.ollama_model}
+                onChange={(e) => setOllamaModel(e.target.value)}
+                placeholder="qwen2.5"
+                autoComplete="off"
+                className="bg-default border-subtle text-emphasis mt-1.5 block w-full rounded-xl border px-4 py-3 text-base"
+              />
+            </label>
+          </>
+        )}
+
+        {chosen === "openrouter" && (
+          <label className="block">
+            <span className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+              OpenRouter model
+            </span>
+            <input
+              type="text"
+              value={openrouterModel ?? data.transliteration.openrouter_model}
+              onChange={(e) => setOpenrouterModel(e.target.value)}
+              placeholder="meta-llama/llama-3.1-8b-instruct"
+              autoComplete="off"
+              className="bg-default border-subtle text-emphasis mt-1.5 block w-full rounded-xl border px-4 py-3 text-base"
+            />
+          </label>
+        )}
+
+        <button
+          type="submit"
+          disabled={busy}
+          className="border-emphasis text-emphasis min-h-12 w-full rounded-xl border text-base font-bold disabled:opacity-60"
+        >
+          {busy ? "Saving…" : "Save Hindi → Hinglish settings"}
+        </button>
+
+        {error && (
+          <div className="bg-cal-muted border-emphasis rounded-xl border p-4 text-sm" aria-live="polite">
+            <p className="text-emphasis font-bold">{error.what}</p>
+            <p className="text-default mt-1.5">
+              <span className="text-subtle font-bold">Likely cause:</span> {error.cause}
+            </p>
+            <p className="text-default mt-1.5">
+              <span className="text-subtle font-bold">What to do:</span> {error.todo}
+            </p>
+          </div>
+        )}
+      </form>
     </Card>
   );
 }

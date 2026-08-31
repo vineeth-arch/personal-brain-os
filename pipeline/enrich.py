@@ -309,9 +309,23 @@ def _parse_note(text: str) -> tuple[dict, str]:
     return fm, parts[2]
 
 
-def _insight_from_body(body: str) -> str:
-    m = re.search(r"^## Insight\s*\n(.*?)(?:\n## |\Z)", body, re.DOTALL | re.MULTILINE)
-    return m.group(1).strip() if m else ""
+# D17: the canonical '## Insight' reader — api/notes.py imports this rather
+# than keeping its own copy (two parsers with different case-sensitivity was
+# an easy way for them to quietly drift apart).
+def insight_text(body: str) -> str:
+    """Text under a '## Insight' H2, up to the next H2 or EOF. '' when absent/blank."""
+    out: list[str] = []
+    capturing = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.lower() == "## insight":
+            capturing = True
+            continue
+        if capturing and stripped.startswith("## "):
+            break
+        if capturing:
+            out.append(line)
+    return "\n".join(out).strip()
 
 
 # The only frontmatter fields enrichment owns. Everything else on a resource
@@ -364,7 +378,7 @@ def reenrich_note(path: Path, config, fetch=None, router=None) -> bool:
     if not url:
         return False
     attempts = int(fm.get("enrich_attempts", "1") or "1") + 1
-    user_text = _insight_from_body(body)
+    user_text = insight_text(body)
     enr = enrich_url(url, config, fetch=fetch)
     structured = structure(user_text, enr, config, router=router)
 

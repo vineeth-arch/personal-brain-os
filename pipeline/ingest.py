@@ -147,6 +147,33 @@ def _bundle_for(entry: Path) -> plaud.Bundle | None:
     return None
 
 
+def _candidates(folder: Path) -> list[Path]:
+    """Every file or bundle-shaped directory under `folder`, found by walking
+    down through any directory that ISN'T itself a recognised bundle — some
+    recorders (Plaud Desktop included) nest exports by date, and a shallow
+    scan would leave those invisible forever (D19). A directory that IS a
+    bundle (applaud's layout) is yielded as one entry and never descended
+    into, so its own sidecar files are never double-counted. Never descends
+    into a hidden directory (sync scratch, .git, etc.); an unreadable
+    directory simply contributes nothing rather than raising."""
+    found = []
+    try:
+        children = sorted(folder.iterdir())
+    except OSError:
+        return found
+    for child in children:
+        if child.name.startswith("."):
+            continue
+        if child.is_dir():
+            if plaud.from_directory(child, AUDIO_EXT) is not None:
+                found.append(child)
+            else:
+                found.extend(_candidates(child))
+        else:
+            found.append(child)
+    return found
+
+
 def sweep(config, events, *, now: float | None = None) -> list[Path]:
     """Copy unseen recordings from every watched folder into the inbox.
 
@@ -156,13 +183,7 @@ def sweep(config, events, *, now: float | None = None) -> list[Path]:
     now = time.time() if now is None else now
     copied = []
     for folder, source in folders(config):
-        try:
-            entries = sorted(folder.iterdir())
-        except OSError:
-            continue                      # folder gone or unreadable — try next tick
-        for entry in entries:
-            if entry.name.startswith("."):
-                continue
+        for entry in _candidates(folder):
             bundle = _bundle_for(entry)
             if bundle is None:
                 continue

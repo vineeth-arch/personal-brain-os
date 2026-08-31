@@ -369,21 +369,24 @@ threshold, ntfy url/topic); everything else stays documentation.
 ### `GET /api/config`
 
 ```json
-{ "engine": "whispercpp", "confidence_threshold": 0.7,
+{ "engine": "whispercpp", "language": "hi", "confidence_threshold": 0.7,
   "ntfy_url": "https://ntfy.sh", "ntfy_topic": "brain-cockpit",
   "providers": ["gemini-flash", "groq-llama-3.3-70b", "openrouter-free", "claude-haiku"],
-  "keys": { "anthropic": true, "openai": false } }
+  "keys": { "anthropic": true, "openai": false },
+  "transliteration": {
+    "engine": "ollama", "ollama_url": "http://localhost:11434",
+    "ollama_model": "qwen2.5", "openrouter_model": "", "openrouter_key_present": false
+  } }
 ```
 
 `keys` are presence booleans. `providers` is the classification fallback chain
 in order (read-only here — reordering lives in config.json).
-`api.auth_token` is never included.
+`language` is the whisper language hint (`""` = auto-detect).
+`api.auth_token` is never included, and `transliteration.*_model`/`*_url` are
+the model/URL strings themselves (not secrets — `OPENROUTER_API_KEY` is a
+presence boolean, same as `keys`).
 
-### Capture-pipeline config keys (Pass P)
-
-`config.json` gained three keys the pipeline reads directly (they are not
-settable through `PUT /api/config` yet — the Settings surface for them lands
-with the People pass):
+### Capture-pipeline config keys (Pass P, Settings surface added in Pass H)
 
 ```json
 "transcription": { "engine": "openai", "language": "hi" },
@@ -395,20 +398,24 @@ with the People pass):
 "watch_folders": [ { "path": "~/…/Plaud", "source": "plaud" } ]
 ```
 
-`transcription.language` is the whisper language hint (`""` = auto-detect).
 `transliteration` rewrites Devanagari transcripts in Roman Hindi; unset or
 unreachable is a normal state — the note is written in Devanagari instead, and
 `GET /api/integrations` carries a `transliteration` health card saying so.
 `watch_folders` are app-owned folders the watcher copies new recordings *out
-of* (never modifying them); `source: plaud` lands them in `inbox/plaud/`.
+of* (never modifying them); `source: plaud` lands them in `inbox/plaud/` —
+this list is still config.json-hand-edit only (no Settings UI for it).
 
 ### `PUT /api/config`
 
-Body may set any of `engine`, `confidence_threshold` (0..1), `ntfy_topic`,
-`ntfy_url` (omitted fields unchanged). Writes `config.json` atomically,
-preserving unknown keys (`links`, paths, `api`). Rejects `engine: "openai"`
-when `OPENAI_API_KEY` is missing (400 + envelope). Returns the same shape as
-`GET`. `POST /api/integrations/engine` shares this validated writer.
+Body may set any of `engine`, `language`, `confidence_threshold` (0..1),
+`ntfy_topic`, `ntfy_url`, `transliteration_engine` (`""` | `"ollama"` |
+`"openrouter"`), `transliteration_ollama_url`, `transliteration_ollama_model`,
+`transliteration_openrouter_model` (omitted fields unchanged). Writes
+`config.json` atomically, preserving unknown keys (`links`, paths, `api`,
+`watch_folders`). Rejects `engine: "openai"` when `OPENAI_API_KEY` is missing,
+and `transliteration_engine: "openrouter"` when `OPENROUTER_API_KEY` is missing
+(both 400 + envelope, same shape). Returns the same shape as `GET`.
+`POST /api/integrations/engine` shares this validated writer.
 
 ## People — Relationship OS (Pass MW)
 
@@ -770,3 +777,71 @@ way to deliver a message and none may be added (CLAUDE.md §4, pinned by
 Non-2xx responses keep their `{what,cause,todo}` envelope, re-rendered as the
 tool's error text ("What happened: … / Likely cause: … / What to do: …"), so a
 model holding these tools tells the owner the same thing the cockpit would.
+
+## Resource OS (Pass 6, documented in Pass H)
+
+The Resources screen's full surface — six routes that existed since Pass 6 but
+were missing from this contract (and from web/mock-api.py) until now. Every
+mutation git-commits the vault; every read walks `04-Resources` live (no
+server-side cache, no note content in SQLite — CLAUDE.md §1).
+
+### `GET /api/resources?category=&status=&q=&has_insight=&sort=`
+
+```json
+{ "items": [ {
+  "id": "20260703140000", "title": "Weeknight dal", "category": "recipe",
+  "status": "to-consume", "cover": "https://picsum.photos/seed/dal/400/560",
+  "url": "https://example.com/dal", "created": "2026-07-03",
+  "sample": false, "file": "04-Resources/2026-07-03-weeknight-dal.md",
+  "has_insight": true, "insight": "Halve the chili next time."
+} ] }
+```
+
+All filters are optional and combine with AND. `q` matches the **title only**,
+case-insensitive substring (not description/insight/body — that's whole-vault
+search, Pass Q). `sort` is one of `created` (default, newest first), `oldest`,
+`title`; anything else → 400 envelope. `cover`/`url`/`insight` are `null` when
+absent, never an empty string.
+
+### `GET /api/resources/{id}`
+
+The same object plus `description`, `rating`, the nine type-extra fields
+(`author, where_to_watch, runtime, ingredients, steps, tools_mentioned,
+transcript, map_url, best_time` — `null` when not applicable to that
+`resource_type`), and `sections`: `[{heading, text}]` for every body `## `
+section in order (heading `""` holds any text before the first H2). 404
+envelope for an unknown id.
+
+### `POST /api/resources/{id}/status`
+
+Body `{"status": "to-consume"}` — one of the SCHEMA §6 lifecycle values
+(`inbox → to-consume → consumed → referenced → archived`); anything else → 400
+envelope. Reaching `consumed` stamps a `consumed: <today>` frontmatter date.
+Returns the refreshed summary object (the same shape as one `GET
+/api/resources` item). 404 for an unknown id.
+
+### `POST /api/resources/{id}/insight`
+
+Body `{"text": "…"}`. Writes (or replaces, or — for empty text — removes) the
+`## Insight` body section, always with `origin: human` (an insight is never AI
+prose, even when the rest of the note is `origin: ai`). Returns the refreshed
+summary object. 404 for an unknown id.
+
+### `GET /api/resources/sample/count?older_than=1d|1w|1m|all`
+
+`200 {"count": 4, "scope": "1w"}` — how many `sample: true` notes match the
+age scope; `count` never includes a real (non-sample) note. Unknown scope →
+400 envelope.
+
+### `DELETE /api/resources/sample?older_than=1d|1w|1m|all`
+
+Removes only `sample: true` notes matching the scope — real notes are never a
+candidate, regardless of scope. Git-commits the vault **before** deleting
+(`pre-purge: N sample notes, scope=…`) so the whole purge is one `git revert`
+away, then commits again after if anything was removed.
+
+```json
+{ "removed": 4, "titles": ["Weeknight dal", "…"], "scope": "1w",
+  "message": "Removed 4 sample notes older than a week. Your real notes were "
+             "never touched, and the vault was git-committed first." }
+```

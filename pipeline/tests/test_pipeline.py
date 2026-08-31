@@ -236,3 +236,34 @@ def test_a_dead_transliteration_engine_still_writes_the_note(tmp_path, monkeypat
     rows = sqlite3.connect(tmp_path / "events.db").execute(
         "SELECT status, message FROM events WHERE stage = 'transliterate'").fetchall()
     assert rows and rows[0][0] == "failed" and "Devanagari" in rows[0][1]
+
+
+def test_run_once_drains_watched_folders_too(tmp_path, monkeypatch):
+    """D1: watch_folders used to only sweep inside --loop. Every entry point
+    (one-shot run, --backlog, POST /api/run which shells out to `python -m
+    pipeline`) must pick up recordings sitting in an app-owned folder."""
+    from pipeline.events import EventLog
+
+    vault, inbox, archive, failed = (tmp_path / d for d in ("vault", "inbox", "archive", "failed"))
+    watched = tmp_path / "PlaudDesktop"
+    for d in (vault, inbox, archive, failed, watched):
+        d.mkdir()
+    old = (watched / "meeting.m4a")
+    old.write_bytes(b"fake audio")
+    import os
+    import time
+    stale = time.time() - 300
+    os.utime(old, (stale, stale))
+
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed,
+                    raw={"watch_folders": [{"path": str(watched), "source": "plaud"}]})
+    events = EventLog(tmp_path / "events.db", vault)
+    deps = watcher.Deps(transcriber=FakeTranscriber(), classifier_fn=stub_classifier)
+
+    results = watcher.run_once(config, events, deps)
+
+    assert old.exists(), "the watched folder's own copy is never touched"
+    assert len(results) == 1 and results[0].status != "failed"
+    assert not any((inbox / "plaud").glob("*")), "the copy was processed and archived, not left behind"

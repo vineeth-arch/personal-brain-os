@@ -239,6 +239,7 @@ NTFY_TESTED = None      # None -> "ok" after a test push succeeds, "failed" afte
 # from Settings is observable on the next GET, like the real API.
 CONFIG = {
     "engine": ENGINE,
+    "language": "",
     "confidence_threshold": 0.7,
     "ntfy_url": "https://ntfy.sh",
     "ntfy_topic": "brain-cockpit",
@@ -253,6 +254,10 @@ CONFIG = {
     # Dex on, contacts off — so the working push AND the honest "reconnect
     # Google" pill are both visible without any real key.
     "push": {"dex": True, "contacts_scope": False},
+    "transliteration": {
+        "engine": "", "ollama_url": "", "ollama_model": "",
+        "openrouter_model": "", "openrouter_key_present": False,
+    },
 }
 
 PROVIDERS = [] if MODE_EMPTY else [
@@ -274,6 +279,32 @@ TODO_ITEMS = [] if MODE_EMPTY else [
     {"id": "20260703140000-1", "task": "call the dentist", "due": date.today().isoformat(),
      "time": "14:00", "done": False, "overdue": False,
      "file": f"06-Todos/{date.today().isoformat()}.md"},
+]
+
+# Resource OS fixtures (Pass 6, mocked in Pass H) — the six /api/resources*
+# routes existed since Pass 6 but had no mock coverage, so the Resources
+# screen couldn't be driven against `mock-api.py` at all until now.
+RESOURCE_ITEMS = [] if MODE_EMPTY else [
+    {"id": "20260703140000", "title": "Weeknight dal", "category": "recipe",
+     "status": "to-consume", "cover": "https://picsum.photos/seed/dal/400/560",
+     "url": "https://example.com/dal", "created": "2026-07-03", "sample": False,
+     "file": f"{TYPE_FOLDER['resource']}/2026-07-03-weeknight-dal.md",
+     "has_insight": True, "insight": "Halve the chili next time.",
+     "description": "A quick weeknight lentil curry.", "rating": None,
+     "author": None, "where_to_watch": None, "runtime": None,
+     "ingredients": "1 cup red lentils, 1 onion, 2 tsp chili powder",
+     "steps": "Simmer lentils; fry onion + spices; combine.",
+     "tools_mentioned": None, "transcript": None, "map_url": None, "best_time": None,
+     "sections": [{"heading": "Insight", "text": "Halve the chili next time."}]},
+    {"id": "20260701090000", "title": "Kepano's PKM talk", "category": "tutorial",
+     "status": "inbox", "cover": None,
+     "url": "https://www.youtube.com/watch?v=abc123def45", "created": "2026-07-01",
+     "sample": True, "file": f"{TYPE_FOLDER['resource']}/2026-07-01-kepanos-pkm-talk.md",
+     "has_insight": False, "insight": None,
+     "description": "How Kepano structures his Obsidian vault.", "rating": None,
+     "author": None, "where_to_watch": None, "runtime": None, "ingredients": None,
+     "steps": None, "tools_mentioned": "Obsidian, Bases", "transcript": None,
+     "map_url": None, "best_time": None, "sections": []},
 ]
 
 # Google fixture data (Pass 12) — served to the live Gmail/Calendar cards.
@@ -590,6 +621,49 @@ class Handler(BaseHTTPRequestHandler):
                 })
             if path == "/api/todos":
                 return self._send(200, {"items": TODO_ITEMS})
+            if path == "/api/resources":
+                q = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=", 1) for p in q.split("&") if "=" in p)
+                if params.get("sort") not in (None, "created", "oldest", "title"):
+                    return self._send(400, {"error": {
+                        "what": "That's not a sort the resource list knows.",
+                        "cause": f"'{params.get('sort')}' isn't one of created, oldest, title.",
+                        "todo": "Use one of the three sort values, or omit it for newest-first."}})
+                items = RESOURCE_ITEMS
+                if params.get("category"):
+                    items = [r for r in items if r["category"] == params["category"]]
+                if params.get("status"):
+                    items = [r for r in items if r["status"] == params["status"]]
+                if params.get("q"):
+                    needle = params["q"].lower()
+                    items = [r for r in items if needle in r["title"].lower()]
+                if params.get("has_insight") is not None:
+                    want = params["has_insight"] in ("1", "true", "True")
+                    items = [r for r in items if r["has_insight"] == want]
+                summaries = [{k: r[k] for k in
+                             ("id", "title", "category", "status", "cover", "url", "created",
+                              "sample", "file", "has_insight", "insight")} for r in items]
+                return self._send(200, {"items": summaries})
+            if path == "/api/resources/sample/count":
+                q = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=", 1) for p in q.split("&") if "=" in p)
+                scope = params.get("older_than", "all")
+                if scope not in ("1d", "1w", "1m", "all"):
+                    return self._send(400, {"error": {
+                        "what": "That's not a cleanup scope the server knows.",
+                        "cause": f"'{scope}' isn't one of 1d, 1w, 1m, all.",
+                        "todo": "Pick one of the four scopes."}})
+                count = len([r for r in RESOURCE_ITEMS if r["sample"]])
+                return self._send(200, {"count": count, "scope": scope})
+            if path.startswith("/api/resources/"):
+                rid = path.split("/")[3]
+                found = next((r for r in RESOURCE_ITEMS if r["id"] == rid), None)
+                if not found:
+                    return self._send(404, {"error": {
+                        "what": "That resource isn't in the vault.",
+                        "cause": "No resource note in 04-Resources has that id.",
+                        "todo": "Refresh the resource list."}})
+                return self._send(200, found)
             if path == "/api/selfcheck":
                 return self._send(200, {
                     "ok": not MODE_INT_DEGRADED,
@@ -647,13 +721,87 @@ class Handler(BaseHTTPRequestHandler):
                             "cause": "OPENAI_API_KEY is not set on the server, so the OpenAI engine can't run.",
                             "todo": "export OPENAI_API_KEY=... in the server's shell, or stay on whispercpp."}})
                     ENGINE = engine
-                for field in ("confidence_threshold", "ntfy_url", "ntfy_topic"):
+                for field in ("confidence_threshold", "ntfy_url", "ntfy_topic", "language"):
                     if changes.get(field) is not None:
                         CONFIG[field] = changes[field]
+                tl_engine = changes.get("transliteration_engine")
+                if tl_engine is not None:
+                    if tl_engine not in ("", "ollama", "openrouter"):
+                        return self._send(400, {"error": {
+                            "what": "Couldn't change the Hindi → Hinglish engine.",
+                            "cause": "The request didn't name a known engine (off, ollama, or openrouter).",
+                            "todo": "Pick one of the three options and try again."}})
+                    if tl_engine == "openrouter" and not CONFIG["transliteration"]["openrouter_key_present"]:
+                        return self._send(400, {"error": {
+                            "what": "Can't switch transliteration to OpenRouter.",
+                            "cause": "OPENROUTER_API_KEY is not set on the server, so OpenRouter can't run.",
+                            "todo": "export OPENROUTER_API_KEY=... in the server's shell, or use Ollama instead."}})
+                    CONFIG["transliteration"]["engine"] = tl_engine
+                for field, key in (("transliteration_ollama_url", "ollama_url"),
+                                   ("transliteration_ollama_model", "ollama_model"),
+                                   ("transliteration_openrouter_model", "openrouter_model")):
+                    if changes.get(field) is not None:
+                        CONFIG["transliteration"][key] = changes[field]
                 print("PUT CONFIG", changes)
                 return self._send(200, {**CONFIG, "engine": ENGINE})
 
         if method == "POST":
+            if path.startswith("/api/resources/") and path.endswith("/enrich"):
+                rid = path.split("/")[3]
+                found = next((r for r in RESOURCE_ITEMS if r["id"] == rid), None)
+                if not found:
+                    return self._send(404, {"error": {
+                        "what": "That resource isn't in the vault.",
+                        "cause": "No resource note in 04-Resources has that id.",
+                        "todo": "Refresh the resource list."}})
+                return self._send(200, {"ok": True, "enriched": True})
+            if path.startswith("/api/resources/") and path.endswith("/status"):
+                rid = path.split("/")[3]
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                new_status = json.loads(raw or b"{}").get("status", "")
+                if new_status not in ("inbox", "to-consume", "consumed", "referenced", "archived"):
+                    return self._send(400, {"error": {
+                        "what": "That's not a resource status the vault knows.",
+                        "cause": f"'{new_status}' isn't one of inbox, to-consume, consumed, "
+                                 "referenced, archived (SCHEMA-REFERENCE.md §6).",
+                        "todo": "Advance to one of the lifecycle statuses."}})
+                found = next((r for r in RESOURCE_ITEMS if r["id"] == rid), None)
+                if not found:
+                    return self._send(404, {"error": {
+                        "what": "That resource isn't in the vault.",
+                        "cause": "No resource note in 04-Resources has that id.",
+                        "todo": "Refresh the resource list."}})
+                found["status"] = new_status
+                summary = {k: found[k] for k in
+                          ("id", "title", "category", "status", "cover", "url", "created",
+                           "sample", "file", "has_insight", "insight")}
+                return self._send(200, summary)
+            if path.startswith("/api/resources/") and path.endswith("/insight"):
+                rid = path.split("/")[3]
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                text = json.loads(raw or b"{}").get("text", "").strip()
+                found = next((r for r in RESOURCE_ITEMS if r["id"] == rid), None)
+                if not found:
+                    return self._send(404, {"error": {
+                        "what": "That resource isn't in the vault.",
+                        "cause": "No resource note in 04-Resources has that id.",
+                        "todo": "Refresh the resource list."}})
+                found["insight"] = text or None
+                found["has_insight"] = bool(text)
+                summary = {k: found[k] for k in
+                          ("id", "title", "category", "status", "cover", "url", "created",
+                           "sample", "file", "has_insight", "insight")}
+                return self._send(200, summary)
+            if path.startswith("/api/todos/") and path.endswith("/toggle"):
+                block_id = path.split("/")[3]
+                item = next((t for t in TODO_ITEMS if t["id"] == block_id), None)
+                if not item:
+                    return self._send(404, {"error": {
+                        "what": "That todo isn't in the daily notes anymore.",
+                        "cause": "Its line was edited or removed in Obsidian, or the id is unknown.",
+                        "todo": "Refresh the agenda."}})
+                item["done"] = not item["done"]
+                return self._send(200, {"ok": True, "done": item["done"]})
             if path == "/api/people/voice":
                 raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 samples = [s for s in json.loads(raw or b"{}").get("samples", []) if s.strip()]
@@ -881,6 +1029,31 @@ class Handler(BaseHTTPRequestHandler):
                 print("GOOGLE DISCONNECT")
                 return self._send(200, {"ok": True})
 
+        if method == "DELETE":
+            if path == "/api/resources/sample":
+                q = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=", 1) for p in q.split("&") if "=" in p)
+                scope = params.get("older_than", "all")
+                if scope not in ("1d", "1w", "1m", "all"):
+                    return self._send(400, {"error": {
+                        "what": "That's not a cleanup scope the server knows.",
+                        "cause": f"'{scope}' isn't one of 1d, 1w, 1m, all.",
+                        "todo": "Pick one of the four scopes."}})
+                targets = [r for r in RESOURCE_ITEMS if r["sample"]]
+                titles = [r["title"] for r in targets]
+                n = len(targets)
+                for r in targets:
+                    RESOURCE_ITEMS.remove(r)
+                scope_phrase = {"1d": "older than a day", "1w": "older than a week",
+                                "1m": "older than a month", "all": "of any age"}[scope]
+                message = (
+                    f"Removed {n} sample note{'' if n == 1 else 's'} {scope_phrase}. "
+                    "Your real notes were never touched, and the vault was git-committed first."
+                    if n else
+                    f"No sample notes {scope_phrase} to remove. Nothing was changed.")
+                return self._send(200, {"removed": n, "titles": titles, "scope": scope,
+                                        "message": message})
+
         return self._send(404, {"error": {
             "what": "The server doesn't know that request.",
             "cause": f"No route for {method} {path} — frontend and API contract may be out of sync.",
@@ -895,6 +1068,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_PUT(self):
         self._route("PUT")
+
+    def do_DELETE(self):
+        self._route("DELETE")
 
     def log_message(self, fmt, *args):  # quieter default logging
         sys.stderr.write("mock-api: %s\n" % (fmt % args))

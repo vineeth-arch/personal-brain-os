@@ -286,6 +286,7 @@ function DraftDrawer({
   const [loading, setLoading] = useState(true);
   const [blocked, setBlocked] = useState<{ what: string; cause: string; todo: string } | null>(null);
   const [suggest, setSuggest] = useState<WarmthStage | null>(null);
+  const [emailBusy, setEmailBusy] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -329,6 +330,28 @@ function DraftDrawer({
       toast("✅ Copied");
     } catch {
       toast("Couldn't copy — select the text and copy it by hand.", "error");
+    }
+  };
+
+  // Email prefers a real Gmail draft over a mailto: link when Google is
+  // connected (D3) — same "saved, never sent" contract as Integrations'
+  // draft composer. Any failure (not connected, not configured, network)
+  // falls straight back to mailto:, which stays visible as the plain option
+  // either way.
+  const saveGmailDraft = async () => {
+    const email = channels.email;
+    if (!email) return;
+    setEmailBusy(true);
+    try {
+      await api.googleDraft({ to: email, subject: "", text });
+      toast("✅ Draft saved — open it in Gmail.");
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string } }).envelope;
+      toast(envelope?.what ?? "Couldn't save a Gmail draft — opening your mail app instead.", "error");
+      const fallback = channelLink("email", email, text);
+      if (fallback) window.location.href = fallback;
+    } finally {
+      setEmailBusy(false);
     }
   };
 
@@ -444,12 +467,26 @@ function DraftDrawer({
               >
                 Copy
               </button>
+              {channel === "email" && (
+                <button
+                  type="button"
+                  onClick={() => void saveGmailDraft()}
+                  disabled={emailBusy}
+                  className="bg-inverted text-inverted min-h-11 rounded-xl px-5 text-sm font-bold disabled:opacity-60"
+                >
+                  {emailBusy ? "Saving…" : "Save Gmail draft"}
+                </button>
+              )}
               {link && (
                 <a
                   href={link}
                   target="_blank"
                   rel="noreferrer"
-                  className="bg-inverted text-inverted min-h-11 rounded-xl px-5 text-sm font-bold leading-[2.75rem]"
+                  className={
+                    channel === "email"
+                      ? "border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold leading-[2.75rem]"
+                      : "bg-inverted text-inverted min-h-11 rounded-xl px-5 text-sm font-bold leading-[2.75rem]"
+                  }
                 >
                   {channelLabel(channel)}
                 </a>

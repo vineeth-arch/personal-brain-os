@@ -155,20 +155,30 @@ LONG_DURATION_SECONDS = 15 * 60           # chunk past 15 minutes...
 LONG_SIZE_BYTES = 20 * 1024 * 1024        # ...or past 20 MB (25 MB cap, with margin)
 
 
+def _ffprobe_field(audio_path: Path, entries: str) -> float | None:
+    try:
+        proc = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", entries,
+             "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
+            check=True, capture_output=True, text=True, timeout=60)
+        # ffprobe prints "N/A" for containers with no duration in that field
+        # (a streamed .webm from MediaRecorder has none at format level)
+        first_line = proc.stdout.strip().splitlines()[0] if proc.stdout.strip() else ""
+        return float(first_line)
+    except (FileNotFoundError, subprocess.SubprocessError, ValueError, IndexError):
+        return None
+
+
 def probe_duration_seconds(audio_path: Path) -> float | None:
     """Recording length via ffprobe, or None if it can't be determined.
 
     Never raises: an unreadable duration must not stop a capture — the size
     threshold still decides, and a normal recording just takes the short path.
+    Falls back from the container-level `format=duration` (absent on a
+    streamed MediaRecorder .webm) to the first audio stream's own duration.
     """
-    try:
-        proc = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "default=noprint_wrappers=1:nokey=1", str(audio_path)],
-            check=True, capture_output=True, text=True, timeout=60)
-        return float(proc.stdout.strip())
-    except (FileNotFoundError, subprocess.SubprocessError, ValueError):
-        return None
+    return (_ffprobe_field(audio_path, "format=duration")
+            or _ffprobe_field(audio_path, "stream=duration"))
 
 
 def is_long(audio_path: Path, duration: float | None) -> bool:
@@ -222,6 +232,7 @@ def transcribe_long(audio_path: Path, transcriber: Transcriber, *, sleep=time.sl
                              "ffmpeg produced no segments from the file.",
                              "Check the recording plays, then drop it back in the inbox.")
         pieces = []
+        failed = 0
         for i, chunk in enumerate(chunks):
             text = None
             for attempt in range(1, attempts + 1):
@@ -236,10 +247,25 @@ def transcribe_long(audio_path: Path, transcriber: Transcriber, *, sleep=time.sl
                     sleep(backoff_base * 2 ** (attempt - 1))
             marker = _marker(i, chunk_seconds)
             if text is None:
+                failed += 1
                 minutes = max(1, round(chunk_seconds / 60))
                 pieces.append(f"{marker} [{minutes} minutes unintelligible — audio archived]")
             else:
                 pieces.append(f"{marker} {text.strip()}".strip())
+
+        if failed == len(chunks):
+            # nothing at all came through — a note that's pure placeholders
+            # would be silent data loss (it reads as a normal, if odd, memo).
+            # Quarantine like any other permanent failure instead.
+            raise StageError(
+                "Could not transcribe any part of the long recording.",
+                f"All {len(chunks)} segments failed to transcribe.",
+                "Check the recording plays and the transcription engine is reachable, "
+                "then drop the file back in the inbox.")
+
         if on_event:
-            on_event(f"stitched {len(chunks)} chunk(s)", True)
+            summary = f"stitched {len(chunks)} chunk(s)"
+            if failed:
+                summary += f", {failed} failed"
+            on_event(summary, failed == 0)
         return "\n\n".join(pieces).strip()

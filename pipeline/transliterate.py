@@ -56,6 +56,25 @@ def has_devanagari(text: str) -> bool:
     return bool(_DEVANAGARI.search(text))
 
 
+def _devanagari_ratio(text: str) -> float:
+    letters = [c for c in text if c.strip()]
+    if not letters:
+        return 0.0
+    return len(_DEVANAGARI.findall(text)) / len(letters)
+
+
+# An engine that mishears the instruction and echoes Devanagari straight back
+# (or a broken proxy that just reflects the request) must not be trusted as
+# "transliterated" — that would duplicate the same text under both headings.
+ECHO_DEVANAGARI_RATIO = 0.30
+
+
+def _looks_transliterated(original: str, converted: str) -> bool:
+    if converted.strip() == original.strip():
+        return False   # a verbatim echo is not a transliteration
+    return _devanagari_ratio(converted) < ECHO_DEVANAGARI_RATIO
+
+
 def configured_engine(config) -> str:
     """The engine that can actually run right now, or "" if none can."""
     block = (getattr(config, "raw", {}) or {}).get("transliteration") or {}
@@ -134,7 +153,9 @@ def to_hinglish(text: str, config, *, caller=None) -> str:
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError,
                 KeyError, ValueError, json.JSONDecodeError):
             return ""      # a partly-converted transcript would be worse than none
-        if not converted:
+        if not converted or not _looks_transliterated(piece, converted):
+            # an echo or a still-mostly-Devanagari reply is not a real
+            # transliteration — treat it exactly like an engine failure
             return ""
         out.append(converted)
     return "\n\n".join(out).strip()

@@ -19,6 +19,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from pipeline import classify, relationships, route
+from pipeline.enrich import insight_text as _insight_text
 
 log = logging.getLogger("api")
 
@@ -401,6 +402,28 @@ def audio_capture_path(inbox: Path, ext: str, name: str | None, tag: str | None,
     return path, now.strftime("%Y%m%d%H%M") + "00"
 
 
+# A browser MediaRecorder's .webm/.mp4 is a streamed container with no overall
+# duration in its header — ffprobe's format=duration comes back N/A, which
+# means every mic capture would silently skip duration_min (D7/D4). A quick
+# stream-copy remux (no re-encode, no quality loss) writes that header field.
+REMUX_EXT = {".webm", ".mp4"}
+
+
+def remux_for_duration(path: Path) -> None:
+    """Best-effort in place; any failure (no ffmpeg, odd container) leaves the
+    original untouched — this is a metadata nicety, never load-bearing."""
+    if path.suffix.lower() not in REMUX_EXT:
+        return
+    tmp = path.with_name(f".remux-{path.name}")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(path), "-c", "copy", str(tmp)],
+            check=True, capture_output=True, timeout=60)
+        os.replace(tmp, path)
+    except (OSError, subprocess.SubprocessError):
+        Path(tmp).unlink(missing_ok=True)
+
+
 # ---- resurface ----------------------------------------------------------------
 
 def resurface(vault: Path) -> dict | None:
@@ -469,22 +492,6 @@ def _parse_date(value: str) -> date | None:
 def _note_title(path: Path, fm: dict[str, str]) -> str:
     """Frontmatter title wins; fall back to the human filename sans date prefix."""
     return fm.get("title") or _DATE_PREFIX_RE.sub("", path.stem)
-
-
-def _insight_text(body: str) -> str:
-    """Text under a '## Insight' H2, up to the next H2 or EOF. '' when absent/blank."""
-    out: list[str] = []
-    capturing = False
-    for line in body.splitlines():
-        stripped = line.strip()
-        if stripped.lower() == _INSIGHT_HEADING:
-            capturing = True
-            continue
-        if capturing and stripped.startswith("## "):
-            break
-        if capturing:
-            out.append(line)
-    return "\n".join(out).strip()
 
 
 def _sections(body: str) -> list[dict[str, str]]:

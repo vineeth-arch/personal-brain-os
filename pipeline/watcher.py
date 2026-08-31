@@ -78,13 +78,15 @@ class Result:
     error: str = ""
 
 
-def _transcribe(item, deps: Deps, events: EventLog | None = None) -> str:
+def _transcribe(item, deps: Deps, events: EventLog | None = None,
+                duration: float | None = None) -> str:
     """Text passes through; audio goes to the engine — whole for a normal
     recording, in stitched 10-minute segments once it is long enough that one
-    request would be refused or crawl (Pass P)."""
+    request would be refused or crawl (Pass P). `duration` is probed once by
+    the caller and threaded through (a retry re-enters this function without
+    re-probing)."""
     if item.kind in ("text", "link"):
         return item.path.read_text(encoding="utf-8")
-    duration = transcribe_mod.probe_duration_seconds(item.path)
     if transcribe_mod.is_long(item.path, duration):
         def on_event(message, ok):
             if events:
@@ -95,7 +97,8 @@ def _transcribe(item, deps: Deps, events: EventLog | None = None) -> str:
     return deps.transcriber.transcribe(item.path)
 
 
-def _transcribe_with_retry(item, deps: Deps, events: EventLog | None = None) -> str:
+def _transcribe_with_retry(item, deps: Deps, events: EventLog | None = None,
+                           duration: float | None = None) -> str:
     """Retry policy: transient failures (network, 5xx, rate limits) get
     RETRY_ATTEMPTS tries with exponential backoff BEFORE quarantine; permanent
     ones (bad audio, missing binary, bad key) escape on the first try.
@@ -104,7 +107,7 @@ def _transcribe_with_retry(item, deps: Deps, events: EventLog | None = None) -> 
     file."""
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
-            return _transcribe(item, deps, events)
+            return _transcribe(item, deps, events, duration)
         except errors.StageError as e:
             e.attempts = attempt
             if not e.transient or attempt == RETRY_ATTEMPTS:
@@ -117,6 +120,11 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
     fkey = str(item.path)
     res = Result(name=item.path.name)
     try:
+        # Probed once up front (chunk routing AND duration_min both need it —
+        # one ffprobe subprocess per file, not two).
+        duration = (transcribe_mod.probe_duration_seconds(item.path)
+                   if item.kind == "audio" else None)
+
         # Stage 2 — transcribe (text skips inside _transcribe); transient
         # failures are retried with backoff before they can reach quarantine.
         #
@@ -134,18 +142,15 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
             events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000),
                        message="source=plaud speakers=" + ",".join(plaud_transcript.speakers))
         else:
-            transcript = _transcribe_with_retry(item, deps, events)
+            transcript = _transcribe_with_retry(item, deps, events, duration)
             events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000))
 
         # Stage 2b — transliterate. Hindi speech comes back in Devanagari; the
         # note leads with Roman Hindi/Hinglish and keeps the original below it.
         # Everything downstream (classify, todos) reads the Hinglish text.
-        duration_min = None
+        duration_min = max(1, round(duration / 60)) if duration else None
         body = transcript
         if item.kind == "audio":
-            seconds = transcribe_mod.probe_duration_seconds(item.path)
-            if seconds:
-                duration_min = max(1, round(seconds / 60))
             if transliterate.has_devanagari(transcript):
                 t0 = time.monotonic()
                 hinglish = transliterate.to_hinglish(transcript, config,
@@ -312,6 +317,10 @@ def _print_summary(results: list[Result]) -> None:
 
 def run_once(config, events: EventLog, deps: Deps) -> list[Result]:
     events.heartbeat(HEARTBEAT_PATH)
+    # pull anything new out of the app-owned folders (Plaud Desktop, Note Pro
+    # exports, Voice Memos) before polling the inbox — every entry point
+    # (one-shot run, --loop, --backlog, POST /api/run) drains watched folders
+    ingest.sweep(config, events)
     items = intake.poll(config.inbox_path)
     results = [process_file(it, config, events, deps) for it in items]
     events.write_status(pending=len(intake.poll(config.inbox_path)))
@@ -328,9 +337,8 @@ def run_loop(config, events, deps) -> None:
     print(f"Watching {config.inbox_path} — polling every {POLL_SECONDS // 60} min. Ctrl-C to stop.")
     while True:
         try:
-            # pull anything new out of the app-owned folders (Plaud Desktop,
-            # Note Pro exports, Voice Memos) before polling the inbox
-            ingest.sweep(config, events)
+            # ingest.sweep runs inside run_once now (D1) — every entry point
+            # drains watched folders, not just the loop.
             results = run_once(config, events, deps)
             if results:
                 print(f"Processed {len(results)} file(s).")
@@ -362,6 +370,7 @@ def _git_commit_vault(vault_path: Path, n: int) -> None:
 
 def run_backlog(config, events: EventLog, deps: Deps) -> None:
     events.heartbeat(HEARTBEAT_PATH)
+    ingest.sweep(config, events)  # same as run_once — every entry point drains watched folders
     items = intake.poll(config.inbox_path)  # already oldest-first
     if not items:
         print("Inbox empty — nothing to backlog.")

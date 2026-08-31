@@ -186,6 +186,8 @@ def _tick(config, events, now: datetime) -> None:
         lines.append("Today:")
         lines += [f"• {t.task}" + (f" at {t.time}" if t.time else "") for t in due_today]
     lines += people_lines
+    public_url = ((config.raw.get("deploy") or {}).get("public_url") or "").rstrip("/")
+    click = f"{public_url}/#people" if public_url and people_lines else public_url
     errors.ntfy(config.ntfy_url, config.ntfy_topic, "\n".join(lines),
-                title="Brain Cockpit — today")
+                title="Brain Cockpit — today", click=click)
     events.mark_reminder(digest_key)

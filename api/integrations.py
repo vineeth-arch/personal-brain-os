@@ -54,8 +54,10 @@ class ConfigError(Exception):
 def safe_config(config) -> dict:
     """The safe subset only. Presence booleans for keys — never values, never
     the auth token (CLAUDE.md §7)."""
+    tl = (config.raw.get("transliteration") or {})
     return {
         "engine": config.engine,
+        "language": getattr(config, "language", ""),
         "confidence_threshold": config.confidence_threshold,
         "ntfy_url": config.ntfy_url,
         "ntfy_topic": config.ntfy_topic,
@@ -64,6 +66,13 @@ def safe_config(config) -> dict:
         "keys": {
             "anthropic": bool(config.anthropic_key),
             "openai": bool(config.openai_key),
+        },
+        "transliteration": {
+            "engine": (tl.get("engine") or ""),
+            "ollama_url": (tl.get("ollama") or {}).get("url", ""),
+            "ollama_model": (tl.get("ollama") or {}).get("model", ""),
+            "openrouter_model": (tl.get("openrouter") or {}).get("model", ""),
+            "openrouter_key_present": bool(os.environ.get("OPENROUTER_API_KEY")),
         },
     }
 
@@ -91,16 +100,42 @@ def write_config(config_path: Path, config, changes: dict) -> None:
             f"{threshold} is outside the valid range.",
             "Pick a value between 0 and 1 (0.7 is the tested default).",
         )
+    tl_engine = changes.get("transliteration_engine")
+    if tl_engine is not None and tl_engine not in ("", "ollama", "openrouter"):
+        raise ConfigError(
+            "Couldn't change the Hindi → Hinglish engine.",
+            "The request didn't name a known engine (off, ollama, or openrouter).",
+            "Pick one of the three options and try again.",
+        )
+    if tl_engine == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
+        raise ConfigError(
+            "Can't switch transliteration to OpenRouter.",
+            "OPENROUTER_API_KEY is not set on the server, so OpenRouter can't run.",
+            "export OPENROUTER_API_KEY=... in the server's shell, or use Ollama instead.",
+        )
 
     raw = json.loads(config_path.read_text(encoding="utf-8"))
     if engine is not None:
         raw.setdefault("transcription", {})["engine"] = engine
+    if changes.get("language") is not None:
+        raw.setdefault("transcription", {})["language"] = str(changes["language"])
     if threshold is not None:
         raw.setdefault("classification", {})["confidence_threshold"] = float(threshold)
     if changes.get("ntfy_topic") is not None:
         raw.setdefault("ntfy", {})["topic"] = str(changes["ntfy_topic"])
     if changes.get("ntfy_url") is not None:
         raw.setdefault("ntfy", {})["url"] = str(changes["ntfy_url"])
+    if tl_engine is not None:
+        raw.setdefault("transliteration", {})["engine"] = tl_engine
+    if changes.get("transliteration_ollama_url") is not None:
+        raw.setdefault("transliteration", {}).setdefault("ollama", {})["url"] = \
+            str(changes["transliteration_ollama_url"])
+    if changes.get("transliteration_ollama_model") is not None:
+        raw.setdefault("transliteration", {}).setdefault("ollama", {})["model"] = \
+            str(changes["transliteration_ollama_model"])
+    if changes.get("transliteration_openrouter_model") is not None:
+        raw.setdefault("transliteration", {}).setdefault("openrouter", {})["model"] = \
+            str(changes["transliteration_openrouter_model"])
 
     fd, tmp = tempfile.mkstemp(dir=config_path.parent, prefix=".config-", suffix=".tmp")
     try:
