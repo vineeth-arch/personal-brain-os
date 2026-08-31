@@ -178,6 +178,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text, tag }),
     }),
+  // Pass S: the same route, a share shape instead of the quick-capture box —
+  // insight rides alongside the url rather than being mashed into one blob.
+  captureLink: (url: string, insight: string, tag: CaptureTag | null) =>
+    request<{ id: string; status: string }>("/api/capture", {
+      method: "POST",
+      body: JSON.stringify({ url, insight: insight || null, tag }),
+    }),
   // The recording goes up as the raw body (the server takes no multipart —
   // python-multipart isn't a locked dependency), so the blob's own mime type
   // is what tells the server which extension the inbox file gets.

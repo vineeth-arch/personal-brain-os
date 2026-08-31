@@ -91,12 +91,34 @@ the file per `route.TYPE_FOLDER`.
 
 ### `POST /api/capture`
 
-Request `{"text": "call the plumber", "tag": "todo"}` — `tag` optional
-(`null`/omitted), one of the 8 capture tags, no `#`. The API writes a text
-capture into `inbox_path` with the tag baked into the filename so
-`classify` free-routes it.
+Two request shapes on the same route (Pass S) — send one or the other:
+
+- `{"text": "call the plumber", "tag": "todo"}` — the quick-capture box.
+  `tag` optional (`null`/omitted), one of the 8 capture tags, no `#`.
+- `{"url": "https://...", "insight": "the hook part is great", "tag": null}`
+  — a share (the iOS/macOS "→ Brain Cloud" Shortcut, see help.html §S). `url`
+  must start with `http://`/`https://`; `insight` is optional. The server
+  composes the inbox capture as `insight + "\n\n" + url` (or `url` alone) —
+  the pipeline's link detection (Pass L) picks it up unchanged, and the
+  insight lands in the note's `## Insight` with the URL itself stripped out
+  (Pass S2), never duplicated between the two.
+
+Either way the API writes a text capture into `inbox_path` with the tag
+baked into the filename so `classify` free-routes it.
+
+`400` when `url` is present but doesn't start with `http(s)://`, or when
+neither `text` nor `url` yields anything to capture.
 
 `201 {"id": "20260703061500", "status": "captured"}`
+
+**Duplicate shares** (Pass S3): the same link shared twice (each carrying its
+own `?igsh=`/`?si=`/`utm_*` tracking param) does not create a second note —
+the pipeline normalizes the URL (`pipeline/enrich.py::normalize_url`, which
+drops tracking params but keeps resource-identifying ones like YouTube's
+`?v=`) and, on a match against an existing resource's `source_url`, appends
+the new insight to that note's `## Insight` instead. This happens inside the
+pipeline, not the capture endpoint — capture always returns 201 immediately;
+the dedup shows up later in the vault.
 
 ### `POST /api/capture/audio?tag=&name=`
 
@@ -701,10 +723,28 @@ Resource note frontmatter (SCHEMA §7 + Pass-L/6 fields; the Pass 6 gallery
 consumes these unchanged):
 `type: resource, resource_type (tool|tutorial|book|movie|recipe|place|article),
 title, cover, source_url, description, status: inbox, platform (youtube|
-instagram|web), enriched (bool), enrich_attempts, enrich_last` — plus the
+instagram|web|photo), enriched (bool), enrich_attempts, enrich_last` — plus the
 universal block (`id, created, source, origin: human, meta_origin: ai`). Body:
-`## Insight` (the user's own words, verbatim), `## Ingredients`/`## Steps` for
-recipes, `## Transcript` or `## Caption` for enriched media.
+`## Insight` (the user's own words, verbatim, URLs stripped out — Pass S2),
+`## Ingredients`/`## Steps` for recipes, `## Transcript` or `## Caption` for
+enriched media.
+
+`source_url` is stored **normalized** (`pipeline/enrich.py::normalize_url`) —
+lowercased host, no fragment, no trailing slash, tracking params (`igsh`,
+`si`, `feature`, `fbclid`, `gclid`, `utm_*`, …) stripped, resource-identifying
+params (YouTube's `?v=`, etc.) kept. Sharing the same link twice matches on
+this normalized form and appends the new thought to the existing note's
+`## Insight` instead of creating a duplicate (Pass S3) — the pipeline logs
+`stage=enrich message="status=duplicate"` when this happens.
+
+### `GET /api/resources?q=`
+
+`q` matches the title, the `description` frontmatter field, OR the
+`## Insight` body text, case-insensitive (Pass S4 — search finds a saved
+share by the thought you attached to it, not just its title). The client
+(`web/src/screens/Resources.tsx`) applies the identical three-field match
+locally when filtering an already-fetched list. The resource summary object
+now also carries `description` (previously only in the detail response).
 
 ### `POST /api/resources/{id}/enrich`
 

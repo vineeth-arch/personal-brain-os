@@ -154,15 +154,28 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
             # the note (Pass L principle).
             t0 = time.monotonic()
             url = enrich.extract_url(transcript)
-            enr = (enrich.enrich_url(url, config, fetch=deps.enrich_fetch) if url
-                   else enrich.Enrichment("web", False, "", detail="No URL found in the capture."))
-            structured = enrich.structure(transcript, enr, config, router=deps.enrich_router)
-            paths = [enrich.route_link(item, transcript, enr, structured, config.vault_path)]
-            events.log(fkey, "enrich", "ok", int((time.monotonic() - t0) * 1000),
-                       message=f"platform={enr.platform} enriched={str(enr.enriched).lower()}")
-            events.log(fkey, "route", "ok", 0, message=f"wrote {paths[0].name}")
-            cls = classify_mod.Classification(type="resource", title=structured.get("title", item.name),
-                                              confidence=1.0, needs_review=False, routed_by="link")
+            existing = enrich.find_by_source_url(config.vault_path, url) if url else None
+            if existing is not None:
+                # Same link shared again (Pass S3) — the new thought is
+                # appended to the note that's already there; no second note,
+                # no re-enrichment (nothing about the LINK changed).
+                enrich.append_insight(existing, transcript)
+                events.log(fkey, "enrich", "ok", 0, message="status=duplicate")
+                events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
+                           message=f"duplicate — appended insight to {existing.name}")
+                paths = [existing]
+                cls = classify_mod.Classification(type="resource", title=existing.stem,
+                                                  confidence=1.0, needs_review=False, routed_by="link")
+            else:
+                enr = (enrich.enrich_url(url, config, fetch=deps.enrich_fetch) if url
+                       else enrich.Enrichment("web", False, "", detail="No URL found in the capture."))
+                structured = enrich.structure(transcript, enr, config, router=deps.enrich_router)
+                paths = [enrich.route_link(item, transcript, enr, structured, config.vault_path)]
+                events.log(fkey, "enrich", "ok", int((time.monotonic() - t0) * 1000),
+                           message=f"platform={enr.platform} enriched={str(enr.enriched).lower()}")
+                events.log(fkey, "route", "ok", 0, message=f"wrote {paths[0].name}")
+                cls = classify_mod.Classification(type="resource", title=structured.get("title", item.name),
+                                                  confidence=1.0, needs_review=False, routed_by="link")
             status = "ok"
         else:
             # Stage 3 — classify

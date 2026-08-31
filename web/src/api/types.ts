@@ -285,6 +285,8 @@ export interface Resource {
   file: string; // vault-relative, for the obsidian:// deep link
   has_insight: boolean;
   insight: string | null;
+  // exposed so the search box can match it too (Pass S4), not just the title
+  description: string | null;
 }
 
 export interface ResourceSection {

@@ -120,6 +120,58 @@ def test_end_to_end(vault_env):
     events.close()
 
 
+def test_the_same_link_shared_twice_is_one_note_pass_s3(tmp_path, monkeypatch):
+    """Sharing the same reel twice (each share carrying its own tracking
+    param) must not create a second resource note — the second share's
+    thought is appended to the first note instead."""
+    vault = tmp_path / "vault"
+    inbox = tmp_path / "inbox"
+    archive = tmp_path / "archive"
+    failed = tmp_path / "failed"
+    for d in (vault, inbox, archive, failed):
+        d.mkdir()
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed)
+
+    def fetch(url, data=None, timeout=10, headers=None):
+        return b'{"title": "A great reel"}' if "oembed" not in url else b'{"title": "A great reel"}'
+
+    def no_router(prompt, cfg, validate):
+        return None, None, []
+
+    from pipeline.events import EventLog
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    deps = watcher.Deps(transcriber=None, enrich_fetch=fetch, enrich_router=no_router)
+
+    (inbox / "share1.txt").write_text(
+        "check the hook part\n\nhttps://instagram.com/reel/abc123?igsh=first", encoding="utf-8")
+    watcher.run_once(config, events, deps)
+
+    resources = list((vault / "04-Resources").glob("*.md"))
+    assert len(resources) == 1
+    first_text = resources[0].read_text(encoding="utf-8")
+    assert "check the hook part" in first_text
+
+    (inbox / "share2.txt").write_text(
+        "the transition at 0:08 is so clean\n\nhttps://instagram.com/reel/abc123?igsh=second",
+        encoding="utf-8")
+    watcher.run_once(config, events, deps)
+
+    resources = list((vault / "04-Resources").glob("*.md"))
+    assert len(resources) == 1, "the second share duplicated the note instead of merging"
+    merged_text = resources[0].read_text(encoding="utf-8")
+    assert "check the hook part" in merged_text            # first thought survives
+    assert "the transition at 0:08 is so clean" in merged_text  # second thought added
+    assert merged_text.count("## Insight") == 1
+
+    # a DIFFERENT link must still get its own note
+    (inbox / "different.txt").write_text("https://instagram.com/reel/zzz999", encoding="utf-8")
+    watcher.run_once(config, events, deps)
+    assert len(list((vault / "04-Resources").glob("*.md"))) == 2
+    events.close()
+
+
 def test_mic_recording_runs_end_to_end(tmp_path, monkeypatch):
     """Pass V: a .webm from the cockpit's mic button is a first-class capture —
     the browser's format must reach a routed note like any phone recording."""

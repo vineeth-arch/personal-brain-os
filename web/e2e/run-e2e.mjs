@@ -440,6 +440,58 @@ try {
   assert.match(addLog, /added target Sara Khalid/);
   console.log("✓ Quick-add writes a schema-correct person note and commits the vault");
 
+  // ---- 10. Share-to-save: a {url, insight} capture becomes a resource note ----
+  // (Pass S). No UI trigger yet — this is exactly what the "→ Brain Cloud"
+  // Shortcut sends. Drives the REAL pipeline via POST /api/run (no stubbed
+  // enrichment — a genuinely unreachable URL is fine, the note is written
+  // unconditionally either way, per the Pass L principle).
+  const shareRes = await fetch(`${BASE}/api/capture`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      url: "https://example.com/e2e-share-test",
+      insight: "the branding hook at the start is the whole idea",
+    }),
+  });
+  assert.equal(shareRes.status, 201, "share capture was not accepted");
+
+  const runRes = await fetch(`${BASE}/api/run`, {
+    method: "POST", headers: { Authorization: `Bearer ${TOKEN}` },
+  });
+  assert.equal(runRes.status, 202, "pipeline run did not start");
+
+  const resourcesDir = path.join(root, "vault", "04-Resources");
+  let sharedNote = null;
+  for (let i = 0; i < 100; i++) {
+    if (fs.existsSync(resourcesDir)) {
+      const found = fs.readdirSync(resourcesDir)
+        .map((f) => path.join(resourcesDir, f))
+        .find((p) => fs.readFileSync(p, "utf8").includes("e2e-share-test"));
+      if (found) { sharedNote = found; break; }
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(sharedNote, "the shared link never became a resource note");
+  const sharedText = fs.readFileSync(sharedNote, "utf8");
+  assert.match(sharedText, /type: resource/);
+  assert.match(sharedText, /source_url: https:\/\/example\.com\/e2e-share-test/);
+  assert.match(sharedText, /## Insight/);
+  assert.match(sharedText, /branding hook at the start/);
+  // the URL itself must NOT be duplicated inside ## Insight (Pass S2)
+  const insightBlock = sharedText.split("## Insight")[1] || "";
+  assert.ok(!insightBlock.includes("https://example.com/e2e-share-test"),
+    "the raw URL leaked into ## Insight instead of staying only in source_url");
+  console.log("✓ Share capture ({url, insight}) becomes a resource note, URL kept out of ## Insight");
+
+  // search finds it by the insight text alone, not just the title (Pass S4)
+  const searchRes = await fetch(
+    `${BASE}/api/resources?q=${encodeURIComponent("branding hook")}`,
+    { headers: { Authorization: `Bearer ${TOKEN}` } });
+  const searchBody = await searchRes.json();
+  assert.ok(searchBody.items.some((i) => i.url === "https://example.com/e2e-share-test"),
+    "search by insight text did not find the shared note");
+  console.log("✓ Resource search matches on the saved insight, not just the title");
+
   console.log("\nE2E: all checks passed.");
 } catch (err) {
   failed = true;

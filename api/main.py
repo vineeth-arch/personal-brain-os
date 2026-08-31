@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -111,7 +112,9 @@ class ApproveBody(BaseModel):
 
 
 class CaptureBody(BaseModel):
-    text: str
+    text: str | None = None
+    url: str | None = None
+    insight: str | None = None
     tag: str | None = None
 
 
@@ -433,12 +436,26 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
 
     @app.post("/api/capture", status_code=201)
     def capture(body: CaptureBody, config=Depends(require_token)):
-        text = body.text.strip()
-        if not text:
-            raise Envelope(
-                400, "There was nothing to capture.",
-                "The capture text was empty.",
-                "Type a thought first, then press Capture.")
+        # Two shapes, same route (Pass S): {text} is the quick-capture box;
+        # {url, insight?} is a share (the "→ Brain Cloud" Shortcut, or a
+        # future in-app share button) — the insight rides ALONGSIDE the URL
+        # rather than being mashed into one blob the pipeline has to unpick.
+        if body.url is not None:
+            url = body.url.strip()
+            if not re.match(r"^https?://", url, re.IGNORECASE):
+                raise Envelope(
+                    400, "That doesn't look like a link.",
+                    "The url field has to start with http:// or https://.",
+                    "Share the link itself, not just a caption or a search term.")
+            insight = (body.insight or "").strip()
+            text = f"{insight}\n\n{url}" if insight else url
+        else:
+            text = (body.text or "").strip()
+            if not text:
+                raise Envelope(
+                    400, "There was nothing to capture.",
+                    "The capture text was empty.",
+                    "Type a thought first, then press Capture.")
         if not notes.valid_tag(body.tag):
             raise Envelope(
                 400, "That's not a capture tag the pipeline knows.",

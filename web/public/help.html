@@ -270,6 +270,9 @@
       <tr><td>Push to Contacts says to reconnect Google</td><td>The Google link predates the contacts permission</td><td>Integrations → Disconnect → Connect Google. One re-consent, once — Gmail and Calendar keep working meanwhile</td></tr>
       <tr><td>"No matching contact in your Google account"</td><td>Nothing matches their email or phone</td><td>By design — the app never adds to your address book. Add them in Google Contacts once, or fix the channels on their note</td></tr>
       <tr><td>Claude Desktop can't connect to the cockpit</td><td>Wrong <code>COCKPIT_URL</code>/<code>COCKPIT_TOKEN</code>, or the API isn't running</td><td>Check the API is up, then the two env values in the <code>brain-cockpit</code> block (§08c); restart Claude Desktop after editing</td></tr>
+      <tr><td>The "→ Brain Cloud" Shortcut says unauthorized / 401</td><td><code>api.auth_token</code> was rotated since the Shortcut was built</td><td>Open the Shortcut, update the token in both <code>Get Contents of URL</code> steps (§08d)</td></tr>
+      <tr><td>Shared link saved but never got a title or cover</td><td>Enrichment failed (dead link, Instagram scraper down) — by design, not lost</td><td>The note is there with your insight; open it and use <b>Re-enrich</b>, or check Integrations for the reason</td></tr>
+      <tr><td>Sharing the same reel twice made one note, not two</td><td>Working as intended (Pass S3)</td><td>Not a bug — open the note, both thoughts are under <code>## Insight</code></td></tr>
     </table>
   </section>
 
@@ -440,6 +443,43 @@
     <p class="note">The cockpit has to be running for any of this to answer. If Claude says it can't connect, that's the first thing to check — then the URL and token in the config block.</p>
   </section>
 
+  <!-- ============ 08d SHARE + PHOTO CAPTURE ============ -->
+  <section>
+    <div class="eyebrow">08d · Share anything · Pass S / V2</div>
+    <h2>Save from wherever you actually are</h2>
+    <p class="sub">Instagram, YouTube, a web page, or a photo — share it straight from the share sheet, on iPhone or Mac. iOS doesn't let a web app sit in the share sheet, so this is one small Apple Shortcut instead — five minutes, once, and it works everywhere the share icon does.</p>
+    <div class="grid">
+      <div class="card"><div class="tool-eyebrow">Build once</div><h3>The "→ Brain Cloud" Shortcut</h3><ul>
+        <li>Shortcuts app → <b>+</b> → name it <b>→ Brain Cloud</b></li>
+        <li><b>Receive</b> URLs, Text, and Images from the Share Sheet</li>
+        <li><b>If</b> Shortcut Input is an Image:
+          <ul style="margin-top:6px"><li>Resize Image → longest edge 2048px</li><li>Convert Image → JPEG</li></ul>
+        </li>
+        <li><b>Ask for Input</b> "Quick thought?" — text, allow empty</li>
+        <li><b>If</b> input is an Image:
+          <ul style="margin-top:6px"><li>Get Contents of URL → <code>POST {cockpit}/api/capture/image?name=Shortcut&amp;insight=[the thought]</code>, header <code>Authorization: Bearer &lt;token&gt;</code>, header <code>Content-Type: image/jpeg</code>, Request Body = the resized image</li></ul>
+        </li>
+        <li><b>Otherwise</b> (a URL or text):
+          <ul style="margin-top:6px"><li>Get Contents of URL → <code>POST {cockpit}/api/capture</code>, JSON body <code>{"url": [Shortcut Input], "insight": [the thought]}</code>, same Authorization header</li></ul>
+        </li>
+        <li><b>Show Notification</b> "✅ Saved to Brain"</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Where the pieces come from</div><h3>Two values, one place</h3><ul>
+        <li><b>{cockpit}</b> — your Railway URL (or tunnel hostname), e.g. <code>https://app-production-xxxx.up.railway.app</code></li>
+        <li><b>&lt;token&gt;</b> — <code>api.auth_token</code> from <code>config.json</code> on the server's persisted volume; the same token the cockpit's connect screen uses</li>
+        <li>Both are typed once, into the Shortcut's own actions — nothing lives in a config file on your phone</li>
+        <li>The same Shortcut appears on your Mac automatically (Shortcuts syncs over iCloud) — right-click any file or use the share sheet in Safari</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">What happens next</div><h3>Instant save, quiet enrichment</h3><ul>
+        <li>The note is written the moment the Shortcut gets 201 back — enrichment (title, cover, transcript) happens after, best-effort, and never blocks or loses the save</li>
+        <li>Your quick thought becomes the note's <code>## Insight</code>, with the link itself kept out of it (it's already in <code>source_url</code>) — search finds the note by that thought later, not just its title</li>
+        <li>Sharing the <b>same</b> reel or video twice doesn't make two notes — the second thought is added to the first note instead</li>
+        <li>A photo becomes an attachment in the vault plus a one-line AI description of what's in it (and any visible text) — no key set, or the description fails, and the photo is still saved, undescribed, retryable later from the resource's <b>Re-enrich</b> button</li>
+      </ul></div>
+    </div>
+    <p class="note">Nothing here is a send. The Shortcut talks to your own cockpit and nowhere else — same rule as everything on this page (§02).</p>
+  </section>
+
   <!-- ============ 09 THE ROAD AFTER ============ -->
   <section>
     <div class="eyebrow">09 · The Road After</div>
@@ -453,6 +493,7 @@
     <div class="phase"><div class="num">P MW</div><div class="body"><b>Relationship OS surfaces — shipped</b><p>The People screen, the morning People section, one-tap drafts in your voice, warm-up stages.</p></div></div>
     <div class="phase"><div class="num">P D</div><div class="body"><b>Dex + Contacts write-back — shipped</b><p>Profile summaries push out to your own CRM and address book behind a preview-and-confirm gate, replacing only what the app owns. Dex is no longer just a launcher tile.</p></div></div>
     <div class="phase"><div class="num">P X</div><div class="body"><b>MCP + tracker + this manual — shipped</b><p>Claude Desktop can read the cockpit and drop a capture in; the Build screen probes every pass; quick-add feeds the warm-up engine without Obsidian.</p></div></div>
+    <div class="phase"><div class="num">P S · V2 · H</div><div class="body"><b>Share anything + photo capture + vault sync — shipped</b><p>The "→ Brain Cloud" Shortcut saves any link or photo from the share sheet with a quick thought attached; a duplicate share merges instead of duplicating; search finds a note by its saved insight. Photos become described, attached resource notes. The vault now syncs to a private git repo so a cloud-hosted cockpit's captures reach your own Obsidian.</p></div></div>
     <div class="phase"><div class="num">P 8–9</div><div class="body"><b>Decision views + /query</b><p>Calibration charts over the decision journal; ask-your-vault with cited answers. Wants a vault with real decisions in it — which is what the row at the top buys.</p></div></div>
     <div class="phase"><div class="num">P ∞</div><div class="body"><b>The unified graph</b><p>The capstone. Needs a rich, lived-in vault or it's noise. Last, on purpose.</p></div></div>
   </section>

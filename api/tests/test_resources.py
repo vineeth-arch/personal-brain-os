@@ -114,6 +114,45 @@ def test_resources_filters(env):
         assert code == 400 and set(body["error"]) == {"what", "cause", "todo"}
 
 
+def test_search_matches_description_and_insight_not_just_title(env):
+    """Pass S4: a saved share is often remembered by the thought attached to
+    it, or the auto-generated description — not by its title."""
+    tmp, vault, *_ = env
+    res = vault / "04-Resources"
+    _write_resource(res, "20260601120000", rt="tutorial", status="inbox",
+                    title="Untitled reel", sample=False, created="2026-06-01",
+                    description="A branding teardown of three DTC logos.",
+                    insight="check the hook part around 0:12")
+    _write_resource(res, "20260101120000", rt="article", status="inbox",
+                    title="Something else entirely", sample=False, created="2026-01-01",
+                    description="A completely unrelated cooking article.")
+
+    with Server(tmp) as s:
+        # matches via description, title has no "branding" in it
+        _, body = s.req("GET", "/api/resources?q=branding")
+        assert [i["title"] for i in body["items"]] == ["Untitled reel"]
+        # matches via the saved insight text alone
+        _, body = s.req("GET", "/api/resources?q=hook%20part")
+        assert [i["title"] for i in body["items"]] == ["Untitled reel"]
+        # case-insensitive
+        _, body = s.req("GET", "/api/resources?q=HOOK")
+        assert [i["title"] for i in body["items"]] == ["Untitled reel"]
+        # no match anywhere → empty, not an error
+        _, body = s.req("GET", "/api/resources?q=nonexistent-xyz")
+        assert body["items"] == []
+
+
+def test_resource_summary_exposes_description(env):
+    tmp, vault, *_ = env
+    res = vault / "04-Resources"
+    _write_resource(res, "20260601120000", rt="book", status="inbox",
+                    title="Refactoring UI", sample=False, created="2026-06-01",
+                    description="A book about design for developers.")
+    with Server(tmp) as s:
+        _, body = s.req("GET", "/api/resources")
+        assert body["items"][0]["description"] == "A book about design for developers."
+
+
 def test_missing_folder_is_empty_not_error(env):
     tmp, *_ = env  # env does not create 04-Resources
     with Server(tmp) as s:

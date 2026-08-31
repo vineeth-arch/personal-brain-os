@@ -613,7 +613,12 @@ export function Resources() {
       if (filters.category && r.category !== filters.category) return false;
       if (filters.status && r.status !== filters.status) return false;
       if (filters.insight && !r.has_insight) return false;
-      if (q && !r.title.toLowerCase().includes(q)) return false;
+      // matches the title, description, OR the saved insight — mirrors the
+      // server's list_resources filter exactly (Pass S4)
+      if (q) {
+        const haystacks = [r.title, r.description ?? "", r.insight ?? ""];
+        if (!haystacks.some((h) => h.toLowerCase().includes(q))) return false;
+      }
       return true;
     });
   }, [data, filters]);

@@ -14,6 +14,7 @@ import re
 import sqlite3
 import subprocess
 import tempfile
+import urllib.parse
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -240,8 +241,14 @@ def approve(vault: Path, note_id: str, new_type: str) -> str:
 # ---- capture ----------------------------------------------------------------
 
 def _slug(text: str) -> str:
-    words = " ".join(text.split()[:6])
-    slug = re.sub(r"[^\w\s-]", "", words.replace("#", "")).strip()
+    words = text.split()[:6]
+    if len(words) == 1 and re.match(r"^https?://", words[0], re.IGNORECASE):
+        # a bare URL has no word breaks to slug on — use its host instead,
+        # e.g. https://youtube.com/watch?v=abc -> "youtube-com"
+        host = urllib.parse.urlparse(words[0]).netloc.removeprefix("www.")
+        words = [host] if host else words
+    joined = " ".join(words)
+    slug = re.sub(r"[^\w\s-]", "", joined.replace("#", "")).strip()
     slug = re.sub(r"[\s_]+", "-", slug)
     return slug[:60] or "note"
 
@@ -498,7 +505,19 @@ def _resource_summary(vault: Path, path: Path, fm: dict[str, str], body: str) ->
         "file": str(path.relative_to(vault)),
         "has_insight": bool(insight),
         "insight": insight or None,
+        # exposed so `q` can match the description too (Pass S4) — the
+        # gallery already showed this in the detail drawer, just not here
+        "description": fm.get("description") or None,
     }
+
+
+def _matches_query(item: dict, q: str) -> bool:
+    """`q` matches the title, the description, OR the saved insight — a
+    share is often remembered by the thought attached to it, not its title
+    (Pass S4)."""
+    needle = q.lower()
+    haystacks = (item["title"], item.get("description") or "", item.get("insight") or "")
+    return any(needle in h.lower() for h in haystacks)
 
 
 def _resource_notes(vault: Path):
@@ -532,7 +551,7 @@ def list_resources(vault: Path, *, category: str | None = None, status: str | No
             continue
         if status and item["status"] != status:
             continue
-        if q and q.lower() not in item["title"].lower():
+        if q and not _matches_query(item, q):
             continue
         if has_insight is not None and item["has_insight"] != has_insight:
             continue

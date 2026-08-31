@@ -37,6 +37,13 @@ _OG_IMAGE_RE = re.compile(
     re.IGNORECASE)
 _TIMEDTEXT_RE = re.compile(r"<text[^>]*>(.*?)</text>", re.IGNORECASE | re.DOTALL)
 
+# Tracking params a share sheet tacks onto an otherwise-identical URL. Anything
+# NOT in this list survives normalization — a YouTube ?v= or an Amazon /dp/
+# still has to identify the resource, so only params known to carry no
+# resource identity get dropped.
+_TRACKING_PARAMS = {"igsh", "igshid", "si", "feature", "fbclid", "gclid",
+                    "mibextid", "ref", "ref_src", "s"}
+
 
 @dataclass
 class Enrichment:
@@ -58,6 +65,31 @@ def extract_url(text: str) -> str | None:
 
 def is_link_text(text: str) -> bool:
     return extract_url(text) is not None
+
+
+def strip_urls(text: str) -> str:
+    """The user's words, minus any URL — the link already lives in
+    `source_url`, so leaving it in `## Insight` too just crowds out the one
+    line of thought the user actually typed. Collapses the blank space a
+    removed URL leaves behind; whitespace-only input returns ''."""
+    without = _URL_RE.sub("", text or "")
+    lines = [ln.strip() for ln in without.splitlines()]
+    return "\n".join(ln for ln in lines if ln).strip()
+
+
+def normalize_url(url: str) -> str:
+    """A URL stripped of per-share noise, so the SAME reel/video shared twice
+    (each carrying its own `?igsh=` or `?si=` tracking id) is recognized as
+    one link. Lowercase host, no fragment, no trailing slash, no known
+    tracking params — but a resource-identifying param like YouTube's `?v=`
+    or an Amazon `/dp/...` path is never touched."""
+    parsed = urllib.parse.urlsplit(url.strip())
+    query = [(k, v) for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            if k not in _TRACKING_PARAMS and not k.lower().startswith("utm_")]
+    path = parsed.path.rstrip("/") or parsed.path
+    return urllib.parse.urlunsplit((
+        parsed.scheme.lower(), parsed.netloc.lower(), path,
+        urllib.parse.urlencode(query), ""))
 
 
 # ---- HTTP seam --------------------------------------------------------------
@@ -167,6 +199,50 @@ def enrich_url(url: str, config, fetch=None) -> Enrichment:
     return _enrich_web(url, fetch)
 
 
+# ---- dedup: the same link shared twice is one note, not two -----------------
+
+def find_by_source_url(vault_path: Path, url: str) -> Path | None:
+    """An existing resource note whose source_url normalizes to the same
+    place as `url` — checked before writing a new note, so re-sharing a reel
+    (each share carrying its own ?igsh=/?si= tracking id) appends a second
+    thought instead of duplicating the note."""
+    if not url:
+        return None
+    target = normalize_url(url)
+    folder = Path(vault_path) / route.TYPE_FOLDER["resource"]
+    if not folder.is_dir():
+        return None
+    for path in sorted(folder.glob("*.md")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        fm, _ = _parse_note(text)
+        if fm.get("type") == "resource" and fm.get("source_url") == target:
+            return path
+    return None
+
+
+def append_insight(path: Path, new_text: str) -> None:
+    """Add one more thought to an already-saved resource note. NEVER
+    overwrites what's there — SCHEMA §7 marks insight 'never overwritten by
+    AI', and appending a second share's thought is exactly the case that
+    guarantee exists for. A blank/URL-only share adds nothing and is a
+    silent no-op (the duplicate was still recognized; there's just no new
+    thought to record)."""
+    addition = strip_urls(new_text)
+    if not addition:
+        return
+    text = path.read_text(encoding="utf-8")
+    fm, body = _parse_note(text)
+    existing = _insight_from_body(body)
+    combined = f"{existing}\n\n{addition}" if existing else addition
+    body = _replace_section(body, "Insight", combined)
+    fm_block = text.split("---\n", 2)[1]
+    path.write_text("---\n" + fm_block.rstrip("\n") + "\n---\n\n" + body.strip() + "\n",
+                    encoding="utf-8")
+
+
 # ---- structuring via the Pass B router --------------------------------------
 
 def _structure_prompt(user_text: str, enr: Enrichment) -> str:
@@ -234,7 +310,7 @@ def build_resource_note(item, enr: Enrichment, structured: dict, user_text: str,
         "meta_origin: ai",
         f"title: {route._scalar(title)}",
         f"cover: {route._scalar(enr.cover)}",
-        f"source_url: {route._scalar(enr.url)}",
+        f"source_url: {route._scalar(normalize_url(enr.url) if enr.url else enr.url)}",
         f"description: {route._scalar(structured.get('description', ''))}",
         "status: inbox",
         f"platform: {route._scalar(enr.platform)}",
@@ -247,9 +323,10 @@ def build_resource_note(item, enr: Enrichment, structured: dict, user_text: str,
         "---",
     ]
     body = ["\n".join(fm), ""]
-    insight = user_text.strip()
+    insight = strip_urls(user_text)
     if insight:
-        # the user's own words, verbatim — origin human (never overwritten by AI)
+        # the user's own words, verbatim minus the link itself (which already
+        # lives in source_url) — origin human, never overwritten by AI
         body += ["## Insight", "", insight, ""]
     if is_recipe:
         ing = structured.get("ingredients") or []

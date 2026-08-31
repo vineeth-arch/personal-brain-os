@@ -79,6 +79,101 @@ def test_recipe_detection_writes_sections(vault):
     assert "## Insight" in text and "great weeknight recipe" in text  # user's words, verbatim
 
 
+def test_insight_strips_the_url_pass_s2(vault):
+    """The URL already lives in source_url; leaving it in ## Insight too just
+    crowds out the one line the user actually typed."""
+    def fetch(url, data=None, timeout=10, headers=None):
+        return YT_OEMBED if "oembed" in url else b""
+    url = "https://youtu.be/abc12345678"
+    enr = enrich.enrich_url(url, config(vault), fetch=fetch)
+    structured = enrich.structure("x", enr, config(vault), router=no_router)
+    user_text = f"great branding tutorial {url} check the hook part"
+    path = enrich.route_link(item(), user_text, enr, structured, vault / "vault")
+    text = path.read_text(encoding="utf-8")
+    insight_block = text.split("## Insight\n\n", 1)[1].split("\n\n", 1)[0]
+    assert url not in insight_block
+    assert "great branding tutorial" in insight_block
+    assert "check the hook part" in insight_block
+
+
+def test_insight_section_absent_when_text_is_url_only(vault):
+    def fetch(url, data=None, timeout=10, headers=None):
+        return YT_OEMBED if "oembed" in url else b""
+    url = "https://youtu.be/abc12345678"
+    enr = enrich.enrich_url(url, config(vault), fetch=fetch)
+    structured = enrich.structure("x", enr, config(vault), router=no_router)
+    path = enrich.route_link(item(), url, enr, structured, vault / "vault")
+    assert "## Insight" not in path.read_text(encoding="utf-8")
+
+
+def test_strip_urls_handles_multiple_urls_and_blank_input():
+    assert enrich.strip_urls("see https://a.com/x and also https://b.com/y") == "see  and also"
+    assert enrich.strip_urls("https://only-a-url.com") == ""
+    assert enrich.strip_urls("   ") == ""
+    assert enrich.strip_urls("") == ""
+
+
+# ---- normalize_url / dedup (Pass S3) --------------------------------------
+
+def test_normalize_url_drops_tracking_but_keeps_identity_params():
+    same_video_a = enrich.normalize_url("https://www.youtube.com/watch?v=abc123&igsh=xyz")
+    same_video_b = enrich.normalize_url("https://www.youtube.com/watch?v=abc123&si=qqq")
+    assert same_video_a == same_video_b
+    assert "v=abc123" in same_video_a  # identity param survives
+    assert "igsh" not in same_video_a and "si=" not in same_video_a
+
+    different_video = enrich.normalize_url("https://www.youtube.com/watch?v=zzz999")
+    assert different_video != same_video_a  # different ?v= must stay different
+
+
+def test_normalize_url_strips_utm_params_lowercases_host_and_trailing_slash():
+    a = enrich.normalize_url("https://Example.COM/post/?utm_source=ig&utm_medium=share")
+    b = enrich.normalize_url("https://example.com/post")
+    assert a == b
+
+
+def test_find_by_source_url_matches_normalized_form(vault):
+    res = (vault / "vault" / "04-Resources")
+    res.mkdir(parents=True)
+    note = res / "2026-07-04-a-reel.md"
+    note.write_text(
+        "---\nid: 20260704100000\ntype: resource\nsource_url: "
+        "https://instagram.com/reel/abc\n---\n\n## Insight\n\nfirst thought\n",
+        encoding="utf-8")
+    found = enrich.find_by_source_url(vault / "vault", "https://instagram.com/reel/abc?igsh=NEW")
+    assert found == note
+    assert enrich.find_by_source_url(vault / "vault", "https://instagram.com/reel/different") is None
+    assert enrich.find_by_source_url(vault / "vault", "") is None
+
+
+def test_append_insight_never_overwrites_only_adds(vault):
+    res = (vault / "vault" / "04-Resources")
+    res.mkdir(parents=True)
+    note = res / "2026-07-04-a-reel.md"
+    note.write_text(
+        "---\nid: 20260704100000\ntype: resource\nsource_url: "
+        "https://instagram.com/reel/abc\n---\n\n"
+        "## Insight\n\nfirst thought, don't lose this\n",
+        encoding="utf-8")
+    enrich.append_insight(note, "https://instagram.com/reel/abc?igsh=NEW second thought")
+    text = note.read_text(encoding="utf-8")
+    assert "first thought, don't lose this" in text          # nothing lost
+    assert "second thought" in text                            # new thought added
+    assert "igsh" not in text and "instagram.com/reel/abc?" not in text  # url stripped
+    assert text.count("## Insight") == 1                       # one section, not two
+
+
+def test_append_insight_with_blank_addition_is_a_noop(vault):
+    res = (vault / "vault" / "04-Resources")
+    res.mkdir(parents=True)
+    note = res / "2026-07-04-a-reel.md"
+    original = ("---\nid: 20260704100000\ntype: resource\nsource_url: "
+               "https://instagram.com/reel/abc\n---\n\n## Insight\n\nfirst thought\n")
+    note.write_text(original, encoding="utf-8")
+    enrich.append_insight(note, "https://instagram.com/reel/abc?igsh=NEW")  # url only, no words
+    assert note.read_text(encoding="utf-8") == original
+
+
 def test_instagram_failure_saves_note_unenriched(vault):
     def failing_fetch(url, data=None, timeout=10, headers=None):
         raise ConnectionError("apify down")
