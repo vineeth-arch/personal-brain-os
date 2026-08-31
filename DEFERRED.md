@@ -1,7 +1,6 @@
 # Logged for after the 30-day test
 
 - Multi-topic splitter: auto-split a genuinely multi-topic journal/musing recording into multiple notes (needs an LLM topic-segmenter; route.py has the SPLITTABLE seam).
-- Theme toggle (light mode tokens are shipped and working; dark is hardcoded as default this pass).
 - Custom PWA install prompt/button (browser default install affordance is used for now).
 - Settings: edit server *paths* (vault/inbox/archive/failed) from the cockpit — engine, threshold, and ntfy became editable in Pass 4; paths stay server-side.
 - Capture confirmation echoes the first line of what was heard (transcript echo) — research B1.
@@ -26,3 +25,27 @@
 - Pass B: surface provider stats as a small sparkline over time, not just cumulative counts.
 - Pass T: recurring todos (weekly/daily) — current model is one-shot due dates only.
 - Pass 10: a live `url_ok` probe type for the reachable-from-internet milestone (GET deploy.public_url from the server) — manual config-field check for now, per the pass spec.
+- Pass 6: resource rating (schema `rating` 1–7) capture + display in the drawer — status lifecycle and insight shipped, rating not surfaced this pass.
+- Pass 6: real cover images via `attachments/` (book covers / posters) — seed uses remote picsum placeholders; the card already falls back to a category-initial tile.
+- Pass 6: editing the type-extras from the cockpit (they render in the drawer since the per-type schema pass, but are written by the seed/pipeline only — no UI to change ingredients, runtime, etc.).
+- Pass 6: server-side resource filtering is live + tested, but the dashboard filters the fetched list client-side (snappy at current scale) — switch to server params if the library grows large.
+- Pass 6: insight edit history / a per-section origin stamp — the human-origin guarantee currently rides the note-level `origin` firewall (AI never writes `## Insight`).
+- Pass 12: n8n / Supabase real API integrations — they stay launcher tiles; each needs its own auth story. (Dex left this list in Pass D — its REST API needed a key, not a dependency.)
+- Pass 12: pull Gmail/Calendar items INTO the vault as notes (currently read-only display in Integrations) — needs a routing decision per SCHEMA-REFERENCE before anything is written.
+- Pass P: Plaud SDK ingest (pulling recordings straight off the Note Pro over BLE/Wi-Fi) — the official SDK's binaries are proprietary and need a partner token, so the watched-folder path ships instead.
+- Pass P: speaker diarization ("who said what") on meeting transcripts — needs a second model in the chain; the transcript stays undiarized for now.
+- Pass P: per-chunk resume for a long recording (today a re-run re-transcribes every segment, and one permanently failed segment stays a placeholder).
+- Pass P: transliteration quality dial — no way yet to re-run Hindi → Hinglish on an existing note with a better model.
+- ~~Pass MW: real Dex sync (write-back / CardDAV)~~ — SHIPPED in Pass D as marker-delimited, human-confirmed profile push (Dex REST + Google People API; no CardDAV, no iCloud).
+- Pass D: pulling FROM Dex (contact list sync, dex_id auto-match) — the push is one-way by design; matching a vault person to a Dex contact is still a manual dex_id paste.
+- Pass D: the two API-SHAPE ASSUMPTION blocks in pipeline/dex.py are unverified against a real Dex key — first real push may need one edit in each.
+- Pass D: Google contact matching is email-then-phone only; no name-based fuzzy match (deliberate — a wrong match would write a stranger's notes field).
+- Pass D: push queue staleness is last_contact vs last push date; a note edited without touching last_contact doesn't re-stage.
+- Pass X: MCP query_vault tool — waits on Pass 9's /query endpoint, which doesn't exist yet. The MCP layer only ever proxies routes that already ship.
+- Pass X: MCP resources/prompts (the protocol's other two primitives) — tools only for now.
+- Pass X: quick-add captures one channel; a second channel, company, or cadence still means editing the note (in Obsidian or later in the drawer).
+- Pass MW: draft history — a draft is generated fresh each time and never stored, so there is no "what did I send last time" beyond the interaction log line.
+- Pass MW: per-person cadence editing from the cockpit (cadence_days and the stage defaults are set in the note / in one constants dict).
+- Pass MW: a People sample-purge endpoint in the API — scripts/seed_people.py --purge covers it for now.
+- Pass MW: PDL credits counter is read from the response header per call; no running total is stored between calls.
+- NOT DEFERRED — PERMANENTLY OUT (CLAUDE.md §4): sending email or any message from the app. Drafts are written to Gmail and sent by the human, in Gmail. api/tests/test_google.py fails the build if a send path ever appears.

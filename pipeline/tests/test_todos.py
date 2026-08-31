@@ -193,3 +193,71 @@ def test_digest_silent_when_nothing_happened(vault, tmp_path, monkeypatch):
     assert pushes == []
     assert events.reminder_fired("digest-2026-07-02")
     events.close()
+
+
+# ---- the People section rides the SAME digest (Pass MW) -------------------------
+
+def _person(vault_path, name, person_id, last_contact, cadence="7"):
+    folder = vault_path / "07-People"
+    folder.mkdir(exist_ok=True)
+    (folder / f"2026-07-01-{name.lower().replace(' ', '-')}.md").write_text(
+        f"---\nid: {person_id}\ntype: person\ncreated: 2026-07-01\nsource: manual\n"
+        f"origin: human\nchannels: {{whatsapp: +971}}\ncadence_days: {cadence}\n"
+        f"last_contact: {last_contact}\nwarmth_stage: engaging\nstatus: active\n---\n\n"
+        f"# {name}\n\n## Interaction log\n\n- {last_contact} — spoke\n")
+
+
+def test_people_ride_the_unified_digest_and_never_a_second_push(vault, tmp_path, monkeypatch):
+    """MW1: one notification in the morning. The People section is part of the
+    todo digest, not a push of its own."""
+    config = make_config(vault)
+    _person(config.vault_path, "Priya Raman", "20260701090000", "2026-06-01")
+    todos_file = config.vault_path / "06-Todos" / "2026-07-01.md"
+    todos_file.parent.mkdir(parents=True, exist_ok=True)
+    todos_file.write_text("# Todos — 2026-07-01\n\n- [ ] send the deck 📅 2026-07-01 ^a-1\n")
+
+    pushes = []
+    monkeypatch.setattr(todos.errors, "ntfy",
+                        lambda url, topic, msg, title="": pushes.append((title, msg)))
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    todos.tick(config, events, now=datetime(2026, 7, 1, 8, 30, tzinfo=todos.TZ))
+
+    assert len(pushes) == 1, "one morning, one notification"
+    title, body = pushes[0]
+    assert title == "Brain Cockpit — today"
+    assert "send the deck" in body            # the todo half
+    assert "People:" in body                  # the relationship half
+    assert "Priya Raman" in body and "days quiet" in body
+
+    # fire-once: a later tick the same day says nothing more
+    todos.tick(config, events, now=datetime(2026, 7, 1, 11, 0, tzinfo=todos.TZ))
+    assert len(pushes) == 1
+    events.close()
+
+
+def test_a_person_going_cold_is_reason_enough_to_push(vault, tmp_path, monkeypatch):
+    """An otherwise silent day still speaks up if someone is slipping away."""
+    config = make_config(vault)
+    _person(config.vault_path, "Quiet Friend", "20260701090001", "2026-05-01")
+
+    pushes = []
+    monkeypatch.setattr(todos.errors, "ntfy",
+                        lambda url, topic, msg, title="": pushes.append(msg))
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    todos.tick(config, events, now=datetime(2026, 7, 1, 8, 5, tzinfo=todos.TZ))
+    assert len(pushes) == 1 and "Quiet Friend" in pushes[0]
+    events.close()
+
+
+def test_a_truly_quiet_day_stays_quiet(vault, tmp_path, monkeypatch):
+    """Nobody cold, nothing due — still no push (the silence rule survives)."""
+    config = make_config(vault)
+    _person(config.vault_path, "Fresh Contact", "20260701090002", "2026-07-01", cadence="30")
+
+    pushes = []
+    monkeypatch.setattr(todos.errors, "ntfy",
+                        lambda url, topic, msg, title="": pushes.append(msg))
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    todos.tick(config, events, now=datetime(2026, 7, 1, 8, 5, tzinfo=todos.TZ))
+    assert pushes == []
+    events.close()

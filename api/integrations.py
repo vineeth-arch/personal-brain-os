@@ -18,6 +18,8 @@ from pathlib import Path
 
 from pipeline import llm as pllm
 
+from . import google
+
 log = logging.getLogger("api")
 
 CACHE_SECONDS = 60
@@ -29,10 +31,10 @@ ENGINES = ("whispercpp", "openai")
 
 _iso = lambda dt: dt.isoformat(timespec="seconds")
 
+# gmail/gcal are handled by _google_cards below — they upgrade from bare links
+# to live cards once the server has a Google client and the user has connected.
 LINK_DEFS = [
     ("dex", "Dex", "link", "Your personal CRM for people and relationships."),
-    ("gmail", "Gmail", "mail", "Email inbox."),
-    ("gcal", "Google Calendar", "calendar", "Your calendar."),
     ("caldiy", "cal.diy", "calendar", "Scheduling links."),
     ("n8n", "n8n", "server", "Your automation workflows."),
     ("zima", "ZimaOS admin", "server", "Home-server dashboard."),
@@ -207,6 +209,70 @@ def _check_key_service(card_id: str, name: str, icon: str, description: str,
     return card
 
 
+def _check_pdl(config, state: dict) -> dict:
+    """People Data Labs (Pass MW). No key is a normal state: the People screen
+    works fully without enrichment, it just can't look up a role or company."""
+    key = os.environ.get("PDL_API_KEY")
+    card = {"id": "pdl", "group": "health", "name": "People Data Labs", "icon": "link",
+            "description": "Looks up role and company for a person card, on demand.",
+            "meta": {"key_present": bool(key)}}
+    if not key:
+        card.update(
+            status="unknown", badge="Not configured",
+            detail="Person cards work without it; enrichment is the only thing missing.",
+            error={
+                "what": "People Data Labs has no API key.",
+                "cause": "PDL_API_KEY isn't set in the server's shell.",
+                "todo": "Add a key (100 free lookups a month) and restart the API, "
+                        "or leave it — nothing else depends on it.",
+            })
+        return card
+    card.update(status="ok", badge="Key set",
+                detail="Enrichment is available from a person's card.")
+    return card
+
+
+def _check_transliteration(config, state: dict) -> dict:
+    """Devanagari → Hinglish (Pass P). Not configured is a normal, honest state:
+    the pipeline still writes the note, just in the script whisper returned."""
+    from pipeline import transliterate as tl
+
+    block = (config.raw.get("transliteration") or {})
+    engine = (block.get("engine") or "").strip().lower()
+    usable = tl.configured_engine(config)
+    card = {"id": "transliteration", "group": "health", "name": "Hindi → Hinglish",
+            "icon": "brain",
+            "description": "Rewrites Hindi transcripts in Roman script before they are filed.",
+            "meta": {"engine": engine, "usable": bool(usable)}}
+    if not engine:
+        card.update(
+            status="unknown", badge="Not configured",
+            detail="Hindi captures stay in Devanagari until an engine is chosen.",
+            error={
+                "what": "No transliteration engine is set.",
+                "cause": "transliteration.engine in config.json is empty.",
+                "todo": "Pick Ollama (local) or OpenRouter in Settings, and name a model.",
+            })
+        return card
+    if not usable:
+        missing = ("a model name" if engine == "ollama"
+                   else "OPENROUTER_API_KEY in the server's shell, or a model name")
+        card.update(
+            status="warn", badge=f"{engine} · incomplete",
+            detail="The engine is chosen but can't run yet.",
+            error={
+                "what": f"The {engine} transliteration engine isn't ready.",
+                "cause": f"It still needs {missing}.",
+                "todo": "Finish the transliteration settings, then Recheck.",
+            })
+        return card
+    where = (block.get("ollama") or {}).get("url") if engine == "ollama" else "openrouter.ai"
+    model = (block.get(engine) or {}).get("model")
+    card.update(status="ok", badge=f"{engine} · ready",
+                detail=f"Using {model} via {where}.")
+    return card
+
+
 def _check_ntfy(config, state: dict) -> dict:
     card = {"id": "ntfy", "group": "health", "name": "ntfy push", "icon": "bell",
             "description": "Sends one push to your phone when a capture fails.",
@@ -355,6 +421,54 @@ def _check_watcher(heartbeat_path: Path) -> dict:
     return card
 
 
+def _google_cards(config) -> list[dict]:
+    """Gmail + Calendar. Three states, degrading gracefully:
+      not configured  → plain link tiles (what they were before Pass 12),
+      configured      → "Connect Google" prompt,
+      connected       → live cards; the client fetches the actual mail/events
+                        from /api/google/inbox|events.
+    No network call happens here — this payload is cached 60s and must stay
+    fast; a Google outage can't make the whole Integrations screen hang."""
+    links = config.raw.get("links", {}) or {}
+    is_configured = google.configured()
+    is_connected = is_configured and google.connected(config)
+    cards = []
+    for card_id, name, icon, description, fallback_url in (
+        ("gmail", "Gmail", "mail",
+         "Recent unread mail, and drafts you write here and send from Gmail.",
+         links.get("gmail") or "https://mail.google.com/"),
+        ("gcal", "Google Calendar", "calendar",
+         "What's on in the next seven days.",
+         links.get("gcal") or "https://calendar.google.com/"),
+    ):
+        if not is_configured:
+            cards.append({
+                "id": card_id, "group": "link", "name": name, "icon": icon,
+                "description": description, "status": "unknown", "badge": None,
+                "url": fallback_url,
+            })
+            continue
+        card = {
+            "id": card_id, "group": "google", "name": name, "icon": icon,
+            "description": description, "url": fallback_url,
+            "meta": {"configured": True, "connected": is_connected},
+        }
+        if is_connected:
+            card.update(status="ok", badge="Connected",
+                        detail="Linked to your Google account.")
+        else:
+            card.update(
+                status="unknown", badge="Not connected",
+                detail="The server has a Google client — connect your account to go live.",
+                error={
+                    "what": f"{name} isn't showing live data yet.",
+                    "cause": "No Google account has been linked to this cockpit.",
+                    "todo": "Press Connect Google on this card and approve the access.",
+                })
+        cards.append(card)
+    return cards
+
+
 def _link_cards(config) -> list[dict]:
     cards = [{
         "id": "obsidian", "group": "link", "name": "Obsidian", "icon": "obsidian",
@@ -369,8 +483,10 @@ def _link_cards(config) -> list[dict]:
                           "description": description, "status": "unknown", "badge": None,
                           "url": url})
     # any other configured link renders too — unknown icon keys fall back to a
-    # lettermark tile in the frontend
-    known = {key for key, _, _, _ in LINK_DEFS}
+    # lettermark tile in the frontend. gmail/gcal are excluded: _google_cards
+    # already renders them (as live cards or as link tiles), and they'd
+    # otherwise come back a second time as lettermark tiles.
+    known = {key for key, _, _, _ in LINK_DEFS} | {"gmail", "gcal"}
     for key, url in links.items():
         if key in known or not url:
             continue
@@ -393,11 +509,14 @@ def build_payload(config, heartbeat_path: Path, fresh: bool, state: dict) -> dic
             "claude", "Claude API", "brain",
             "Classifies untagged captures into the right note type.",
             config.anthropic_key, None, fresh, _test_call_anthropic, state),
+        _check_transliteration(config, state),
+        _check_pdl(config, state),
         _check_ntfy(config, state),
         _check_vault_sync(config),
         _check_git(config),
         _check_watcher(heartbeat_path),
     ]
+    cards.extend(_google_cards(config))
     cards.extend(_link_cards(config))
     return {
         "engine": config.engine,

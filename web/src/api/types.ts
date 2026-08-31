@@ -107,7 +107,9 @@ export interface ResurfacedNote {
 // Integrations screen (Pass 4). Health checks run server-side, cached 60s.
 export type EngineName = "whispercpp" | "openai";
 export type IntegrationStatus = "ok" | "warn" | "problem" | "unknown";
-export type IntegrationGroup = "health" | "link";
+// "google" cards carry live Gmail/Calendar state; they fall back to plain
+// "link" cards when the server has no Google client configured (Pass 12).
+export type IntegrationGroup = "health" | "link" | "google";
 
 export interface IntegrationCard {
   id: string;
@@ -128,6 +130,39 @@ export interface IntegrationsResponse {
   generated_at: string;
   fresh: boolean;
   cards: IntegrationCard[];
+}
+
+// Google (Pass 12): read-only Gmail/Calendar plus draft creation. There is no
+// send — the cockpit never sends anything (CLAUDE.md §4); drafts are sent by
+// the user, in Gmail.
+export interface GmailMessage {
+  id: string;
+  from: string;
+  subject: string;
+  date: string;
+  snippet: string;
+  url: string;
+}
+
+export interface CalendarEvent {
+  id: string;
+  summary: string;
+  start: string;
+  end: string;
+  all_day: boolean;
+  location: string;
+  url: string;
+}
+
+export interface DraftWrite {
+  to: string;
+  subject: string;
+  text: string;
+}
+
+export interface DraftCreated {
+  id: string;
+  url: string;
 }
 
 // Todos (Pass T): Obsidian Tasks-compatible checkbox lines in 06-Todos/.
@@ -182,6 +217,8 @@ export interface AppConfig {
     apify_last_call: string | null;
     youtube_keyless: boolean;
   };
+  // Pass D — which push targets are wired up. Booleans only, never key values.
+  push: PushAvailability;
 }
 
 // PUT /api/config body — only the fields being changed are sent.
@@ -217,4 +254,182 @@ export interface SelfCheckResponse {
   ok: boolean;
   problems: ErrorEnvelope[];
   checks: SelfCheckItem[];
+}
+
+// Resource OS (Pass 6). The resource status lifecycle, verbatim from
+// SCHEMA-REFERENCE.md §6 (and api/notes.py RESOURCE_LIFECYCLE). The status
+// segmented control + the "advance to next step" button read from this order.
+export const RESOURCE_STATUSES = [
+  "inbox",
+  "to-consume",
+  "consumed",
+  "referenced",
+  "archived",
+] as const;
+export type ResourceStatus = (typeof RESOURCE_STATUSES)[number];
+
+// A card in the gallery. `category` is the note's resource_type (lowercase per
+// schema); the UI Title-cases it. `url` is the schema's source_url, exposed for
+// the deep-link-out. `insight` is the '## Insight' body section (null = none).
+export interface Resource {
+  id: string;
+  title: string;
+  category: string;
+  status: ResourceStatus;
+  cover: string | null;
+  url: string | null;
+  created: string; // YYYY-MM-DD
+  sample: boolean;
+  file: string; // vault-relative, for the obsidian:// deep link
+  has_insight: boolean;
+  insight: string | null;
+}
+
+export interface ResourceSection {
+  heading: string;
+  text: string;
+}
+
+// GET /resources/{id} — the drawer's full detail.
+export interface ResourceDetail extends Resource {
+  description: string | null;
+  rating: string | null;
+  // Per-type extras (SCHEMA-REFERENCE.md §7 "Type extras"): each is non-null
+  // only when the resource's category actually carries it — book: author;
+  // movie: where_to_watch, runtime; recipe: ingredients, steps; tutorial:
+  // steps, tools_mentioned, transcript; place: map_url, best_time.
+  author: string | null;
+  where_to_watch: string | null;
+  runtime: string | null;
+  ingredients: string | null;
+  steps: string | null;
+  tools_mentioned: string | null;
+  transcript: string | null;
+  map_url: string | null;
+  best_time: string | null;
+  sections: ResourceSection[];
+}
+
+export type SampleScope = "1d" | "1w" | "1m" | "all";
+
+export interface SampleCount {
+  count: number;
+  scope: SampleScope;
+}
+
+export interface SamplePurgeResult {
+  removed: number;
+  titles: string[];
+  scope: SampleScope;
+  message: string;
+}
+
+
+// ---- People (Relationship OS) -------------------------------------------------
+
+export const WARMTH_STAGES = [
+  "identified",
+  "researched",
+  "engaging",
+  "conversing",
+  "warm",
+  "ready",
+] as const;
+export type WarmthStage = (typeof WARMTH_STAGES)[number];
+
+export interface PersonChannels {
+  whatsapp?: string;
+  email?: string;
+  linkedin?: string;
+}
+
+// mirrors pipeline/relationships.py CHANNEL_PRIORITY, in that order
+export const CHANNEL_KINDS = ["whatsapp", "email", "linkedin"] as const;
+export type ChannelKind = (typeof CHANNEL_KINDS)[number];
+
+export interface Person {
+  id: string;
+  name: string;
+  relationship: string;
+  company: string;
+  warmth_stage: WarmthStage | "";
+  status: string;
+  cadence_days: number;
+  last_contact: string | null;
+  days_since_contact: number | null;
+  going_cold: boolean;
+  warmup_due: boolean;
+  commitment_due: boolean;
+  channels: PersonChannels;
+  next_action: string;
+  sample: boolean;
+  file: string;
+  dex_id: string;
+  dex_deeplink: string;
+}
+
+export interface PersonDetail extends Person {
+  context: string;
+  needs: string;
+  interaction_log: string;
+}
+
+export interface PersonDraft {
+  text: string;
+  channel: string;
+  // raw values only — the deep link is built in the browser (CLAUDE.md §4)
+  channels: PersonChannels;
+  provider: string | null;
+}
+
+export interface ContactResult extends Person {
+  suggest_stage: WarmthStage | null;
+}
+
+export interface VoiceStatus {
+  exists: boolean;
+  file: string;
+  samples: number;
+}
+
+export interface EnrichResult extends Person {
+  enriched: boolean;
+  credits_remaining: number | null;
+  detail: string;
+}
+
+// Pass D — pushing a profile summary OUT to the owner's own CRM / address book.
+// Nothing here delivers anything to another person (CLAUDE.md §4).
+export const PUSH_TARGETS = ["dex", "contacts"] as const;
+export type PushTarget = (typeof PUSH_TARGETS)[number];
+
+export interface PushPreview {
+  target: PushTarget;
+  person_id: string;
+  name: string;
+  /** the generated summary — this exact text is what gets confirmed and sent */
+  summary: string;
+  /** the marker-delimited block as it will appear in the field */
+  block: string;
+  /** plain-English "where this lands" */
+  destination: string;
+  /** what our previous block said, "" when we own nothing there yet */
+  replaced: string;
+}
+
+export interface PushResult {
+  ok: boolean;
+  target: PushTarget;
+  changed: string;
+  replaced: boolean;
+}
+
+export interface PushAvailability {
+  dex: boolean;
+  contacts_scope: boolean;
+}
+
+export interface PushQueueItem extends Person {
+  targets: PushTarget[];
+  last_pushed: string | null;
 }

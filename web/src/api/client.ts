@@ -3,9 +3,13 @@ import type {
   BackupResult,
   BackupStatus,
   BuildResponse,
+  CalendarEvent,
   CaptureTag,
   ConfigWrite,
+  DraftCreated,
+  DraftWrite,
   EngineName,
+  GmailMessage,
   ProviderStat,
   SelfCheckResponse,
   TodoItem,
@@ -14,11 +18,30 @@ import type {
   EventRow,
   FailedItem,
   IntegrationsResponse,
+  ChannelKind,
+  ContactResult,
+  EnrichResult,
   NoteType,
+  Person,
+  PersonDetail,
+  PersonDraft,
+  PushAvailability,
+  PushPreview,
+  PushQueueItem,
+  PushResult,
+  PushTarget,
   ResurfacedNote,
   ReviewItem,
+  Resource,
+  ResourceDetail,
+  ResourceStatus,
+  SampleCount,
+  SampleScope,
+  SamplePurgeResult,
   Status,
   Streak,
+  VoiceStatus,
+  WarmthStage,
 } from "./types";
 
 const BASE_KEY = "cockpit.apiBase";
@@ -155,6 +178,67 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text, tag }),
     }),
+  // The recording goes up as the raw body (the server takes no multipart —
+  // python-multipart isn't a locked dependency), so the blob's own mime type
+  // is what tells the server which extension the inbox file gets.
+  captureAudio: (blob: Blob, tag: CaptureTag | null) => {
+    const params = new URLSearchParams();
+    if (tag) params.set("tag", tag);
+    const query = params.toString();
+    return request<{ id: string; status: string }>(
+      `/api/capture/audio${query ? `?${query}` : ""}`,
+      {
+        method: "POST",
+        body: blob,
+        headers: { "Content-Type": blob.type || "audio/webm" },
+      },
+    );
+  },
+  people: () => request<{ items: Person[] }>("/api/people"),
+  // Pass X: one name, one channel — feeding the warm-up engine without Obsidian
+  addTarget: (name: string, kind: ChannelKind, value: string) =>
+    request<Person>("/api/people", {
+      method: "POST",
+      body: JSON.stringify({ name, channel: { kind, value } }),
+    }),
+  person: (id: string) => request<PersonDetail>(`/api/people/${id}`),
+  personDraft: (id: string, channel?: string) =>
+    request<PersonDraft>(`/api/people/${id}/draft`, {
+      method: "POST",
+      body: JSON.stringify({ channel: channel ?? null }),
+    }),
+  logContact: (id: string, note: string, channel: string) =>
+    request<ContactResult>(`/api/people/${id}/contact`, {
+      method: "POST",
+      body: JSON.stringify({ note, channel }),
+    }),
+  setWarmth: (id: string, stage: WarmthStage) =>
+    request<Person>(`/api/people/${id}/warmth`, {
+      method: "POST",
+      body: JSON.stringify({ stage }),
+    }),
+  enrichPerson: (id: string) =>
+    request<EnrichResult>(`/api/people/${id}/enrich`, { method: "POST" }),
+  // Pass D: preview is the dry run of push — the human confirms the exact text
+  // the server will write, and nothing leaves without that tap.
+  pushPreview: (id: string, target: PushTarget) =>
+    request<PushPreview>(`/api/people/${id}/push/preview`, {
+      method: "POST",
+      body: JSON.stringify({ target }),
+    }),
+  push: (id: string, target: PushTarget, text: string) =>
+    request<PushResult>(`/api/people/${id}/push`, {
+      method: "POST",
+      body: JSON.stringify({ target, text }),
+    }),
+  pushQueue: () =>
+    request<{ items: PushQueueItem[]; available: PushAvailability }>("/api/push/queue"),
+  voice: () => request<VoiceStatus>("/api/people/voice"),
+  saveVoice: (samples: string[]) =>
+    request<VoiceStatus>("/api/people/voice", {
+      method: "POST",
+      body: JSON.stringify({ samples }),
+    }),
   failed: () => request<{ items: FailedItem[] }>("/api/failed"),
   retry: (id: number) =>
     request<{ ok: boolean }>(`/api/failed/${id}/retry`, { method: "POST" }),
@@ -173,6 +257,21 @@ export const api = {
       body: JSON.stringify({ engine }),
     }),
   ntfyTest: () => request<{ ok: boolean }>("/api/integrations/ntfy/test", { method: "POST" }),
+  // Google (Pass 12): read + draft only. There is deliberately no send call
+  // here and no send route on the server — CLAUDE.md §4.
+  googleConnect: (redirectUri: string) =>
+    request<{ url: string }>(
+      `/api/google/connect?redirect_uri=${encodeURIComponent(redirectUri)}`,
+    ),
+  googleInbox: () => request<{ items: GmailMessage[] }>("/api/google/inbox"),
+  googleEvents: () => request<{ items: CalendarEvent[] }>("/api/google/events"),
+  googleDraft: (draft: DraftWrite) =>
+    request<DraftCreated>("/api/google/draft", {
+      method: "POST",
+      body: JSON.stringify(draft),
+    }),
+  googleDisconnect: () =>
+    request<{ ok: boolean }>("/api/google/disconnect", { method: "POST" }),
   todos: (range: TodoRange) => request<{ items: TodoItem[] }>(`/api/todos?range=${range}`),
   toggleTodo: (id: string) =>
     request<{ ok: boolean; done: boolean }>(`/api/todos/${id}/toggle`, { method: "POST" }),
@@ -184,4 +283,39 @@ export const api = {
   backup: () => request<BackupResult>("/api/backup", { method: "POST" }),
   backupStatus: () => request<BackupStatus>("/api/backup"),
   selfcheck: () => request<SelfCheckResponse>("/api/selfcheck"),
+
+  // ---- Resource OS (Pass 6) ----
+  resources: (params: {
+    category?: string;
+    status?: string;
+    q?: string;
+    has_insight?: boolean;
+    sort?: string;
+  } = {}) => {
+    const qs = new URLSearchParams();
+    if (params.category) qs.set("category", params.category);
+    if (params.status) qs.set("status", params.status);
+    if (params.q) qs.set("q", params.q);
+    if (params.has_insight) qs.set("has_insight", "true");
+    if (params.sort) qs.set("sort", params.sort);
+    const suffix = qs.toString() ? `?${qs}` : "";
+    return request<{ items: Resource[] }>(`/api/resources${suffix}`);
+  },
+  resource: (id: string) => request<ResourceDetail>(`/api/resources/${encodeURIComponent(id)}`),
+  setResourceStatus: (id: string, status: ResourceStatus) =>
+    request<Resource>(`/api/resources/${encodeURIComponent(id)}/status`, {
+      method: "POST",
+      body: JSON.stringify({ status }),
+    }),
+  setResourceInsight: (id: string, text: string) =>
+    request<Resource>(`/api/resources/${encodeURIComponent(id)}/insight`, {
+      method: "POST",
+      body: JSON.stringify({ text }),
+    }),
+  sampleCount: (olderThan: SampleScope) =>
+    request<SampleCount>(`/api/resources/sample/count?older_than=${olderThan}`),
+  deleteSample: (olderThan: SampleScope) =>
+    request<SamplePurgeResult>(`/api/resources/sample?older_than=${olderThan}`, {
+      method: "DELETE",
+    }),
 };

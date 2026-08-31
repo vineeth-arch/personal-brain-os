@@ -16,6 +16,7 @@ import os
 import secrets
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import datetime
@@ -23,14 +24,15 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from pipeline import classify, config as config_mod, enrich, intake, route as proute, todos as ptodos, watcher
 
-from . import build_status, integrations, notes, selfcheck, service, watchdog
+from . import (build_status, google, integrations, notes, people as people_mod,
+               push as push_mod, selfcheck, service, watchdog)
 
 log = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
@@ -46,6 +48,35 @@ class Envelope(Exception):
         self.status = status
         self.body = {"error": {"what": what, "cause": cause, "todo": todo}}
         super().__init__(what)
+
+
+def _google_page(title: str, body: str) -> str:
+    """The one HTML page this API renders itself: the tab Google redirects
+    back to after consent. It can't be part of the React app (that tab is
+    outside the cockpit shell), so it's self-contained — no assets, no fonts
+    to fetch, dark-mode indigo per DESIGNSYSTEM.md, flush-left, one accent."""
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title} — Brain Cockpit</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  body {{ margin: 0; min-height: 100vh; display: flex; align-items: center;
+         background: #1F006E; color: #E2D8F5;
+         font-family: "Hanken Grotesk", ui-sans-serif, system-ui, sans-serif; }}
+  main {{ max-width: 34rem; margin: 0 auto; padding: 2rem 1.5rem; }}
+  p.eyebrow {{ margin: 0; color: #00FFCF; font-size: 11px; font-weight: 700;
+              letter-spacing: 0.18em; text-transform: uppercase; }}
+  h1 {{ margin: 0.75rem 0 0; color: #FFFFFF; font-size: 2rem; line-height: 0.95;
+       letter-spacing: -0.02em; font-weight: 800;
+       font-family: "Bricolage Grotesque", ui-sans-serif, system-ui, sans-serif; }}
+  p.body {{ margin: 1rem 0 0; font-size: 0.95rem; line-height: 1.5; }}
+</style></head>
+<body><main>
+  <p class="eyebrow">Brain Cockpit · Google</p>
+  <h1>{title}</h1>
+  <p class="body">{body}</p>
+</main></body></html>"""
 
 
 def _generic_envelope(status: int) -> dict:
@@ -85,6 +116,56 @@ class ConfigBody(BaseModel):
     ntfy_url: str | None = None
 
 
+class StatusBody(BaseModel):
+    status: str
+
+
+class InsightBody(BaseModel):
+    text: str
+
+
+class DraftBody(BaseModel):
+    to: str
+    subject: str
+    text: str
+
+
+class PersonDraftBody(BaseModel):
+    channel: str | None = None
+
+
+class ContactBody(BaseModel):
+    note: str = ""
+    channel: str = ""
+
+
+class StageBody(BaseModel):
+    stage: str
+
+
+class VoiceBody(BaseModel):
+    samples: list[str]
+
+
+class PushPreviewBody(BaseModel):
+    target: str
+
+
+class PushBody(BaseModel):
+    target: str
+    text: str
+
+
+class ChannelBody(BaseModel):
+    kind: str
+    value: str
+
+
+class NewPersonBody(BaseModel):
+    name: str
+    channel: ChannelBody
+
+
 def create_app(root: Path | None = None) -> FastAPI:
     root = Path(root or DEFAULT_ROOT)
 
@@ -103,6 +184,8 @@ def create_app(root: Path | None = None) -> FastAPI:
     app.state.run_lock = threading.Lock()
     app.state.integrations_cache = {}
     app.state.integrations_state = {}
+    app.state.google_states = {}   # pending OAuth CSRF states → (expiry, redirect_uri)
+    app.state.google_tokens = {}   # in-memory access-token cache — never persisted
     app.state.build_cache = {}
 
     config_path = root / "config.json"
@@ -344,6 +427,210 @@ def create_app(root: Path | None = None) -> FastAPI:
         note_id = notes.capture(Path(config.inbox_path), text, body.tag)
         return {"id": note_id, "status": "captured"}
 
+    @app.post("/api/capture/audio", status_code=201)
+    async def capture_audio(request: Request, config=Depends(require_token)):
+        """A recording from the cockpit's mic button. The body is the raw audio
+        (no multipart — python-multipart isn't a locked dependency, CLAUDE.md
+        §7), streamed to the inbox so a long recording never sits in memory."""
+        ext = notes.audio_extension(request.headers.get("content-type"))
+        if ext is None:
+            raise Envelope(
+                400, "That recording isn't in a format the pipeline can read.",
+                f"The upload's Content-Type was '{request.headers.get('content-type') or 'missing'}'.",
+                "Record again with the mic button, or drop the audio file into the inbox folder instead.")
+        tag = request.query_params.get("tag") or None
+        if not notes.valid_tag(tag):
+            raise Envelope(
+                400, "That's not a capture tag the pipeline knows.",
+                f"'{tag}' isn't one of the 8 capture tags in SCHEMA-REFERENCE.md.",
+                "Pick one of the tag chips, or send no tag and let the classifier decide.")
+
+        inbox = Path(config.inbox_path)
+        path, note_id = notes.audio_capture_path(inbox, ext, request.query_params.get("name"), tag)
+        fd, tmp = tempfile.mkstemp(dir=inbox, prefix=".capture-", suffix=".tmp")
+        written = 0
+        try:
+            with os.fdopen(fd, "wb") as f:
+                async for chunk in request.stream():
+                    written += len(chunk)
+                    if written > notes.MAX_AUDIO_BYTES:
+                        raise Envelope(
+                            413, "That recording is too large to upload.",
+                            f"The upload passed the {notes.MAX_AUDIO_BYTES // (1024 * 1024)} MB limit "
+                            "this server accepts.",
+                            "Record in shorter takes, or copy the file straight into the inbox folder "
+                            "— the watcher picks it up from there with no size limit.")
+                    f.write(chunk)
+            if written == 0:
+                raise Envelope(
+                    400, "There was nothing to capture.",
+                    "The recording arrived empty — the mic may have been blocked mid-recording.",
+                    "Check the microphone permission, then record again.")
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+        # the inbox is outside the vault — nothing to git-commit here
+        return {"id": note_id, "status": "captured"}
+
+    # ---- people (Relationship OS) --------------------------------------------
+
+    def _person_or_404(config, person_id: str):
+        found = people_mod.detail(Path(config.vault_path), person_id)
+        if found is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen — the note may have been renamed or removed.")
+        return found
+
+    @app.get("/api/people")
+    def people_list(config=Depends(require_token)):
+        return {"items": people_mod.list_people(Path(config.vault_path))}
+
+    @app.post("/api/people", status_code=201)
+    def people_create(body: NewPersonBody, config=Depends(require_token)):
+        """Quick-add a warm-up target (Pass X): one name, one channel. Feeding
+        the warm-up engine should not require opening Obsidian."""
+        try:
+            return people_mod.create_target(Path(config.vault_path), body.name,
+                                            body.channel.kind, body.channel.value)
+        except ValueError as e:
+            raise Envelope(
+                400, "That target couldn't be added.",
+                str(e).capitalize() + ".",
+                "Give them a name and one way to reach you — WhatsApp, email, or LinkedIn.")
+
+    @app.get("/api/people/voice")
+    def people_voice(config=Depends(require_token)):
+        return people_mod.voice_status(Path(config.vault_path))
+
+    @app.post("/api/people/voice")
+    def people_voice_write(body: VoiceBody, config=Depends(require_token)):
+        try:
+            return people_mod.write_voice(Path(config.vault_path), body.samples)
+        except ValueError:
+            raise Envelope(
+                400, "There were no writing samples to learn from.",
+                "Every sample in the list was empty.",
+                "Paste 3–5 messages you actually sent, then save again.")
+
+    @app.get("/api/people/{person_id}")
+    def person_detail(person_id: str, config=Depends(require_token)):
+        return _person_or_404(config, person_id)
+
+    @app.post("/api/people/{person_id}/draft")
+    def person_draft(person_id: str, body: PersonDraftBody, config=Depends(require_token)):
+        try:
+            result = people_mod.draft(Path(config.vault_path), person_id, body.channel, config)
+        except LookupError:
+            raise Envelope(
+                409, "Drafts need your own voice on file first.",
+                "_System/my-voice.md doesn't exist yet, and a draft written without "
+                "it would sound like a chatbot, not like you.",
+                "Paste 3–5 messages you've actually sent in Settings → My voice, then try again.")
+        if result is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        if not result["text"]:
+            raise Envelope(
+                502, "No model could write the draft.",
+                "Every provider in the chain failed or has no key set.",
+                "Check the model keys in the server's shell, then try again.")
+        return result
+
+    @app.post("/api/people/{person_id}/contact")
+    def person_contact(person_id: str, body: ContactBody, config=Depends(require_token)):
+        updated = people_mod.log_contact(Path(config.vault_path), person_id,
+                                         body.note, body.channel)
+        if updated is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        return updated
+
+    @app.post("/api/people/{person_id}/warmth")
+    def person_warmth(person_id: str, body: StageBody, config=Depends(require_token)):
+        from pipeline import relationships
+        if body.stage not in relationships.WARMTH_STAGES:
+            raise Envelope(
+                400, "That's not a warmth stage the vault knows.",
+                f"'{body.stage}' isn't one of the six stages in SCHEMA-REFERENCE.md.",
+                "Pick one of the stage chips on the person's card.")
+        updated = people_mod.set_stage(Path(config.vault_path), person_id, body.stage)
+        if updated is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        return updated
+
+    @app.post("/api/people/{person_id}/enrich")
+    def person_enrich(person_id: str, config=Depends(require_token)):
+        if not people_mod.pdl_configured():
+            raise Envelope(
+                503, "Enrichment isn't set up yet.",
+                "PDL_API_KEY isn't set in the server's shell, so there's nothing to ask.",
+                "Add a People Data Labs key to the server's environment and restart the API "
+                "— everything else on this card keeps working without it.")
+        try:
+            updated = people_mod.enrich(Path(config.vault_path), person_id)
+        except Exception:
+            log.exception("pdl enrich failed")
+            raise Envelope(
+                502, "People Data Labs didn't answer.",
+                "The lookup failed or the monthly free credits are used up.",
+                "Try again later; the note is unchanged.")
+        if updated is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        return updated
+
+    # ---- profile push (Pass D) -------------------------------------------------
+    # Writes PROFILE DATA into the owner's own CRM/address book. Nothing is
+    # delivered to another person here (CLAUDE.md §4), and nothing is written
+    # without a human confirming the exact text first (CLAUDE.md §3).
+
+    def _push_event_log(config):
+        from pipeline.events import EventLog
+        return EventLog(db_path, Path(config.vault_path))
+
+    @app.post("/api/people/{person_id}/push/preview")
+    def person_push_preview(person_id: str, body: PushPreviewBody,
+                            config=Depends(require_token)):
+        try:
+            return push_mod.preview(Path(config.vault_path), person_id, body.target,
+                                    config, app.state.google_tokens)
+        except push_mod.PushError as e:
+            raise Envelope(e.status, **e.envelope)
+
+    @app.post("/api/people/{person_id}/push")
+    def person_push(person_id: str, body: PushBody, config=Depends(require_token)):
+        event_log = None
+        try:
+            event_log = _push_event_log(config)
+        except Exception:
+            log.exception("push event log unavailable")   # never block the push on bookkeeping
+        try:
+            return push_mod.push(Path(config.vault_path), person_id, body.target,
+                                 body.text, config, app.state.google_tokens,
+                                 event_log=event_log)
+        except push_mod.PushError as e:
+            raise Envelope(e.status, **e.envelope)
+        finally:
+            if event_log is not None:
+                event_log.close()
+
+    @app.get("/api/push/queue")
+    def push_queue(config=Depends(require_token)):
+        return {"items": push_mod.queue(Path(config.vault_path), db_path, config),
+                "available": push_mod.availability(config)}
+
     @app.post("/api/failed/{event_id}/retry")
     def retry(event_id: int, config=Depends(require_token)):
         row = service.failed_row(db_path, event_id)
@@ -412,6 +699,98 @@ def create_app(root: Path | None = None) -> FastAPI:
         notes.git_commit_vault(config.vault_path, f"api: enriched {note_id}")
         return {"ok": True, "enriched": enriched}
 
+    # ---- Resource OS (Pass 6) --------------------------------------------------------
+    # Reads/writes 04-Resources. Every mutation git-commits the vault. Insight
+    # lives in a '## Insight' body section carrying the human-origin guarantee.
+
+    RESOURCE_SORTS = ("created", "oldest", "title")
+
+    @app.get("/api/resources")
+    def resources_list(category: str | None = None, status: str | None = None,
+                       q: str | None = None, has_insight: bool | None = None,
+                       sort: str = "created", config=Depends(require_token)):
+        if sort not in RESOURCE_SORTS:
+            raise Envelope(
+                400, "That's not a sort the resource list knows.",
+                f"'{sort}' isn't one of created, oldest, title.",
+                "Use one of the three sort values, or omit it for newest-first.")
+        return {"items": notes.list_resources(
+            config.vault_path, category=category, status=status, q=q,
+            has_insight=has_insight, sort=sort)}
+
+    # 'sample' routes are declared before '/{note_id}' so the literal path wins.
+    @app.get("/api/resources/sample/count")
+    def sample_count(older_than: str = "all", config=Depends(require_token)):
+        if older_than not in notes.SAMPLE_SCOPES:
+            raise Envelope(
+                400, "That's not a cleanup scope the server knows.",
+                f"'{older_than}' isn't one of 1d, 1w, 1m, all.",
+                "Pick one of the four scopes.")
+        matching = notes.sample_matching(config.vault_path, older_than)
+        return {"count": len(matching), "scope": older_than}
+
+    @app.delete("/api/resources/sample")
+    def sample_purge(older_than: str = "all", config=Depends(require_token)):
+        if older_than not in notes.SAMPLE_SCOPES:
+            raise Envelope(
+                400, "That's not a cleanup scope the server knows.",
+                f"'{older_than}' isn't one of 1d, 1w, 1m, all.",
+                "Pick one of the four scopes.")
+        vault = config.vault_path
+        targets = notes.sample_matching(vault, older_than)  # sample:true ONLY
+        titles = notes.sample_titles(targets)
+        n = len(targets)
+        # Commit BEFORE deleting so the whole purge is one `git revert` away.
+        notes.git_commit_vault(vault, f"pre-purge: {n} sample notes, scope={older_than}")
+        for path in targets:
+            path.unlink()
+        if n:
+            notes.git_commit_vault(vault, f"api: purged {n} sample notes (scope={older_than})")
+        scope_phrase = {"1d": "older than a day", "1w": "older than a week",
+                        "1m": "older than a month", "all": "of any age"}[older_than]
+        message = (
+            f"Removed {n} sample note{'' if n == 1 else 's'} {scope_phrase}. "
+            "Your real notes were never touched, and the vault was git-committed first."
+            if n else
+            f"No sample notes {scope_phrase} to remove. Nothing was changed.")
+        return {"removed": n, "titles": titles, "scope": older_than, "message": message}
+
+    @app.get("/api/resources/{note_id}")
+    def resource_detail(note_id: str, config=Depends(require_token)):
+        detail = notes.resource_detail(config.vault_path, note_id)
+        if detail is None:
+            raise Envelope(
+                404, "That resource isn't in the vault.",
+                "No resource note in 04-Resources has that id.",
+                "Refresh the resource list.")
+        return detail
+
+    @app.post("/api/resources/{note_id}/status")
+    def resource_status(note_id: str, body: StatusBody, config=Depends(require_token)):
+        if body.status not in notes.RESOURCE_LIFECYCLE:
+            raise Envelope(
+                400, "That's not a resource status the vault knows.",
+                f"'{body.status}' isn't one of {', '.join(notes.RESOURCE_LIFECYCLE)} "
+                "(SCHEMA-REFERENCE.md §6).",
+                "Advance to one of the lifecycle statuses.")
+        try:
+            return notes.set_resource_status(config.vault_path, note_id, body.status)
+        except LookupError:
+            raise Envelope(
+                404, "That resource isn't in the vault.",
+                "No resource note in 04-Resources has that id.",
+                "Refresh the resource list.")
+
+    @app.post("/api/resources/{note_id}/insight")
+    def resource_insight(note_id: str, body: InsightBody, config=Depends(require_token)):
+        try:
+            return notes.set_resource_insight(config.vault_path, note_id, body.text)
+        except LookupError:
+            raise Envelope(
+                404, "That resource isn't in the vault.",
+                "No resource note in 04-Resources has that id.",
+                "Refresh the resource list.")
+
     # ---- config (safe subset only — key values never leave the server) --------------
 
     def config_payload(config) -> dict:
@@ -427,6 +806,7 @@ def create_app(root: Path | None = None) -> FastAPI:
             "apify_last_call": last_ig,
             "youtube_keyless": True,
         }
+        safe["push"] = push_mod.availability(config)   # presence booleans only
         return safe
 
     @app.get("/api/config")
@@ -516,6 +896,65 @@ def create_app(root: Path | None = None) -> FastAPI:
         except integrations.ConfigError as e:
             raise Envelope(400, **e.envelope)
         app.state.integrations_state["ntfy_tested"] = "ok"
+        integrations.bust_cache(app.state)
+        return {"ok": True}
+
+    # ---- google (read + draft — the API has no send route, by rule 4) ------------
+
+    @app.get("/api/google/connect")
+    def google_connect(redirect_uri: str, config=Depends(require_token)):
+        try:
+            return {"url": google.begin_connect(app.state.google_states, redirect_uri)}
+        except google.GoogleError as e:
+            raise Envelope(e.status, **e.envelope)
+
+    @app.get("/api/google/callback")
+    def google_callback(state: str = "", code: str = "", error: str = ""):
+        # No bearer here — this is Google's browser redirect. The one-time
+        # state minted by /connect (which DID require the token) is the proof
+        # this flow started from the cockpit.
+        if error or not code:
+            return HTMLResponse(_google_page(
+                "Sign-in cancelled",
+                "Google didn't complete the sign-in. Nothing was connected — "
+                "you can close this tab and try again from Integrations."))
+        try:
+            google.finish_connect(app.state.google_states, config_path, state, code)
+        except google.GoogleError as e:
+            return HTMLResponse(_google_page(
+                e.envelope["what"], f"{e.envelope['cause']} {e.envelope['todo']}"))
+        app.state.google_tokens.clear()
+        integrations.bust_cache(app.state)
+        return HTMLResponse(_google_page(
+            "Google connected",
+            "Gmail and Calendar are now linked. Close this tab and head back "
+            "to the cockpit — the Integrations screen will show them live."))
+
+    @app.get("/api/google/inbox")
+    def google_inbox(config=Depends(require_token)):
+        try:
+            return {"items": google.unread(config, app.state.google_tokens)}
+        except google.GoogleError as e:
+            raise Envelope(e.status, **e.envelope)
+
+    @app.get("/api/google/events")
+    def google_events(config=Depends(require_token)):
+        try:
+            return {"items": google.events(config, app.state.google_tokens)}
+        except google.GoogleError as e:
+            raise Envelope(e.status, **e.envelope)
+
+    @app.post("/api/google/draft")
+    def google_draft(body: DraftBody, config=Depends(require_token)):
+        try:
+            return google.create_draft(config, app.state.google_tokens,
+                                       body.to, body.subject, body.text)
+        except google.GoogleError as e:
+            raise Envelope(e.status, **e.envelope)
+
+    @app.post("/api/google/disconnect")
+    def google_disconnect(config=Depends(require_token)):
+        google.disconnect(config_path, app.state.google_tokens)
         integrations.bust_cache(app.state)
         return {"ok": True}
 

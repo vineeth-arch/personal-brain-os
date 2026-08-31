@@ -96,7 +96,7 @@ def test_unknown_link_keys_render(env):
         _, body = s.req("GET", "/api/integrations")
         health = [c for c in body["cards"] if c["group"] == "health"]
         links = {c["id"]: c for c in body["cards"] if c["group"] == "link"}
-        assert len(health) == 7  # unknown links never grow the health set
+        assert len(health) == 9  # unknown links never grow the health set
         assert {"obsidian", "dex", "notion"} <= set(links)
         assert "empty" not in links  # blank urls are skipped
         notion = links["notion"]

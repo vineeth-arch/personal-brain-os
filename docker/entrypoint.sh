@@ -7,10 +7,8 @@ set -eu
 ROOT="${BRAIN_COCKPIT_ROOT:-/data}"
 
 if [ ! -f "$ROOT/config.json" ]; then
-    echo "No config.json in $ROOT."
-    echo "Copy config.example.json to $ROOT/config.json, fill in the paths"
-    echo "(they must be paths INSIDE the container, e.g. /vault), and restart."
-    exit 1
+    echo "No config.json in $ROOT — first boot, generating one."
+    python3 scripts/bootstrap.py --docker --root "$ROOT" || exit 1
 fi
 
 uvicorn api.main:app --host 0.0.0.0 --port 8000 &

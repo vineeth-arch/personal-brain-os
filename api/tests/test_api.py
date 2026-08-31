@@ -82,6 +82,20 @@ class Server:
             raw = e.read()
             return e.code, json.loads(raw) if raw else None
 
+    def raw(self, method: str, path: str, data: bytes, content_type: str, token=TOKEN):
+        """Post a raw (non-JSON) body — how the mic button uploads a recording."""
+        url = f"http://127.0.0.1:{self.port}{path}"
+        headers = {"Content-Type": content_type}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        r = urllib.request.Request(url, data=data, headers=headers, method=method)
+        try:
+            with urllib.request.urlopen(r) as resp:
+                return resp.status, json.loads(resp.read() or "null")
+        except urllib.error.HTTPError as e:
+            body = e.read()
+            return e.code, json.loads(body) if body else None
+
 
 @pytest.fixture
 def env(tmp_path):
@@ -92,7 +106,9 @@ def env(tmp_path):
     for d in (vault, inbox, archive, failed):
         d.mkdir()
     (vault / "00-Inbox").mkdir()
-    (vault / "02-Wiki").mkdir()
+    (vault / "02-Musings").mkdir()
+    (vault / "03-Learnings").mkdir()
+    (vault / "wiki").mkdir()
     subprocess.run(["git", "-C", str(vault), "init", "-q"], check=True)
     subprocess.run(["git", "-C", str(vault), "config", "user.email", "t@t"], check=True)
     subprocess.run(["git", "-C", str(vault), "config", "user.name", "t"], check=True)
@@ -171,8 +187,8 @@ def test_approve_write_path(env):
     with Server(root) as s:
         code, body = s.req("POST", "/api/review/20260701090000/approve", {"type": "learning"})
         assert code == 200
-        assert body["moved_to"] == "02-Wiki/2026-07-01-walk.md"
-        moved = vault / "02-Wiki" / "2026-07-01-walk.md"
+        assert body["moved_to"] == "03-Learnings/2026-07-01-walk.md"
+        moved = vault / "03-Learnings" / "2026-07-01-walk.md"
         assert moved.exists() and not (vault / "00-Inbox" / "2026-07-01-walk.md").exists()
         text = moved.read_text()
         assert "type: learning" in text and "status: active" in text
@@ -215,6 +231,57 @@ def test_capture_same_minute_collision(env):
         # the -2 lands on the name, before the tag, so the tag still parses
         assert any("-2 #todo" in n for n in names)
         assert all(i.tag == "todo" for i in intake.poll(inbox))
+
+
+def test_capture_audio_roundtrip(env):
+    root, _, inbox, _ = env
+    from pipeline import intake
+    with Server(root) as s:
+        code, body = s.raw("POST", "/api/capture/audio?tag=idea&name=walk%20thought",
+                           b"\x1aE\xdf\xa3fake webm bytes", "audio/webm;codecs=opus")
+        assert code == 201 and body["status"] == "captured"
+        items = intake.poll(inbox)
+        assert len(items) == 1
+        item = items[0]
+        # a recording is audio the pipeline will transcribe, with the tag free-routing it
+        assert item.kind == "audio" and item.source == "voice" and item.tag == "idea"
+        assert item.path.suffix == ".webm" and "walk-thought" in item.path.name
+        assert body["id"] == item.captured.strftime("%Y%m%d%H%M%S")
+
+
+def test_capture_audio_rejects_bad_input(env):
+    root, _, inbox, _ = env
+    with Server(root) as s:
+        # not audio at all
+        code, body = s.raw("POST", "/api/capture/audio", b"hello", "text/plain")
+        assert code == 400 and set(body["error"]) == {"what", "cause", "todo"}
+        # audio, but a tag outside the 8 capture tags
+        assert s.raw("POST", "/api/capture/audio?tag=bogus", b"x", "audio/webm")[0] == 400
+        # an empty recording
+        assert s.raw("POST", "/api/capture/audio", b"", "audio/webm")[0] == 400
+        # nothing half-written is left behind for the watcher to trip over
+        assert list(inbox.iterdir()) == []
+
+
+def test_capture_audio_size_cap(env, monkeypatch):
+    root, _, inbox, _ = env
+    from api import notes as notes_mod
+    monkeypatch.setattr(notes_mod, "MAX_AUDIO_BYTES", 1024)
+    with Server(root) as s:
+        code, body = s.raw("POST", "/api/capture/audio", b"x" * 4096, "audio/webm")
+        assert code == 413 and body["error"]["todo"]
+        assert list(inbox.iterdir()) == []
+
+
+def test_capture_audio_same_minute_collision(env):
+    root, _, inbox, _ = env
+    from pipeline import intake
+    with Server(root) as s:
+        s.raw("POST", "/api/capture/audio?tag=todo", b"one", "audio/webm")
+        s.raw("POST", "/api/capture/audio?tag=todo", b"two", "audio/webm")
+    names = sorted(p.name for p in inbox.glob("*.webm"))
+    assert len(names) == 2 and any("-2 #todo" in n for n in names)
+    assert all(i.tag == "todo" for i in intake.poll(inbox))
 
 
 def test_failed_and_retry(env):
@@ -273,12 +340,20 @@ def test_streak_rule(env):
 def test_resurfaced_deterministic_and_null(env):
     root, vault, _, _ = env
     with Server(root) as s:
-        assert s.req("GET", "/api/resurfaced")[1]["note"] is None  # empty wiki
-        _note(vault / "02-Wiki" / "2026-02-14-idea.md", "20260214093000", "insight", "active",
+        assert s.req("GET", "/api/resurfaced")[1]["note"] is None  # nothing to resurface
+        # one note in each of the three knowledge folders — resurface() must
+        # glob across all three, not just one
+        _note(vault / "wiki" / "2026-02-14-idea.md", "20260214093000", "insight", "active",
               "First paragraph here.\n\nSecond.")
+        _note(vault / "02-Musings" / "2026-02-15-hunch.md", "20260215093000", "musing", "active",
+              "A musing.")
+        _note(vault / "03-Learnings" / "2026-02-16-fact.md", "20260216093000", "learning", "active",
+              "A learning.")
         first = s.req("GET", "/api/resurfaced")[1]["note"]
-        assert first["id"] == "20260214093000" and first["title"] == "idea"
+        assert first["id"] in {"20260214093000", "20260215093000", "20260216093000"}
         assert s.req("GET", "/api/resurfaced")[1]["note"]["id"] == first["id"]  # stable within a day
+        # the pick can come from any of the three folders (deterministic per day)
+        assert first["file"].split("/")[0] in {"wiki", "02-Musings", "03-Learnings"}
 
 
 def test_run_conflict(env, monkeypatch):
@@ -320,7 +395,11 @@ def test_integrations_shape_and_engine_guard(env):
         assert code == 200 and body["engine"] == "whispercpp"
         health = [c for c in body["cards"] if c["group"] == "health"]
         links = [c for c in body["cards"] if c["group"] == "link"]
-        assert len(health) == 7
+        assert len(health) == 9
+        # Hindi → Hinglish is honest about being unset rather than absent
+        transliteration = next(c for c in health if c["id"] == "transliteration")
+        assert transliteration["badge"] == "Not configured"
+        assert set(transliteration["error"]) == {"what", "cause", "todo"}
         assert {"obsidian", "dex"} <= {c["id"] for c in links}  # obsidian + configured links only
         assert all(c["badge"] is None for c in links)
         # engine toggle rejects openai without the key

@@ -21,6 +21,21 @@ const REFERENCE_ROWS: { name: string; where: string; what: string }[] = [
     what: "Only needed if transcription.engine is set to \"openai\" (cloud fallback).",
   },
   {
+    name: "OPENROUTER_API_KEY",
+    where: "Shell environment on the server",
+    what: "Only needed if transliteration.engine is \"openrouter\" — the cloud way to rewrite Hindi transcripts in Roman script. Ollama needs no key.",
+  },
+  {
+    name: "PDL_API_KEY",
+    where: "Shell environment on the server",
+    what: "Optional. Lets a person card look up role and company (People Data Labs, 100 free lookups a month). Everything else on the People screen works without it.",
+  },
+  {
+    name: "_System/my-voice.md",
+    where: "In the vault, written by the My voice card below",
+    what: "Messages you have actually sent. Reconnection drafts are written to sound like these — without it, drafting refuses rather than inventing a voice.",
+  },
+  {
     name: "api.auth_token",
     where: "config.json → api.auth_token",
     what: "The access token this app connects with. Any random string — just match it here.",
@@ -216,6 +231,8 @@ export function Settings() {
           ))}
         </ul>
       </Card>
+
+      <MyVoiceCard />
 
       <EnrichmentCards />
 
@@ -565,5 +582,81 @@ function EnrichmentCards() {
         </div>
       </div>
     </section>
+  );
+}
+
+
+// Reconnection drafts are written to sound like the owner. That is only
+// possible with real examples, so this card is the one place they're pasted —
+// and until it has some, the draft endpoint refuses rather than writing in a
+// generic voice (CLAUDE.md-adjacent honesty: no pretending).
+function MyVoiceCard() {
+  const { data, refetch } = usePolling(api.voice, 0);
+  const [samples, setSamples] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    const list = samples
+      .split(/\n\s*\n/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (list.length === 0) {
+      toast("Paste a message or two first.", "error");
+      return;
+    }
+    setSaving(true);
+    try {
+      await api.saveVoice(list);
+      setSamples("");
+      refetch();
+      toast("✅ Voice saved");
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(envelope ? `${envelope.what} ${envelope.todo}` : "Couldn't save that.", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card title="My voice">
+      <p className="text-default text-sm">
+        Paste 3–5 messages you have actually sent — WhatsApp, email, anything. Drafts on the
+        People screen copy this voice; without it they refuse rather than guess.
+      </p>
+      <p className="mt-3">
+        <span
+          className={`inline-flex min-h-8 items-center rounded-full border px-3 text-xs font-bold ${
+            data?.exists
+              ? "border-emphasis text-emphasis"
+              : "border-subtle text-subtle"
+          }`}
+        >
+          {data?.exists ? `${data.samples} sample${data.samples === 1 ? "" : "s"} on file` : "Not set up"}
+        </span>
+      </p>
+      <label className="text-subtle mt-4 block text-[11px] font-bold uppercase tracking-[0.08em]">
+        One message per paragraph (blank line between)
+      </label>
+      <textarea
+        value={samples}
+        onChange={(e) => setSamples(e.target.value)}
+        rows={6}
+        aria-label="Writing samples"
+        placeholder={"hey! sorry for the slow reply — this week has been mad\n\nSounds good. Tuesday 4pm works, I'll come to you."}
+        className="bg-subtle border-subtle text-emphasis mt-2 w-full rounded-xl border p-3 text-base"
+      />
+      <button
+        type="button"
+        onClick={() => void save()}
+        disabled={saving}
+        className="border-emphasis text-emphasis mt-3 min-h-12 rounded-xl border px-5 text-sm font-bold disabled:opacity-60"
+      >
+        {saving ? "Saving…" : data?.exists ? "Replace samples" : "Save my voice"}
+      </button>
+      <p className="text-muted mt-2 text-[11px]">
+        Saved to _System/my-voice.md in the vault and committed to git, like every other write.
+      </p>
+    </Card>
   );
 }

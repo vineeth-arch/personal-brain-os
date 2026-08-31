@@ -21,6 +21,13 @@ CREATE TABLE IF NOT EXISTS reminders (
     key TEXT PRIMARY KEY,            -- todo block-id, or digest-<date>
     fired_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ingested_files (
+    src TEXT NOT NULL,               -- absolute path in a watched app folder
+    mtime_ns INTEGER NOT NULL,       -- (src, mtime, size) identifies one recording
+    size INTEGER NOT NULL,
+    copied_at TEXT NOT NULL,
+    PRIMARY KEY (src, mtime_ns, size)
+);
 """
 
 
@@ -42,6 +49,22 @@ class EventLog:
             (datetime.now().isoformat(timespec="seconds"), file, stage, status,
              duration_ms, message, plain_english_error),
         )
+        self.conn.commit()
+
+    def already_ingested(self, src: str, mtime_ns: int, size: int) -> bool:
+        """Has this exact file (path + mtime + size) been copied in already?
+        Pipeline bookkeeping only — the recording itself lives in the inbox and
+        the vault, never here (CLAUDE.md §1)."""
+        cur = self.conn.execute(
+            "SELECT 1 FROM ingested_files WHERE src = ? AND mtime_ns = ? AND size = ?",
+            (src, mtime_ns, size))
+        return cur.fetchone() is not None
+
+    def mark_ingested(self, src: str, mtime_ns: int, size: int) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO ingested_files (src, mtime_ns, size, copied_at) "
+            "VALUES (?,?,?,?)",
+            (src, mtime_ns, size, datetime.now().isoformat(timespec="seconds")))
         self.conn.commit()
 
     def append_capture_log(self, line: str) -> None:

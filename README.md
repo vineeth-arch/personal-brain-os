@@ -9,10 +9,25 @@ Read `CLAUDE.md` before making changes — it is the constitution. Structure and
 note rules are locked in `SCHEMA-REFERENCE.md`; the frontend follows
 `DESIGNSYSTEM.md`.
 
-## Setup
+## Going live
+
+To run the cockpit on a server and reach it from anywhere (phone included),
+follow **[GO-LIVE.md](GO-LIVE.md)** — a copy-paste runbook for a cheap VPS with
+a Cloudflare Tunnel, vault sync, and Google (Gmail/Calendar) setup. First boot
+generates its own config and access token, so `docker compose up -d --build` is
+the whole install. `DEPLOY.md` covers the alternatives (Mac launchd, home
+server, your own domain with Caddy).
+
+## Setup (local development)
 
 ```bash
 cp config.example.json config.json   # then fill in the paths / tokens
+```
+
+Or let the bootstrapper do it interactively:
+
+```bash
+python3 scripts/bootstrap.py         # asks for vault/inbox, mints an auth token
 ```
 
 API keys (Anthropic, OpenAI) come from environment variables only — never put

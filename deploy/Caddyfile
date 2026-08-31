@@ -1,0 +1,8 @@
+# HTTPS front door for the cockpit (compose `proxy` profile).
+# DOMAIN comes from .env; Caddy fetches + renews Let's Encrypt certs on its own.
+# The app still requires the bearer token on every /api request — Caddy only
+# adds transport security, it is not the auth layer.
+{$DOMAIN} {
+	reverse_proxy app:8000
+	encode gzip
+}

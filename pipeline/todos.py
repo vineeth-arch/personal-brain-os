@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from . import errors
+from . import errors, morning
 
 TZ = ZoneInfo("Asia/Kolkata")
 TODOS_FOLDER = "06-Todos"
@@ -161,7 +161,10 @@ def _tick(config, events, now: datetime) -> None:
     overdue = [t for t in todos if in_range(t, "overdue", today)]
     stats = events.digest_stats(today - timedelta(days=1))
     quiet_pipeline = not (stats["captured"] or stats["needs_review"] or stats["failed"])
-    if not due_today and not overdue and quiet_pipeline:
+    # the relationship half of the morning — folded into THIS push, never a second one
+    people_lines = morning.people_section(config, today)
+    people_lines += morning.push_section(config, events.db_path)
+    if not due_today and not overdue and quiet_pipeline and not people_lines:
         events.mark_reminder(digest_key)  # nothing to say today; don't re-check
         return
     lines = []
@@ -178,6 +181,7 @@ def _tick(config, events, now: datetime) -> None:
     if due_today:
         lines.append("Today:")
         lines += [f"• {t.task}" + (f" at {t.time}" if t.time else "") for t in due_today]
+    lines += people_lines
     errors.ntfy(config.ntfy_url, config.ntfy_topic, "\n".join(lines),
                 title="Brain Cockpit — today")
     events.mark_reminder(digest_key)

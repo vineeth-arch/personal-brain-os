@@ -8,7 +8,7 @@
 
 * **Fixed `id`** on every note: an immutable timestamp `YYYYMMDDHHmmss`. **All links and typed edges point to the `id`, never to a title or path.** Rename/move freely; links never break.  
 * **`origin: human | ai`** on every note: provenance. You can NEVER reconstruct later what was AI-written vs yours. Set it at creation.  
-* **`raw/` vs `wiki/`** ownership boundary: `raw/` \= immutable sources (never edit); `wiki/` \= your synthesis. The human/agentic firewall.
+* **`raw/` vs `wiki/`** folders: `raw/` is user-managed and outside the pipeline's numbered scheme — the pipeline never reads or writes it; it holds immutable sources you place there yourself, never edited. `wiki/` also sits outside the numbered scheme, but the pipeline **does** write to it — it is the real destination folder for `insight`-type notes (atomic synthesis, one idea per note). The human/agentic firewall is the **`origin: human | ai`** field (the first non-negotiable above), NOT the folder: `wiki/` can hold both human- and AI-authored insight notes, told apart by frontmatter.
 
 ## **2\. UNIVERSAL FRONTMATTER (every note, all domains)**
 
@@ -17,12 +17,13 @@ yaml
 id: 20260605143000        \# immutable timestamp YYYYMMDDHHmmss — links point here  
 type: musing              \# see type list below  
 created: 2026-06-05  
-source: voice             \# voice | share | web-clipper | dex | manual | ai-compiled | handshake  
+source: voice             \# voice | plaud | share | web-clipper | dex | manual | ai-compiled | handshake  
 origin: human             \# human | ai  (provenance firewall)  
 status: active            \# lifecycle per type (section 6\)  
 categories: \[\]            \# what it IS    — as \[\[links\]\] (Kepano model), not flat tags  
 subjects: \[\]              \# what it's ABOUT — as \[\[links\]\]  
 tags: \[\]                  \# from \_System/vocabulary.md (controlled vocabulary)  
+duration\_min:             \# audio captures only — how long the recording ran  
 \---
 
 **Types:** `musing · learning · todo · journal · project · person · resource · decision · principle · insight · reflection`
@@ -55,9 +56,9 @@ Use these relation types in `wiki/` notes; each edge points to a fixed `id`: `su
 
 ## **7\. PER-DOMAIN SCHEMAS (extra frontmatter on top of universal)**
 
-### **Knowledge / insight (`wiki/`, `02`, `03`)**
+### **Knowledge notes (musing → `02-Musings`, learning → `03-Learnings`, insight → `wiki/`)**
 
-Atomic (one idea), **your own words**, with a `derived-from` edge to its source. No extra required fields.
+Atomic (one idea), **your own words**, with a `derived-from` edge to its source. No extra required fields. All three share the same lifecycle (`active → archived`, §6) and are the three folders the daily resurfacing pick samples from.
 
 ### **Resource (`04-Resources/*`)**
 
@@ -119,6 +120,8 @@ Body: `## Context` · `## Needs` · `## Interaction log` (append-only, dated) ·
 ## **8\. CAPTURE / PROCESSING RULES**
 
 * **One recording \= one note, kept at FULL LENGTH. NO splitting into atomic notes.** The watcher keeps the transcript whole in the body; it only *additionally* extracts action items to `06-Todos/<date>.md`.  
+* A long recording is **transcribed in segments and stitched back together** (10-minute chunks past 15 min / 20 MB, with `[hh:mm]` markers between them). That is a request-size workaround, not a split: the result is still ONE note at full length. A segment that can't be transcribed leaves `[N minutes unintelligible — audio archived]` in place, so one bad stretch never costs the rest of a meeting.  
+* Hindi speech is transcribed in **Devanagari**, then transliterated to **Roman Hindi / Hinglish**, which becomes the note body; the Devanagari original is kept in the same note under `## Original (Devanagari)`. Classification and action-item extraction read the Hinglish text. If no transliteration engine is configured or reachable, the note keeps the Devanagari transcript — a capture is never lost to a formatting step.  
 * Processing delay is accepted; "✅ Captured" is the instant trust signal.  
 * Every bulk AI write goes through a **review gate \+ git commit**. AI-generated notes carry `origin: ai`.
 
@@ -126,5 +129,24 @@ Body: `## Context` · `## Needs` · `## Interaction log` (append-only, dated) ·
 
 * Note files: `YYYY-MM-DD-kebab-title.md` (the `id` in frontmatter is the durable handle; the filename is for humans).  
 * Daily notes: `01-Journal/YYYY-MM-DD.md`. Todos: `06-Todos/YYYY-MM-DD.md`. Reflections: `08-Reflections/YYYY-MM-DD-weekly-reflection.md`.
-* **Exception:** `07-People/` and `11-Companies/` notes written by handshake use a stable entity slug (`kebab-name.md`, no date prefix) instead — the file has to survive a rename of the person or company, and the append-only interaction log depends on finding the same file again on every sync. The frontmatter `id` remains the durable handle for links either way.
+* **Exception:** `07-People/` and `11-Companies/` notes written by **handshake** use a stable entity slug (`kebab-name.md`, no date prefix) instead — handshake's own sync stores the resolved path once and reuses it, and a predictable slug is the fallback if that ever has to be recomputed. This is a handshake-side convention, not a requirement on the folder itself: the cockpit's own person-note writer (`pipeline/relationships.py new_person_note`) still uses the standard `YYYY-MM-DD-kebab-name.md` form, and resolves people by frontmatter `id`, never by filename — so both conventions can coexist in `07-People/` without conflict. Expect the folder to hold both filename shapes.
+
+**Type → folder** (mirrors `pipeline/route.py` `TYPE_FOLDER` exactly — **keep the two in sync**; any change here or there must change both in the same commit):
+
+| Type | Folder |
+| ----- | ----- |
+| *(any note below the confidence threshold — parked for review)* | `00-Inbox` |
+| journal | `01-Journal` |
+| musing | `02-Musings` |
+| learning | `03-Learnings` |
+| resource | `04-Resources` |
+| project | `05-Projects` |
+| todo | `06-Todos` |
+| person | `07-People` |
+| reflection | `08-Reflections` |
+| decision | `09-Decisions` |
+| principle | `10-Principles` |
+| insight | `wiki/` |
+
+`raw/` is user-managed and outside this table — the pipeline never writes there.
 

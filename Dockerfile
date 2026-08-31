@@ -42,14 +42,18 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY api/ api/
 COPY pipeline/ pipeline/
 COPY checks.json config.example.json ./
+COPY scripts/bootstrap.py scripts/bootstrap.py
 COPY --from=whisper /src/build/bin/whisper-cli /usr/local/bin/whisper-cli
 COPY --from=web /web/dist web/dist
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# /data volume: config.json, events.db, .watcher-heartbeat, backups/, models/
+# /data holds config.json, events.db, .watcher-heartbeat, backups/, models/ —
+# persistence is declared by the deploy target (docker-compose.yml's bind
+# mount, or a Railway Volume), not by the image: some builders (Railway)
+# reject an anonymous `VOLUME` instruction outright, and Compose already
+# mounts ./data:/data explicitly regardless of whether this declares it too.
 ENV BRAIN_COCKPIT_ROOT=/data
-VOLUME /data
 EXPOSE 8000
 
 # stdlib only — no curl dependency for the healthcheck
