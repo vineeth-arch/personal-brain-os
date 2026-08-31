@@ -216,13 +216,6 @@ def structure(user_text: str, enr: Enrichment, config, router=None) -> dict:
 
 # ---- note building / routing ------------------------------------------------
 
-def _yaml_list(values) -> str:
-    values = [str(v).strip() for v in (values or []) if str(v).strip()]
-    if not values:
-        return "[]"
-    return "\n" + "\n".join(f"  - {v}" for v in values)
-
-
 def build_resource_note(item, enr: Enrichment, structured: dict, user_text: str,
                         note_id: str, created: str, now_iso: str, attempts: int) -> str:
     rtype = str(structured.get("resource_type", "article")).lower()
@@ -319,12 +312,6 @@ def _parse_note(text: str) -> tuple[dict, str]:
 def _insight_from_body(body: str) -> str:
     m = re.search(r"^## Insight\s*\n(.*?)(?:\n## |\Z)", body, re.DOTALL | re.MULTILINE)
     return m.group(1).strip() if m else ""
-
-
-@dataclass
-class _RetryItem:
-    captured: datetime
-    source: str
 
 
 # The only frontmatter fields enrichment owns. Everything else on a resource
