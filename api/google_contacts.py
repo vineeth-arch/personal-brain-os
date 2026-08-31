@@ -155,8 +155,10 @@ def push_biography(config, token_cache: dict, person, summary: str, *,
     existing = biography(contact)
     merged = dex.merge(existing, summary, today)
     resource = contact.get("resourceName", "")
-    etag = (contact.get("etag")
-            or (contact.get("metadata") or {}).get("sources", [{}])[0].get("etag", ""))
+    # `sources` can come back as an empty list, not just absent — indexing [0]
+    # on the default only helped in the absent case and raised IndexError here
+    sources = (contact.get("metadata") or {}).get("sources") or [{}]
+    etag = contact.get("etag") or (sources[0] or {}).get("etag", "")
     payload = {"etag": etag, "biographies": [{"value": merged, "contentType": "TEXT_PLAIN"}]}
     result = {
         "resource_name": resource,

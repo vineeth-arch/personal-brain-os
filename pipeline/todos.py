@@ -67,7 +67,11 @@ def scan(vault: Path) -> list[Todo]:
         return []
     out: list[Todo] = []
     for path in sorted(todos_dir.glob("*.md")):
-        for i, line in enumerate(path.read_text().splitlines()):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue        # one unreadable day must not empty the agenda
+        for i, line in enumerate(text.splitlines()):
             parsed = parse_line(line)
             if parsed:
                 task, done, due, time, block = parsed

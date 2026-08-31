@@ -21,13 +21,26 @@ from pipeline import classify, route
 
 log = logging.getLogger("api")
 
-_CONFIDENCE_RE = re.compile(r"confidence=([0-9.]+)")
+_CONFIDENCE_RE = re.compile(r"confidence=(\d+(?:\.\d+)?)")
 _DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
 
 EXCERPT_CHARS = 300
 
 
 # ---- frontmatter ------------------------------------------------------------
+
+def read_note(path: Path) -> str | None:
+    """A note's text, or None when it can't be read.
+
+    The vault is user-managed: a stray binary, a half-synced file, or a note
+    saved in another encoding must cost that ONE note, not the whole screen.
+    Every listing below skips what it cannot read rather than 500-ing."""
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        log.warning("skipping unreadable note %s", path)
+        return None
+
 
 def _unquote(value: str) -> str:
     """Strip the surrounding quotes a YAML scalar may carry.
@@ -140,7 +153,10 @@ def list_review(vault: Path, db_path: Path) -> list[dict]:
     confidences = _confidence_map(db_path)
     items = []
     for path in sorted(inbox_dir.glob("*.md")):
-        fm, body = parse_frontmatter(path.read_text())
+        text = read_note(path)
+        if text is None:
+            continue
+        fm, body = parse_frontmatter(text)
         if fm.get("status") != "needs-review":
             continue
         items.append({
@@ -162,7 +178,10 @@ def count_review(vault: Path) -> int:
         return 0
     n = 0
     for path in inbox_dir.glob("*.md"):
-        fm, _ = parse_frontmatter(path.read_text())
+        text = read_note(path)
+        if text is None:
+            continue
+        fm, _ = parse_frontmatter(text)
         if fm.get("status") == "needs-review":
             n += 1
     return n
@@ -176,7 +195,10 @@ def approve(vault: Path, note_id: str, new_type: str) -> str:
     text = ""
     if inbox_dir.is_dir():
         for path in inbox_dir.glob("*.md"):
-            text = path.read_text()
+            candidate = read_note(path)
+            if candidate is None:
+                continue
+            text = candidate
             fm, _ = parse_frontmatter(text)
             if fm.get("id") == note_id and fm.get("status") == "needs-review":
                 target = path
@@ -312,12 +334,12 @@ def resurface(vault: Path) -> dict | None:
         for folder in folders
         if folder.is_dir()
         for p in folder.glob("*.md")
-        if p.read_text().startswith("---\n")
+        if (read_note(p) or "").startswith("---\n")
     )
     if not candidates:
         return None
     pick = random.Random(date.today().toordinal()).choice(candidates)
-    fm, body = parse_frontmatter(pick.read_text())
+    fm, body = parse_frontmatter(read_note(pick) or "")
     paragraph = next((p.strip() for p in body.split("\n\n") if p.strip()), "")
     return {
         "id": fm.get("id", ""),
@@ -485,7 +507,10 @@ def _resource_notes(vault: Path):
     if not folder.is_dir():
         return
     for path in sorted(folder.glob("*.md")):
-        fm, body = parse_frontmatter(path.read_text())
+        text = read_note(path)
+        if text is None:
+            continue
+        fm, body = parse_frontmatter(text)
         if fm.get("type") == "resource":
             yield path, fm, body
 
@@ -525,7 +550,7 @@ def resource_detail(vault: Path, note_id: str) -> dict | None:
     path = find_resource(vault, note_id)
     if path is None:
         return None
-    fm, body = parse_frontmatter(path.read_text())
+    fm, body = parse_frontmatter(read_note(path) or "")
     detail = _resource_summary(vault, path, fm, body)
     detail["description"] = fm.get("description") or None
     detail["rating"] = fm.get("rating") or None
@@ -598,6 +623,6 @@ def sample_matching(vault: Path, scope: str) -> list[Path]:
 def sample_titles(paths: list[Path]) -> list[str]:
     titles: list[str] = []
     for path in paths:
-        fm, _ = parse_frontmatter(path.read_text())
+        fm, _ = parse_frontmatter(read_note(path) or "")
         titles.append(_note_title(path, fm))
     return titles

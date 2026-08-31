@@ -231,6 +231,21 @@ def profile_summary(vault_path: Path, person_id: str, config, *, router=None
 
 # ---- writers -------------------------------------------------------------------
 
+def _reread(vault_path: Path, person_id: str, fallback: relationships.Person
+            ) -> relationships.Person:
+    """The person as they are on disk after a write, or the pre-write object.
+
+    find_person can legitimately answer None — a rename or a sync deleting the
+    file between the write and the re-read — and passing that into summary()
+    turned a successful write into a 500. The write already happened, so the
+    honest answer is the object we have."""
+    found = relationships.find_person(vault_path, person_id)
+    if found is None:
+        log.warning("person %s vanished between write and re-read", person_id)
+        return fallback
+    return found
+
+
 def create_target(vault_path: Path, name: str, channel_kind: str, channel_value: str,
                   today: date | None = None) -> dict:
     """Quick-add a warm-up target: one name, one channel, stage `identified`.
@@ -239,6 +254,8 @@ def create_target(vault_path: Path, name: str, channel_kind: str, channel_value:
     plain-English refusal."""
     today = today or date.today()
     person = relationships.create_person(Path(vault_path), name, channel_kind, channel_value)
+    if person is None:
+        raise ValueError("the note was written but could not be read back")
     git_commit_vault(Path(vault_path), f"api: added target {person.name}")
     return summary(person, today)
 
@@ -249,9 +266,10 @@ def log_contact(vault_path: Path, person_id: str, note: str, channel: str = "",
     person = relationships.find_person(vault_path, person_id)
     if not person:
         return None
-    person.path.write_text(relationships.log_contact(person, note, today, channel=channel))
+    person.path.write_text(relationships.log_contact(person, note, today, channel=channel),
+                           encoding="utf-8")
     git_commit_vault(Path(vault_path), f"api: logged contact with {person.name}")
-    updated = relationships.find_person(vault_path, person_id)
+    updated = _reread(vault_path, person_id, person)
     return {**summary(updated, today),
             "suggest_stage": relationships.next_stage(person.warmth_stage)}
 
@@ -262,9 +280,9 @@ def set_stage(vault_path: Path, person_id: str, stage: str,
     person = relationships.find_person(vault_path, person_id)
     if not person:
         return None
-    person.path.write_text(relationships.set_warmth_stage(person, stage))
+    person.path.write_text(relationships.set_warmth_stage(person, stage), encoding="utf-8")
     git_commit_vault(Path(vault_path), f"api: {person.name} → warmth {stage}")
-    return summary(relationships.find_person(vault_path, person_id), today)
+    return summary(_reread(vault_path, person_id, person), today)
 
 
 # ---- enrichment (People Data Labs) ----------------------------------------------
@@ -314,8 +332,8 @@ def enrich(vault_path: Path, person_id: str, *, fetch=None,
                 "credits_remaining": remaining,
                 "detail": "People Data Labs had no match for this person."}
     line = f"- {' '.join(facts)} <!-- origin: ai · people-data-labs -->"
-    person.path.write_text(relationships.append_context(person, [line]))
+    person.path.write_text(relationships.append_context(person, [line]), encoding="utf-8")
     git_commit_vault(Path(vault_path), f"api: enriched {person.name} (origin: ai)")
-    return {**summary(relationships.find_person(vault_path, person_id), today),
+    return {**summary(_reread(vault_path, person_id, person), today),
             "enriched": True, "credits_remaining": remaining,
             "detail": " ".join(facts)}

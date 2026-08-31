@@ -228,17 +228,39 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
 
 def _fail(item, config, events, res: Result, what: str, plain: str,
           kind: str = "permanent", attempts: int = 1, detail: str = "") -> Result:
+    """Record one file's failure and move on.
+
+    This runs INSIDE process_file's except handler, so it must not raise: a full
+    disk, a read-only failed/ folder or a locked database would otherwise escape
+    the handler and abort the whole run_once comprehension — one unquarantinable
+    file stopping the entire batch, which is the opposite of this module's
+    "one bad file never stops the run" contract. Each step is therefore
+    independently best-effort, and the Result is always returned."""
     fkey = str(item.path)
-    # The source may already be quarantined if it moved; guard on existence.
-    if item.path.exists():
-        errors.quarantine(item.path, config.failed_path)
+    res.status, res.error = "failed", what
     message = f"{what} kind={kind} attempts={attempts}"
     if detail:
         message += f" — {detail}"
-    events.log(fkey, "pipeline", "failed", message=message, plain_english_error=plain)
-    errors.ntfy(config.ntfy_url, config.ntfy_topic, plain, title="Brain Cockpit — file failed")
-    events.append_capture_log(f"❌ {item.path.name} — {what}")
-    res.status, res.error = "failed", what
+
+    try:
+        # The source may already be quarantined if it moved; guard on existence.
+        if item.path.exists():
+            errors.quarantine(item.path, config.failed_path)
+    except Exception:
+        log.exception("could not quarantine %s — it stays in the inbox", fkey)
+        message += " — quarantine failed, the file is still in the inbox"
+
+    for step, action in (
+        ("event log", lambda: events.log(fkey, "pipeline", "failed", message=message,
+                                         plain_english_error=plain)),
+        ("ntfy", lambda: errors.ntfy(config.ntfy_url, config.ntfy_topic, plain,
+                                     title="Brain Cockpit — file failed")),
+        ("capture log", lambda: events.append_capture_log(f"❌ {item.path.name} — {what}")),
+    ):
+        try:
+            action()
+        except Exception:
+            log.exception("failure bookkeeping (%s) failed for %s", step, fkey)
     return res
 
 
@@ -259,16 +281,29 @@ def run_once(config, events: EventLog, deps: Deps) -> list[Result]:
 
 
 def run_loop(config, events, deps) -> None:
+    """Poll forever. A tick may fail; the loop may not.
+
+    An unmounted inbox makes intake.poll raise FileNotFoundError, which used to
+    kill the watcher process outright — the pipeline then stayed dead until
+    someone noticed, and the only signal was the API watchdog's push half an
+    hour later. A transient condition must cost one tick, not the daemon."""
     print(f"Watching {config.inbox_path} — polling every {POLL_SECONDS // 60} min. Ctrl-C to stop.")
     while True:
-        # pull anything new out of the app-owned folders (Plaud Desktop,
-        # Note Pro exports, Voice Memos) before polling the inbox
-        ingest.sweep(config, events)
-        results = run_once(config, events, deps)
-        if results:
-            print(f"Processed {len(results)} file(s).")
-        todos.tick(config, events)              # reminders + optional digest
-        enrich.retry_pending(config, events)    # one re-attempt for stale enriched:false notes
+        try:
+            # pull anything new out of the app-owned folders (Plaud Desktop,
+            # Note Pro exports, Voice Memos) before polling the inbox
+            ingest.sweep(config, events)
+            results = run_once(config, events, deps)
+            if results:
+                print(f"Processed {len(results)} file(s).")
+            todos.tick(config, events)              # reminders + optional digest
+            enrich.retry_pending(config, events)    # one re-attempt for stale enriched:false notes
+        except KeyboardInterrupt:
+            raise
+        except Exception:
+            # the heartbeat deliberately is NOT refreshed on a failed tick, so a
+            # persistently broken loop still reads as stale in the cockpit
+            log.exception("watcher tick failed — retrying at the next poll")
         time.sleep(POLL_SECONDS)
 
 
