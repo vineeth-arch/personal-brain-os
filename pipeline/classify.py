@@ -60,12 +60,22 @@ def _spoken_tag(transcript: str) -> str | None:
     return None
 
 
-def classify(item, transcript: str, config, llm_fn=None) -> Classification:
-    # 1. Free route: capture tag from filename, else spoken in first 5 words.
+def free_route_tag(item, transcript: str) -> str | None:
+    """The capture tag that decides free-routing — filename tag if it's one of
+    the 8, else spoken in the first 5 words. None when neither names a real
+    tag. Exposed so a caller other than classify() (watcher.process_file's
+    tag-wins-over-link-detection check, D13) can ask the same question without
+    running a full classification."""
     tag = (item.tag or "").lower() if item.tag else None
     if tag not in TAG_TO_TYPE:
         tag = _spoken_tag(transcript)
-    if tag in TAG_TO_TYPE:
+    return tag if tag in TAG_TO_TYPE else None
+
+
+def classify(item, transcript: str, config, llm_fn=None) -> Classification:
+    # 1. Free route: capture tag from filename, else spoken in first 5 words.
+    tag = free_route_tag(item, transcript)
+    if tag:
         return Classification(
             type=TAG_TO_TYPE[tag], title=item.name, tags=[tag],
             confidence=1.0, needs_review=False, routed_by="tag")

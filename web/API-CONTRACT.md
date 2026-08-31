@@ -712,16 +712,29 @@ rate-limit fall through; keyless providers are skipped silently; claude-haiku
 is the floor and stays last; all-fail → needs-review, never a guess. Keys are
 env-only: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY.
 
-## Link capture + enrichment (Pass L)
+## Link capture + enrichment (Pass L, hardened in Pass C)
 
 A text capture containing a URL is detected as `kind=link` at intake and routed
 to `04-Resources` as a resource note — no classify LLM, no review gate (a link
-IS a resource). **The note is written unconditionally; enrichment is best-effort
-decoration.** Failure sets `enriched: false` + one quiet `enrich` event (status
-`ok`, never `failed`) — no quarantine, no ntfy alarm. YouTube uses public oEmbed
-(keyless); Instagram uses an Apify actor (`APIFY_TOKEN` env + `apify.actor_id`
-in config.json — expected to break periodically, degrades gracefully); other
-URLs use `<title>` + `og:image`.
+IS a resource) — **unless a capture tag (filename or spoken/typed `#tag`) names
+something other than `resource`** (Pass C, D13): a tagged capture flows through
+the normal classify/route path instead, with the URL left intact in the body,
+so `#journal ... here's an article https://…` is a journal note, not a resource.
+**The note is written unconditionally; enrichment is best-effort decoration.**
+Failure sets `enriched: false` + one quiet `enrich` event (status `ok`, never
+`failed`) — no quarantine, no ntfy alarm. YouTube uses public oEmbed (keyless)
+for title/author/cover and the same public innertube endpoint the YouTube apps
+themselves call for a transcript (also keyless — the old `timedtext` endpoint
+this replaced had gone dead); Instagram uses an Apify actor (`APIFY_TOKEN` env
++ `apify.actor_id` in config.json, default `apify~instagram-scraper` —
+expected to break periodically, degrades gracefully; a note that failed only
+for lack of configuration gets extra auto-retries, capped at 4 attempts total,
+once Apify is configured); other URLs use `<title>` + `og:image`.
+
+The `## Insight` body section is the user's own words **minus the URL itself**
+(Pass C, D14) — the URL already lives in `source_url`, so gluing it into the
+insight text too was pure duplication. A capture that was only a bare URL with
+no other words gets no `## Insight` section at all.
 
 Resource note frontmatter (SCHEMA §7 + Pass-L/6 fields; the Pass 6 gallery
 consumes these unchanged):
@@ -729,8 +742,13 @@ consumes these unchanged):
 title, cover, source_url, description, status: inbox, platform (youtube|
 instagram|web), enriched (bool), enrich_attempts, enrich_last` — plus the
 universal block (`id, created, source, origin: human, meta_origin: ai`). Body:
-`## Insight` (the user's own words, verbatim), `## Ingredients`/`## Steps` for
-recipes, `## Transcript` or `## Caption` for enriched media.
+`## Insight` (the user's own words, URL removed), `## Ingredients`/`## Steps`
+for recipes, `## Transcript` or `## Caption` for enriched media, and
+`## Slides` for an Instagram carousel — a numbered list of `image_url —
+caption` (Pass C); a single post/reel has no `## Slides` section. Every field
+and section above is what enrichment owns; re-enrichment (below) merges these
+back in and leaves everything else on the note — `status`, `rating`, `sample`,
+the user's own `## Insight` edits, any hand-added section — untouched.
 
 ### `POST /api/resources/{id}/enrich`
 

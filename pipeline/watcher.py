@@ -168,7 +168,15 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
                                message="no transliteration engine answered — "
                                        "note kept in Devanagari")
 
-        if item.kind == "link":
+        # D13: a capture tag wins over automatic link-detection. Without this,
+        # "#journal ... here's the article https://..." was silently pulled
+        # off the journal and filed as an untitled resource — the tag the
+        # user spoke or typed was thrown away. Only an ABSENT tag, or an
+        # explicit #resource, lets a URL fall through to the link branch; any
+        # other tag flows through the normal classify/route path below with
+        # the URL left intact in the body.
+        free_tag = classify_mod.free_route_tag(item, transcript)
+        if item.kind == "link" and (free_tag is None or free_tag == "resource"):
             # A link IS a resource — no classify LLM, no review gate. Enrich
             # (best-effort) then route to 04-Resources. Enrichment never fails
             # the note (Pass L principle).

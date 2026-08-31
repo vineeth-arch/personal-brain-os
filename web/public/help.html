@@ -184,8 +184,10 @@
       </ul></div>
       <div class="card"><div class="tool-eyebrow">iPhone</div><h3>Capture triggers</h3><ul>
         <li>Action Button → Voice Memo (records while locked)</li>
-        <li>Build "→ Brain": accept audio → optional name → tag menu (8 tags, skippable) → rename <code>YYYY-MM-DD-HHmm name #tag</code> → save to CaptureInbox → ✅</li>
-        <li>Test end-to-end: record → share → file on Mac</li>
+        <li>Build "→ Brain": branch on what came in — <b>audio</b> (unchanged: accept audio → optional name → tag menu → save); <b>URL or text</b> (an Instagram/YouTube share, or any selected text) → optional "Add a thought?" Ask for Input step (your answer is prepended — that becomes the note's clean insight, not glued onto the URL) → tag menu → save as <code>.txt</code> to CaptureInbox; <b>image</b> → "Convert Image to JPEG" action first (this is what makes a HEIC screenshot readable server-side) → optional thought → tag menu → save to CaptureInbox</li>
+        <li>Every branch ends the same way: rename <code>YYYY-MM-DD-HHmm name #tag</code>, save to CaptureInbox, "✅"</li>
+        <li>iOS has no PWA share target (a platform limit, not this app's) — the Shortcut is the whole path for a phone share. On the Mac, the installed cockpit PWA in Chrome DOES appear as a share target — or just paste the link/text straight into Quick Capture</li>
+        <li>Test end-to-end: record/share → file on Mac</li>
       </ul></div>
       <div class="card"><div class="tool-eyebrow">Device</div><h3>Plaud</h3><ul>
         <li><b>Works day one:</b> export the recording from the Plaud app/Desktop and share it into <code>CaptureInbox/plaud/</code> — anything in that folder is stamped <code>source: plaud</code></li>

@@ -49,7 +49,7 @@
     "supabase": "https://app.supabase.com/project/_"
   },
   "apify": {
-    "actor_id": ""
+    "actor_id": "apify~instagram-scraper"
   },
   "todos": {
     "digest": false

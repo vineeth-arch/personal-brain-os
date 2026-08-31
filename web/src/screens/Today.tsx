@@ -9,6 +9,22 @@ import { usePolling } from "../hooks/usePolling";
 
 const HEARTBEAT_LIMIT_MIN = 20;
 
+// Pass C share ergonomics: the PWA's manifest share_target (Android/desktop
+// Chrome) hands a share here as ?title=&text=&url= on plain GET — read once
+// at module load (not per-render, so React StrictMode's double-invoke can't
+// clear the query twice) and immediately clear the query string so a later
+// refresh of this same tab doesn't re-import the same share.
+const SHARED_CAPTURE_TEXT = (() => {
+  if (typeof window === "undefined") return "";
+  const params = new URLSearchParams(window.location.search);
+  const parts = [params.get("title"), params.get("text"), params.get("url")]
+    .map((s) => (s || "").trim())
+    .filter(Boolean);
+  if (!parts.length) return "";
+  window.history.replaceState(null, "", window.location.pathname + window.location.hash);
+  return parts.join(" ");
+})();
+
 type Health = "ok" | "attention" | "problem";
 
 function heartbeatAgeMin(status: Status): number | null {
@@ -517,8 +533,13 @@ function MicButton({
 }
 
 function QuickCapture() {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(SHARED_CAPTURE_TEXT);
   const [tag, setTag] = useState<CaptureTag | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (SHARED_CAPTURE_TEXT) inputRef.current?.focus();
+  }, []);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -550,6 +571,7 @@ function QuickCapture() {
       <form onSubmit={submit} className="mt-2">
         <div className="flex gap-2">
           <input
+            ref={inputRef}
             type="text"
             value={text}
             onChange={(e) => setText(e.target.value)}

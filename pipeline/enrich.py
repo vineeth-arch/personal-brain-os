@@ -16,7 +16,7 @@ import os
 import re
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -49,6 +49,9 @@ class Enrichment:
     caption: str = ""        # IG caption / web description
     transcript: str = ""     # YouTube transcript when available
     detail: str = ""         # plain-English reason when enriched is false
+    # Instagram carousel slides — [{image_url, caption}], capped at 20. Empty
+    # for a single post/reel and for every other platform.
+    slides: list = field(default_factory=list)
 
 
 def extract_url(text: str) -> str | None:
@@ -58,6 +61,24 @@ def extract_url(text: str) -> str | None:
 
 def is_link_text(text: str) -> bool:
     return extract_url(text) is not None
+
+
+def strip_url(text: str, url: str | None) -> str:
+    """D14: the user's own words, minus the URL that made this a link capture
+    in the first place. The URL is never lost — it lives in `source_url` — so
+    keeping it inside the '## Insight' text too was pure duplication, and it
+    read badly glued onto whatever the user actually said around it."""
+    if not url:
+        return text.strip()
+    m = _URL_RE.search(text)
+    if m and m.group(0).rstrip(".,);]") == url:
+        # remove the RAW match (trailing punctuation and all) — `url` itself
+        # already had that punctuation trimmed by extract_url, so a plain
+        # text.replace(url, ...) would leave a stray trailing comma behind
+        stripped = text[:m.start()] + " " + text[m.end():]
+    else:
+        stripped = text.replace(url, " ")
+    return re.sub(r"\s+", " ", stripped).strip()
 
 
 # ---- HTTP seam --------------------------------------------------------------
@@ -87,6 +108,58 @@ def _parse_timedtext(xml: str) -> str:
     return " ".join(p for p in parts if p)[:4000]
 
 
+# D12: video.google.com/timedtext (the old source of this transcript) is dead
+# — it now answers empty for every video, so transcripts were effectively
+# always missing. The innertube endpoint below is what the YouTube apps
+# themselves call; the public ANDROID client context needs no key and no
+# cookies. Best-effort throughout: any failure here — a changed response
+# shape, no captions on the video, a network error — degrades to no
+# transcript, exactly as the old code did. It never blocks the note.
+_INNERTUBE_URL = "https://www.youtube.com/youtubei/v1/player"
+_INNERTUBE_CONTEXT = {
+    "client": {"clientName": "ANDROID", "clientVersion": "19.09.37", "androidSdkVersion": 30}
+}
+_PREFERRED_CAPTION_LANGS = ("en", "hi")
+
+
+def _parse_captions_payload(raw: bytes) -> str:
+    """A caption track body, in whichever shape the baseUrl answered with:
+    json3 (`&fmt=json3` — an `events[].segs[].utf8` structure) or, when that
+    param is ignored, the same XML shape the old timedtext endpoint used."""
+    text = raw.decode("utf-8", "ignore")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return _parse_timedtext(text)
+    parts = []
+    for event in data.get("events") or []:
+        for seg in event.get("segs") or []:
+            if seg.get("utf8"):
+                parts.append(seg["utf8"])
+    return _unescape("".join(parts))[:4000]
+
+
+def _fetch_youtube_transcript(vid: str, fetch) -> str:
+    if not vid:
+        return ""
+    try:
+        body = json.dumps({"videoId": vid, "context": _INNERTUBE_CONTEXT}).encode()
+        data = json.loads(fetch(_INNERTUBE_URL, data=body, timeout=HTTP_TIMEOUT))
+        tracks = (((data.get("captions") or {}).get("playerCaptionsTracklistRenderer") or {})
+                  .get("captionTracks") or [])
+        if not tracks:
+            return ""
+        track = next((t for t in tracks if t.get("languageCode") in _PREFERRED_CAPTION_LANGS),
+                     tracks[0])
+        base_url = track.get("baseUrl")
+        if not base_url:
+            return ""
+        raw = fetch(base_url + "&fmt=json3")
+        return _parse_captions_payload(raw)
+    except Exception:
+        return ""   # transcript is optional and often unavailable — never fail on it
+
+
 def _enrich_youtube(url: str, vid: str, fetch) -> Enrichment:
     try:
         oembed = "https://www.youtube.com/oembed?" + urllib.parse.urlencode(
@@ -95,18 +168,54 @@ def _enrich_youtube(url: str, vid: str, fetch) -> Enrichment:
     except Exception:
         return Enrichment("youtube", False, url,
                           detail="YouTube didn't return oEmbed data — the video may be private or removed. The note is saved.")
-    transcript = ""
-    if vid:
-        try:  # transcript is optional and often empty — never fail on it
-            raw = fetch(f"https://video.google.com/timedtext?lang=en&v={vid}")
-            transcript = _parse_timedtext(raw.decode("utf-8", "ignore"))
-        except Exception:
-            transcript = ""
     return Enrichment("youtube", True, url,
                       title=str(data.get("title", "")),
                       author=str(data.get("author_name", "")),
                       cover=str(data.get("thumbnail_url", "")),
-                      transcript=transcript)
+                      transcript=_fetch_youtube_transcript(vid, fetch))
+
+
+MAX_SLIDES = 20
+
+
+def _slides_from_item(item: dict) -> list:
+    """A carousel's slides, or [] for a single post/reel. Apify's Instagram
+    actors don't all agree on the field name for carousel children —
+    `childPosts` (the common shape) and `images` (seen on some actor
+    versions) are both handled defensively; anything else is treated as "no
+    carousel data" rather than raised."""
+    slides = []
+    child_posts = item.get("childPosts")
+    if isinstance(child_posts, list):
+        for cp in child_posts[:MAX_SLIDES]:
+            if not isinstance(cp, dict):
+                continue
+            image_url = str(cp.get("displayUrl") or cp.get("thumbnailUrl") or cp.get("url") or "")
+            if image_url:
+                slides.append({"image_url": image_url, "caption": str(cp.get("caption") or "")})
+        if slides:
+            return slides
+    images = item.get("images")
+    if isinstance(images, list):
+        for img in images[:MAX_SLIDES]:
+            if isinstance(img, str) and img:
+                slides.append({"image_url": img, "caption": ""})
+            elif isinstance(img, dict):
+                image_url = str(img.get("url") or img.get("displayUrl") or "")
+                if image_url:
+                    slides.append({"image_url": image_url, "caption": str(img.get("caption") or "")})
+    return slides[:MAX_SLIDES]
+
+
+def _slides_text(slides: list) -> str:
+    """The '## Slides' body text: a numbered list, image URL + caption when
+    one exists. '' for no slides (single post/reel) — the section is omitted
+    entirely rather than written empty."""
+    lines = []
+    for n, slide in enumerate(slides, 1):
+        caption = f" — {slide['caption']}" if slide.get("caption") else ""
+        lines.append(f"{n}. {slide['image_url']}{caption}")
+    return "\n".join(lines)
 
 
 def _enrich_instagram(url: str, config, fetch) -> Enrichment:
@@ -129,7 +238,8 @@ def _enrich_instagram(url: str, config, fetch) -> Enrichment:
             raise ValueError("empty payload")
         return Enrichment("instagram", True, url,
                           title=caption[:80] or "instagram-post", caption=caption,
-                          cover=cover, author=str(item.get("ownerUsername", "")))
+                          cover=cover, author=str(item.get("ownerUsername", "")),
+                          slides=_slides_from_item(item))
     except Exception:
         # The broad catch is deliberate — this scraper is ToS-grey and breaks
         # routinely — but it once swallowed a TypeError from a changed call
@@ -179,6 +289,10 @@ def _structure_prompt(user_text: str, enr: Enrichment) -> str:
         ctx.append(f"Caption: {enr.caption[:1500]}")
     if enr.transcript:
         ctx.append(f"Transcript: {enr.transcript[:2500]}")
+    if enr.slides:
+        slide_text = " ".join(s.get("caption", "") for s in enr.slides if s.get("caption"))
+        if slide_text:
+            ctx.append(f"Slides: {slide_text[:1500]}")
     return (
         "Structure this saved link into a resource note. Return ONLY JSON with keys: "
         "resource_type, title, description, is_recipe, ingredients, steps.\n"
@@ -247,7 +361,7 @@ def build_resource_note(item, enr: Enrichment, structured: dict, user_text: str,
         "---",
     ]
     body = ["\n".join(fm), ""]
-    insight = user_text.strip()
+    insight = strip_url(user_text, enr.url)
     if insight:
         # the user's own words, verbatim — origin human (never overwritten by AI)
         body += ["## Insight", "", insight, ""]
@@ -262,6 +376,9 @@ def build_resource_note(item, enr: Enrichment, structured: dict, user_text: str,
         body += ["## Transcript", "", enr.transcript, ""]
     elif enr.caption:
         body += ["## Caption", "", enr.caption, ""]
+    slides_text = _slides_text(enr.slides)
+    if slides_text:
+        body += ["## Slides", "", slides_text, ""]
     if not enr.enriched and enr.detail:
         body += ["## Enrichment", "", f"> {enr.detail}", ""]
     return "\n".join(body).rstrip() + "\n"
@@ -335,7 +452,7 @@ ENRICHED_FIELDS = ("title", "cover", "description", "platform",
                    "enriched", "enrich_attempts", "enrich_last")
 
 # Likewise the only body sections enrichment owns.
-ENRICHED_SECTIONS = ("Transcript", "Caption", "Enrichment")
+ENRICHED_SECTIONS = ("Transcript", "Caption", "Slides", "Enrichment")
 
 
 def _replace_section(body: str, heading: str, text: str) -> str:
@@ -397,6 +514,7 @@ def reenrich_note(path: Path, config, fetch=None, router=None) -> bool:
 
     body = _replace_section(body, "Transcript", enr.transcript)
     body = _replace_section(body, "Caption", "" if enr.transcript else enr.caption)
+    body = _replace_section(body, "Slides", _slides_text(enr.slides))
     body = _replace_section(
         body, "Enrichment", f"> {enr.detail}" if (not enr.enriched and enr.detail) else "")
 
@@ -415,6 +533,20 @@ def retry_pending(config, events, now: datetime | None = None, fetch=None, route
         logging.getLogger("pipeline").exception("enrich retry failed")
 
 
+# Apify is the one integration this app can't verify before the fact — a
+# note can fail its guaranteed re-attempt for no better reason than "the
+# owner hadn't configured Apify yet". A hard stop at attempt 2 would then
+# strand that note unenriched forever, even after they set APIFY_TOKEN. So an
+# Instagram note gets extra tries, but only while Apify is now actually
+# configured (never an unbounded retry loop), and only up to this cap.
+MAX_ENRICH_ATTEMPTS = 4
+
+
+def _apify_configured(config) -> bool:
+    return bool(os.environ.get("APIFY_TOKEN")) and bool(
+        (getattr(config, "raw", {}).get("apify") or {}).get("actor_id"))
+
+
 def _retry_pending(config, events, now: datetime, fetch, router) -> None:
     folder = Path(config.vault_path) / route.TYPE_FOLDER["resource"]
     if not folder.is_dir():
@@ -423,8 +555,11 @@ def _retry_pending(config, events, now: datetime, fetch, router) -> None:
         fm, _ = _parse_note(path.read_text(encoding="utf-8"))
         if fm.get("type") != "resource" or fm.get("enriched") != "false":
             continue
-        if int(fm.get("enrich_attempts", "1") or "1") >= 2:
-            continue  # exactly one auto re-attempt
+        attempts = int(fm.get("enrich_attempts", "1") or "1")
+        if attempts >= MAX_ENRICH_ATTEMPTS:
+            continue
+        if attempts >= 2 and not (fm.get("platform") == "instagram" and _apify_configured(config)):
+            continue  # past the guaranteed one re-attempt, and no reason to think this one differs
         try:
             last = datetime.fromisoformat(fm.get("enrich_last", ""))
         except ValueError:
