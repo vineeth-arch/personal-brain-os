@@ -1,6 +1,6 @@
 # **SCHEMA-REFERENCE — the canonical schema (lock before note \#1)**
 
-**This is the single source of truth for structure.** Every note, every script, every AI routing pass reads from here. These conventions are **migrations if changed late** — they're locked at Phase 0.4, before note \#1. Features can change; this should not. Version: 1.2 · 2026-08-31
+**This is the single source of truth for structure.** Every note, every script, every AI routing pass reads from here. These conventions are **migrations if changed late** — they're locked at Phase 0.4, before note \#1. Features can change; this should not. Version: 1.3 · 2026-08-31
 
 ---
 
@@ -26,7 +26,7 @@ tags: \[\]                  \# from \_System/vocabulary.md (controlled vocabular
 duration\_min:             \# audio captures only — how long the recording ran  
 \---
 
-**Types:** `musing · learning · todo · journal · project · person · resource · decision · principle · insight · reflection`
+**Types:** `musing · learning · todo · journal · project · person · resource · decision · principle · insight · reflection · company · conversation`
 
 ## **3\. NAVIGATION SUBSTRATE (decided now; Bases views built later)**
 
@@ -54,6 +54,7 @@ Use these relation types in `wiki/` notes; each edge points to a fixed `id`: `su
 | person | `active → cold → dormant` |
 | musing/learning/insight | `active → archived` |
 | company | `active → archived` |
+| conversation | `active → archived` |
 
 ## **7\. PER-DOMAIN SCHEMAS (extra frontmatter on top of universal)**
 
@@ -128,6 +129,19 @@ status: active            \# active | archived
 
 Body: `## About` · `## People` (one line per person, `- [[person-slug]] — role (from date)`) · `## Facts` (append-only, dated) · `## Projects`. Person notes back-link via frontmatter `company: "[[company-slug]]"` (already `PATCHABLE` on the person side).
 
+### **Conversation (`12-Conversations`) — a recording with more than one voice**
+
+yaml  
+type: conversation  
+attendees: \[\]             \# \[\[person-id\]\] — CONFIRMED in triage, never written by the pipeline  
+speakers: \[\]              \# raw labels exactly as the device wrote them  
+transcript\_source:         \# plaud | whisper — which engine produced the body  
+duration\_min:
+
+Body: the speaker-labelled transcript **verbatim and whole** (§8), plus `## Summary` when the capture device produced one, marked `<!-- origin: ai · plaud -->` so the provenance firewall (§1) still holds inside the note.
+
+A conversation is recognised by its transcript carrying two or more speakers, not by a capture tag — §4 caps those at eight and none is added here. `attendees` is the one field the pipeline may **suggest** but never write: it is filled when a human confirms the note in triage, which is also what appends the dated line to each attendee's `## Interaction log` (§7 Person). That keeps CLAUDE.md §3 intact — no AI bulk-write reaches a person note unreviewed.
+
 ## **8\. CAPTURE / PROCESSING RULES**
 
 * **One recording \= one note, kept at FULL LENGTH. NO splitting into atomic notes.** The watcher keeps the transcript whole in the body; it only *additionally* extracts action items to `06-Todos/<date>.md`.  
@@ -159,6 +173,7 @@ Body: `## About` · `## People` (one line per person, `- [[person-slug]] — rol
 | principle | `10-Principles` |
 | insight | `wiki/` |
 | company | `11-Companies` |
+| conversation | `12-Conversations` |
 
 `raw/` is user-managed and outside this table — the pipeline never writes there.
 
