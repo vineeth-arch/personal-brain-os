@@ -1,6 +1,6 @@
 # **SCHEMA-REFERENCE — the canonical schema (lock before note \#1)**
 
-**This is the single source of truth for structure.** Every note, every script, every AI routing pass reads from here. These conventions are **migrations if changed late** — they're locked at Phase 0.4, before note \#1. Features can change; this should not. Version: 1.0 · 2026-06-05
+**This is the single source of truth for structure.** Every note, every script, every AI routing pass reads from here. These conventions are **migrations if changed late** — they're locked at Phase 0.4, before note \#1. Features can change; this should not. Version: 1.1 · 2026-08-31
 
 ---
 
@@ -17,7 +17,7 @@ yaml
 id: 20260605143000        \# immutable timestamp YYYYMMDDHHmmss — links point here  
 type: musing              \# see type list below  
 created: 2026-06-05  
-source: voice             \# voice | share | web-clipper | dex | manual | ai-compiled  
+source: voice             \# voice | share | web-clipper | dex | manual | ai-compiled | handshake  
 origin: human             \# human | ai  (provenance firewall)  
 status: active            \# lifecycle per type (section 6\)  
 categories: \[\]            \# what it IS    — as \[\[links\]\] (Kepano model), not flat tags  
@@ -126,4 +126,5 @@ Body: `## Context` · `## Needs` · `## Interaction log` (append-only, dated) ·
 
 * Note files: `YYYY-MM-DD-kebab-title.md` (the `id` in frontmatter is the durable handle; the filename is for humans).  
 * Daily notes: `01-Journal/YYYY-MM-DD.md`. Todos: `06-Todos/YYYY-MM-DD.md`. Reflections: `08-Reflections/YYYY-MM-DD-weekly-reflection.md`.
+* **Exception:** `07-People/` and `11-Companies/` notes written by handshake use a stable entity slug (`kebab-name.md`, no date prefix) instead — the file has to survive a rename of the person or company, and the append-only interaction log depends on finding the same file again on every sync. The frontmatter `id` remains the durable handle for links either way.
 
