@@ -273,6 +273,73 @@ def test_capture_audio_size_cap(env, monkeypatch):
         assert list(inbox.iterdir()) == []
 
 
+def test_remux_for_duration_skips_non_streamed_containers(tmp_path, monkeypatch):
+    """D7: only .webm/.mp4 (MediaRecorder's outputs) lack a duration header;
+    nothing else should even try, let alone shell out."""
+    import subprocess
+
+    from api import notes as notes_mod
+
+    def boom(*a, **k):
+        raise AssertionError("ffmpeg must not run for a non-remux extension")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    wav = tmp_path / "memo.wav"
+    wav.write_bytes(b"original")
+    notes_mod.remux_for_duration(wav)
+    assert wav.read_bytes() == b"original"
+
+
+def test_remux_for_duration_keeps_the_original_when_ffmpeg_fails(tmp_path, monkeypatch):
+    import subprocess
+
+    from api import notes as notes_mod
+
+    def fails(*a, **k):
+        raise subprocess.CalledProcessError(1, "ffmpeg")
+
+    monkeypatch.setattr(subprocess, "run", fails)
+    clip = tmp_path / "voice-note.webm"
+    clip.write_bytes(b"original webm bytes")
+    notes_mod.remux_for_duration(clip)
+    assert clip.read_bytes() == b"original webm bytes"
+    assert not any(tmp_path.glob(".remux-*")), "no leftover temp file on failure"
+
+
+def test_remux_for_duration_replaces_the_file_on_success(tmp_path, monkeypatch):
+    import subprocess
+
+    from api import notes as notes_mod
+
+    def fake_run(cmd, **kwargs):
+        out = Path(cmd[-1])
+        out.write_bytes(b"remuxed with duration header")
+        return subprocess.CompletedProcess(cmd, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    clip = tmp_path / "voice-note.webm"
+    clip.write_bytes(b"original webm bytes")
+    notes_mod.remux_for_duration(clip)
+    assert clip.read_bytes() == b"remuxed with duration header"
+    assert not any(tmp_path.glob(".remux-*"))
+
+
+def test_capture_audio_endpoint_survives_ffmpeg_being_unavailable(env, monkeypatch):
+    """The upload must still succeed (201) even when the best-effort remux
+    can't run at all — it's a metadata nicety, never load-bearing."""
+    import subprocess
+
+    from api import notes as notes_mod
+
+    monkeypatch.setattr(subprocess, "run",
+                        lambda *a, **k: (_ for _ in ()).throw(FileNotFoundError()))
+    root, _, inbox, _ = env
+    with Server(root) as s:
+        code, body = s.raw("POST", "/api/capture/audio", b"\x1aE\xdf\xa3fake webm bytes", "audio/webm")
+        assert code == 201
+        assert (list(inbox.glob("*.webm")))[0].read_bytes() == b"\x1aE\xdf\xa3fake webm bytes"
+
+
 def test_capture_audio_same_minute_collision(env):
     root, _, inbox, _ = env
     from pipeline import intake
@@ -282,6 +349,24 @@ def test_capture_audio_same_minute_collision(env):
     names = sorted(p.name for p in inbox.glob("*.webm"))
     assert len(names) == 2 and any("-2 #todo" in n for n in names)
     assert all(i.tag == "todo" for i in intake.poll(inbox))
+
+
+def test_search_endpoint(env):
+    root, vault, _, _ = env
+    (vault / "02-Musings" / "a.md").write_text(
+        "---\nid: 20260701090000\ntype: musing\ntitle: garden trellis idea\n"
+        "---\n\nsome body text\n", encoding="utf-8")
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/search?q=trellis")
+        assert code == 200
+        assert len(body["items"]) == 1
+        assert body["items"][0]["id"] == "20260701090000"
+        assert body["items"][0]["matched_in"] == "title"
+        # short query → 400 envelope
+        code, body = s.req("GET", "/api/search?q=a")
+        assert code == 400 and set(body["error"]) == {"what", "cause", "todo"}
+        # no query at all → also too short
+        assert s.req("GET", "/api/search")[0] == 400
 
 
 def test_failed_and_retry(env):
@@ -388,6 +473,49 @@ def test_config_get_and_put(env, monkeypatch):
         assert saved["links"] == {"dex": "https://getdex.com/"}
 
 
+def test_config_transliteration_and_language_round_trip(env, monkeypatch):
+    """D2: these were config.json-hand-edit-only — Settings needs a writable
+    surface for them, validated the same way the engine toggle is."""
+    root, _, _, _ = env
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/config")
+        assert code == 200
+        assert body["language"] == ""
+        assert body["transliteration"] == {
+            "engine": "", "ollama_url": "", "ollama_model": "",
+            "openrouter_model": "", "openrouter_key_present": False,
+        }
+
+        # unknown engine name rejected
+        code, body = s.req("PUT", "/api/config", {"transliteration_engine": "bogus"})
+        assert code == 400
+
+        # openrouter without a key is rejected, same pattern as engine=openai
+        code, body = s.req("PUT", "/api/config", {"transliteration_engine": "openrouter"})
+        assert code == 400 and "OPENROUTER_API_KEY" in body["error"]["cause"]
+
+        # a full ollama configuration persists and round-trips
+        code, body = s.req("PUT", "/api/config", {
+            "language": "hi",
+            "transliteration_engine": "ollama",
+            "transliteration_ollama_url": "http://localhost:11434",
+            "transliteration_ollama_model": "qwen2.5",
+        })
+        assert code == 200
+        assert body["language"] == "hi"
+        assert body["transliteration"]["engine"] == "ollama"
+        assert body["transliteration"]["ollama_model"] == "qwen2.5"
+        saved = json.loads((root / "config.json").read_text())
+        assert saved["transcription"]["language"] == "hi"
+        assert saved["transliteration"]["ollama"]["model"] == "qwen2.5"
+        assert saved["links"] == {"dex": "https://getdex.com/"}, "unrelated keys survive"
+
+        # turning it off (empty string) is a valid, distinct choice from unset
+        code, body = s.req("PUT", "/api/config", {"transliteration_engine": ""})
+        assert code == 200 and body["transliteration"]["engine"] == ""
+
+
 def test_integrations_shape_and_engine_guard(env):
     root, _, _, _ = env
     with Server(root) as s:
@@ -395,7 +523,7 @@ def test_integrations_shape_and_engine_guard(env):
         assert code == 200 and body["engine"] == "whispercpp"
         health = [c for c in body["cards"] if c["group"] == "health"]
         links = [c for c in body["cards"] if c["group"] == "link"]
-        assert len(health) == 9
+        assert len(health) == 10
         # Hindi → Hinglish is honest about being unset rather than absent
         transliteration = next(c for c in health if c["id"] == "transliteration")
         assert transliteration["badge"] == "Not configured"

@@ -127,6 +127,33 @@ def _probe_env_var_set(app_root: Path, item: dict, *_):
     return ok, (f"{', '.join(set_names)} set." if ok else "None of the keys are in the environment.")
 
 
+def _probe_vault_sync_configured(app_root: Path, item: dict, config, _db):
+    """VAULT_GIT_REMOTE (env) OR vault_sync.remote (config.json) — either
+    source is enough (Pass H1; pipeline/vaultsync.py.remote_config is the
+    single place that resolves this, same as the real sync does)."""
+    from pipeline import vaultsync
+    if config is None:
+        return False, "config.json doesn't exist yet."
+    cfg = vaultsync.remote_config(config)
+    return cfg is not None, ("A vault git remote is configured." if cfg is not None
+                             else "Neither VAULT_GIT_REMOTE nor vault_sync.remote is set — "
+                                  "optional on a single-machine setup.")
+
+
+def _probe_whisper_model_present(app_root: Path, item: dict, config, _db):
+    """Pass H2: the binary being runnable (wire-whisper) doesn't prove the
+    MODEL file is actually on this machine — Railway's bootstrap can
+    configure a model path that was never downloaded to the volume."""
+    if config is None:
+        return False, "config.json doesn't exist yet."
+    model = getattr(config, "whispercpp_model", "") or ""
+    if not model:
+        return False, "transcription.whispercpp.model_path is empty in config.json."
+    exists = Path(model).expanduser().exists()
+    return exists, (f"{model} is present." if exists
+                    else f"{model} isn't on this machine yet.")
+
+
 def _probe_git_log_contains(app_root: Path, item: dict, config, _db):
     if config is None:
         return False, "config.json doesn't exist yet."
@@ -203,6 +230,8 @@ _PROBES = {
     "env_var_set": _probe_env_var_set,
     "git_log_contains": _probe_git_log_contains,
     "vault_query": _probe_vault_query,
+    "vault_sync_configured": _probe_vault_sync_configured,
+    "whisper_model_present": _probe_whisper_model_present,
 }
 
 

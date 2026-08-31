@@ -38,6 +38,7 @@ import type {
   SampleCount,
   SampleScope,
   SamplePurgeResult,
+  SearchHit,
   Status,
   Streak,
   VoiceStatus,
@@ -169,40 +170,42 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  // Pass Q: whole-vault search — a filesystem scan server-side, never a
+  // SQLite index of note content.
+  search: (q: string, limit = 50) =>
+    request<{ items: SearchHit[] }>(
+      `/api/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+    ),
   health: (base: string) => fetch(`${base.replace(/\/+$/, "")}/api/health`, { cache: "no-store" }),
   status: () => request<Status>("/api/status"),
   review: () => request<{ items: ReviewItem[] }>("/api/review"),
-  approve: (id: string, type: NoteType) =>
+  // attendees: confirmed 07-People ids from the triage screen's chips — the
+  // pipeline only ever SUGGESTS them; this is what actually writes them
+  // (CLAUDE.md §3). Ignored server-side for anything but type: conversation.
+  approve: (id: string, type: NoteType, attendees: string[] = []) =>
     request<{ ok: boolean; moved_to: string }>(`/api/review/${id}/approve`, {
       method: "POST",
-      body: JSON.stringify({ type }),
+      body: JSON.stringify({ type, attendees }),
     }),
   capture: (text: string, tag: CaptureTag | null) =>
     request<{ id: string; status: string }>("/api/capture", {
       method: "POST",
       body: JSON.stringify({ text, tag }),
     }),
-  // Image capture (Pass 13): multipart, not JSON — the one exception to
-  // "every route is JSON in, JSON out" (see API-CONTRACT.md). `ocr` is
-  // reserved for on-device text extraction (the iOS Shortcut); the browser
-  // capture box always sends "" since it has no OCR of its own.
-  captureImage: (file: Blob, text: string, tag: CaptureTag | null, ocr = "") => {
-    const form = new FormData();
-    form.append("file", file, "photo.jpg");
-    form.append("text", text);
-    form.append("tag", tag ?? "");
-    form.append("ocr", ocr);
-    return request<{ id: string; status: string }>("/api/capture/image", {
+  // Pass S: the same route, a share shape instead of the quick-capture box —
+  // insight rides alongside the url rather than being mashed into one blob.
+  captureLink: (url: string, insight: string, tag: CaptureTag | null) =>
+    request<{ id: string; status: string }>("/api/capture", {
       method: "POST",
-      body: form,
-    });
-  },
+      body: JSON.stringify({ url, insight: insight || null, tag }),
+    }),
   // The recording goes up as the raw body (the server takes no multipart —
   // python-multipart isn't a locked dependency), so the blob's own mime type
   // is what tells the server which extension the inbox file gets.
-  captureAudio: (blob: Blob, tag: CaptureTag | null) => {
+  captureAudio: (blob: Blob, tag: CaptureTag | null, name?: string) => {
     const params = new URLSearchParams();
     if (tag) params.set("tag", tag);
+    if (name && name.trim()) params.set("name", name.trim());
     const query = params.toString();
     return request<{ id: string; status: string }>(
       `/api/capture/audio${query ? `?${query}` : ""}`,
@@ -210,6 +213,25 @@ export const api = {
         method: "POST",
         body: blob,
         headers: { "Content-Type": blob.type || "audio/webm" },
+      },
+    );
+  },
+  // Pass V2/V4: the photo button — the browser has already downscaled and
+  // converted the blob to JPEG (Today.tsx's canvas step), same raw-body
+  // transport as captureAudio. `insight` and `name` ride as query params,
+  // mirroring capture/audio's shape.
+  captureImage: (blob: Blob, tag: CaptureTag | null, name: string, insight: string) => {
+    const params = new URLSearchParams();
+    if (tag) params.set("tag", tag);
+    if (name) params.set("name", name);
+    if (insight) params.set("insight", insight);
+    const query = params.toString();
+    return request<{ id: string; status: string }>(
+      `/api/capture/image${query ? `?${query}` : ""}`,
+      {
+        method: "POST",
+        body: blob,
+        headers: { "Content-Type": blob.type || "image/jpeg" },
       },
     );
   },
@@ -276,6 +298,11 @@ export const api = {
       body: JSON.stringify({ engine }),
     }),
   ntfyTest: () => request<{ ok: boolean }>("/api/integrations/ntfy/test", { method: "POST" }),
+  // Pass H1: push/pull the vault's own git history to its configured remote.
+  vaultSync: () =>
+    request<{ ok: boolean; status: string; detail: string; ahead: number; behind: number }>(
+      "/api/vault/sync", { method: "POST" },
+    ),
   // Google (Pass 12): read + draft only. There is deliberately no send call
   // here and no send route on the server — CLAUDE.md §4.
   googleConnect: (redirectUri: string) =>

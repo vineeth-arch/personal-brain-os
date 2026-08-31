@@ -39,45 +39,53 @@ function loadPlaywright() {
 // ---- temp server root ---------------------------------------------------------
 function makeRoot() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "cockpit-e2e-"));
-  for (const d of ["vault/00-Inbox", "vault/02-Musings", "vault/03-Learnings", "vault/wiki",
-                   "vault/07-People", "inbox", "archive", "failed"]) {
-    fs.mkdirSync(path.join(root, d), { recursive: true });
-  }
-  const vault = path.join(root, "vault");
-  execSync(`git -C "${vault}" init -q && git -C "${vault}" config user.email t@t && git -C "${vault}" config user.name t`);
-  fs.writeFileSync(
-    path.join(root, "config.json"),
-    JSON.stringify({
-      vault_path: vault,
-      inbox_path: path.join(root, "inbox"),
-      archive_path: path.join(root, "archive"),
-      failed_path: path.join(root, "failed"),
-      transcription: { engine: "whispercpp", whispercpp: { binary_path: "", model_path: "" } },
-      ntfy: { url: "", topic: "" },
-      api: { auth_token: TOKEN },
-      classification: { confidence_threshold: 0.7 },
-      links: { dex: "https://getdex.com/", notion: "https://www.notion.so/x" },
-    }, null, 2),
-  );
-  // a person well past a 3-day cadence — the People screen's whole reason to exist
-  fs.writeFileSync(
-    path.join(root, "vault", "07-People", "2026-07-01-priya-raman.md"),
-    [
-      "---", "id: 20260701090000", "type: person", "created: 2026-07-01",
-      "source: manual", "origin: human", "relationship: client",
-      "company: Alserkal Avenue",
-      "channels: {whatsapp: +971500000001, email: priya@example.com}",
-      "cadence_days: 3", "last_contact: 2026-06-01", "dex_id: dex-priya",
-      "dex_deeplink:", "warmth_stage: conversing",
-      "status: active", "---", "", "# Priya Raman", "", "## Context", "",
-      "Met at a studio visit.", "", "## Interaction log", "",
-      "- 2026-06-01 — coffee at Alserkal", "", "## Next action", "", "",
-    ].join("\n"),
-  );
+  try {
+    for (const d of ["vault/00-Inbox", "vault/02-Musings", "vault/03-Learnings", "vault/wiki",
+                     "vault/07-People", "inbox", "archive", "failed"]) {
+      fs.mkdirSync(path.join(root, d), { recursive: true });
+    }
+    const vault = path.join(root, "vault");
+    execSync(`git -C "${vault}" init -q && git -C "${vault}" config user.email t@t && git -C "${vault}" config user.name t`);
+    fs.writeFileSync(
+      path.join(root, "config.json"),
+      JSON.stringify({
+        vault_path: vault,
+        inbox_path: path.join(root, "inbox"),
+        archive_path: path.join(root, "archive"),
+        failed_path: path.join(root, "failed"),
+        transcription: { engine: "whispercpp", whispercpp: { binary_path: "", model_path: "" } },
+        ntfy: { url: "", topic: "" },
+        api: { auth_token: TOKEN },
+        classification: { confidence_threshold: 0.7 },
+        links: { dex: "https://getdex.com/", notion: "https://www.notion.so/x" },
+      }, null, 2),
+    );
+    // a person well past a 3-day cadence — the People screen's whole reason to exist
+    fs.writeFileSync(
+      path.join(root, "vault", "07-People", "2026-07-01-priya-raman.md"),
+      [
+        "---", "id: 20260701090000", "type: person", "created: 2026-07-01",
+        "source: manual", "origin: human", "relationship: client",
+        "company: Alserkal Avenue",
+        "channels: {whatsapp: +971500000001, email: priya@example.com}",
+        "cadence_days: 3", "last_contact: 2026-06-01", "dex_id: dex-priya",
+        "dex_deeplink:", "warmth_stage: conversing",
+        "status: active", "---", "", "# Priya Raman", "", "## Context", "",
+        "Met at a studio visit.", "", "## Interaction log", "",
+        "- 2026-06-01 — coffee at Alserkal", "", "## Next action", "", "",
+      ].join("\n"),
+    );
 
-  // create_app serves the built cockpit from <root>/web/dist
-  fs.symlinkSync(path.join(repo, "web"), path.join(root, "web"));
-  return root;
+    // create_app serves the built cockpit from <root>/web/dist
+    fs.symlinkSync(path.join(repo, "web"), path.join(root, "web"));
+    return root;
+  } catch (err) {
+    // D23: without this, a missing `git` (or any setup failure) leaves the
+    // mkdtemp'd directory on disk forever and crashes with a raw Node trace
+    // instead of the same clean "E2E FAILED" the rest of the run reports.
+    fs.rmSync(root, { recursive: true, force: true });
+    throw new Error(`Could not set up the e2e temp root (is git installed?): ${err.message}`);
+  }
 }
 
 async function waitForHealth() {
@@ -91,6 +99,28 @@ async function waitForHealth() {
   throw new Error(`API never answered on ${BASE}/api/health`);
 }
 
+// POST /api/run, retrying on 409 ("a run is already in flight") instead of
+// asserting immediate success. Earlier steps only poll the filesystem for
+// their own expected output, not for the pipeline subprocess itself to
+// exit — writing the note is one step inside that subprocess, not the last
+// one (archiving the source, committing the vault, etc. still follow) — so
+// the next /api/run can legitimately land while the previous run is still
+// finishing up. That overlap is correctly rejected by the server; the test
+// just needs to wait it out rather than treat it as a failure.
+async function runPipeline(label) {
+  for (let i = 0; i < 50; i++) {
+    const res = await fetch(`${BASE}/api/run`, {
+      method: "POST", headers: { Authorization: `Bearer ${TOKEN}` },
+    });
+    if (res.status === 202) return;
+    if (res.status !== 409) {
+      assert.equal(res.status, 202, `pipeline run did not start for ${label}`);
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  throw new Error(`pipeline run never started for ${label} — a previous run never finished`);
+}
+
 // ---- the run --------------------------------------------------------------------
 const dist = path.join(repo, "web", "dist", "index.html");
 if (!fs.existsSync(dist)) {
@@ -98,34 +128,47 @@ if (!fs.existsSync(dist)) {
   process.exit(2);
 }
 
-const root = makeRoot();
-// prefer the repo venv; fall back to whatever uvicorn is on PATH (CI/containers
-// install the deps system-wide and have no .venv)
-const venvUvicorn = path.join(repo, ".venv", "bin", "uvicorn");
-const uvicornBin = fs.existsSync(venvUvicorn) ? venvUvicorn : "uvicorn";
-const uvicorn = spawn(uvicornBin,
-  ["api.main:app", "--host", "127.0.0.1", "--port", String(PORT)],
-  {
-    cwd: repo,
-    env: {
-      ...process.env,
-      BRAIN_COCKPIT_ROOT: root,
-      OPENAI_API_KEY: "sk-e2e-dummy",
-      // a Google client is "configured" so the Gmail/Calendar cards render in
-      // their live form; no real Google call is ever made (see step 5)
-      GOOGLE_CLIENT_ID: "e2e-client-id",
-      GOOGLE_CLIENT_SECRET: "e2e-client-secret",
-      // Dex "configured" so the push button renders; the contacts scope is
-      // deliberately absent so the honest not-configured pill renders too.
-      // No real Dex call is ever made (the push routes are stubbed in step 8).
-      DEX_API_KEY: "e2e-dex-key",
-    },
-    stdio: ["ignore", "inherit", "inherit"],
-  });
-
+let root;
+let uvicorn;
 let browser;
 let failed = false;
 try {
+  root = makeRoot();
+  // prefer the repo venv; fall back to whatever uvicorn is on PATH (CI/containers
+  // install the deps system-wide and have no .venv)
+  const venvUvicorn = path.join(repo, ".venv", "bin", "uvicorn");
+  const uvicornBin = fs.existsSync(venvUvicorn) ? venvUvicorn : "uvicorn";
+  uvicorn = spawn(uvicornBin,
+    ["api.main:app", "--host", "127.0.0.1", "--port", String(PORT)],
+    {
+      cwd: repo,
+      env: {
+        ...process.env,
+        BRAIN_COCKPIT_ROOT: root,
+        OPENAI_API_KEY: "sk-e2e-dummy",
+        // a Google client is "configured" so the Gmail/Calendar cards render in
+        // their live form; no real Google call is ever made (see step 5)
+        GOOGLE_CLIENT_ID: "e2e-client-id",
+        GOOGLE_CLIENT_SECRET: "e2e-client-secret",
+        // Dex "configured" so the push button renders; the contacts scope is
+        // deliberately absent so the honest not-configured pill renders too.
+        // No real Dex call is ever made (the push routes are stubbed in step 8).
+        DEX_API_KEY: "e2e-dex-key",
+      },
+      stdio: ["ignore", "inherit", "inherit"],
+    });
+  // D23: spawn() failing outright (binary not found, permission denied) fires
+  // an async 'error' event on its own tick — a throw here would NOT be caught
+  // by the try/catch below (it isn't on that call stack), and with no
+  // listener at all Node crashes the whole process unhandled, skipping the
+  // finally cleanup. So this listener does the cleanup itself.
+  uvicorn.on("error", (err) => {
+    console.error(`\nE2E FAILED: uvicorn failed to start (${uvicornBin}): ${err.message}`);
+    if (browser) browser.close().catch(() => {});
+    fs.rmSync(root, { recursive: true, force: true });
+    process.exit(1);
+  });
+
   await waitForHealth();
   const { chromium } = loadPlaywright();
   // CI images often ship a chromium that predates the installed playwright;
@@ -264,37 +307,17 @@ try {
   }
   console.log("✓ No send route exists on the API");
 
-  // ---- 6. Image capture (Pass 13): photo -> real inbox write ---------------------
+  // ---- 6. Mic capture: record in the PWA → a file lands in the inbox (Pass V) ---
+  // Typing into the quick-capture box first also exercises D22: that text is
+  // sent as ?name= when the recording stops, so the stamped filename carries
+  // it instead of the generic "voice-note" fallback.
+  // (Photo capture through the real pipeline is covered later — step 11,
+  // "Pass V2/V3/V4" — which supersedes this file's earlier Pass 13 version:
+  // that one asserted a multipart upload + a `.meta.json` sidecar, neither
+  // of which exist anymore now that image capture uses the same raw-body
+  // streaming transport as audio, with a `.insight` dotfile sidecar instead.)
   await page.goto(`${BASE}/#/today`);
-  const tinyPng = Buffer.from(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
-    "base64",
-  );
-  await page.setInputFiles('input[type="file"][accept="image/*"]',
-    { name: "test-photo.png", mimeType: "image/png", buffer: tinyPng });
-  await page.getByAltText("Selected photo").waitFor();  // preview rendered
-  await page.getByLabel("Quick capture").fill("a nice sunset over the marina");
-  await page.getByRole("button", { name: "#resource" }).click();
-  // exact match: "Record a voice capture" (the mic button, added since this
-  // test was written) also matches "Capture" as a substring otherwise
-  await page.getByRole("button", { name: "Capture", exact: true }).click();
-  await page.getByText("✅ Captured").waitFor();
-
-  // the browser-side downscale (Today.tsx's downscaleForUpload) always
-  // re-encodes to JPEG regardless of the source format, so the file that
-  // lands in the inbox is a .jpg even though a .png was picked above
-  const capturedImages = fs.readdirSync(path.join(root, "inbox")).filter((f) => f.endsWith(".jpg"));
-  const capturedSidecars = fs.readdirSync(path.join(root, "inbox")).filter((f) => f.endsWith(".meta.json"));
-  assert.equal(capturedImages.length, 1, "the image never reached the real inbox");
-  assert.equal(capturedSidecars.length, 1, "the sidecar never reached the real inbox");
-  assert.ok(capturedImages[0].includes("#resource"), "the tag wasn't applied to the capture");
-  const sidecar = JSON.parse(
-    fs.readFileSync(path.join(root, "inbox", capturedSidecars[0]), "utf8"));
-  assert.equal(sidecar.text, "a nice sunset over the marina");
-  console.log("✓ Image capture reaches the real inbox with its sidecar and tag");
-
-  // ---- 7. Mic capture: record in the PWA → a file lands in the inbox (Pass V) ---
-  await page.goto(`${BASE}/#/today`);
+  await page.getByLabel("Quick capture").fill("garden notes for later");
   const micButton = page.getByRole("button", { name: "Record a voice capture" });
   await micButton.waitFor();
   await micButton.click();
@@ -308,19 +331,22 @@ try {
   const inboxDir = path.join(root, "inbox");
   let recorded = null;
   for (let i = 0; i < 50; i++) {
-    // scoped to audio extensions: step 6 (image capture) already left a
-    // .jpg/.meta.json pair sitting in this same inbox, since nothing drains
-    // it between e2e steps (there's no watcher running here)
+    // scoped to audio extensions defensively — nothing drains the inbox
+    // between e2e steps (there's no watcher running here), and a later step
+    // shares this same inbox for photo capture
     recorded = fs.readdirSync(inboxDir).filter((f) => /\.(webm|mp4|ogg)$/.test(f));
     if (recorded.length) break;
     await new Promise((r) => setTimeout(r, 100));
   }
   assert.ok(recorded.length === 1, `expected one recording in the inbox, saw ${JSON.stringify(recorded)}`);
   const stamped = recorded[0];
-  assert.match(stamped, /^\d{4}-\d{2}-\d{2}-\d{4} voice-note\.(webm|mp4|ogg)$/,
-    `recording filename '${stamped}' is not the stamp intake parses`);
+  assert.match(stamped, /^\d{4}-\d{2}-\d{2}-\d{4} garden-notes-for-later\.(webm|mp4|ogg)$/,
+    `recording filename '${stamped}' doesn't carry the quick-capture text (D22)`);
   assert.ok(fs.statSync(path.join(inboxDir, stamped)).size > 0, "the recording landed empty");
-  console.log(`✓ Mic capture wrote ${stamped} into the inbox`);
+  // the text box is deliberately NOT cleared by a recording — it may still
+  // become its own separate text capture
+  assert.equal(await page.getByLabel("Quick capture").inputValue(), "garden notes for later");
+  console.log(`✓ Mic capture wrote ${stamped} into the inbox, carrying the quick-capture text`);
 
   // ---- 8. People: draft refuses without a voice, then works (Pass MW) ----------
   await page.goto(`${BASE}/#/people`);
@@ -472,13 +498,158 @@ try {
   assert.match(addLog, /added target Sara Khalid/);
   console.log("✓ Quick-add writes a schema-correct person note and commits the vault");
 
+  // ---- 10. Share-to-save: a {url, insight} capture becomes a resource note ----
+  // (Pass S). No UI trigger yet — this is exactly what the "→ Brain Cloud"
+  // Shortcut sends. Drives the REAL pipeline via POST /api/run (no stubbed
+  // enrichment — a genuinely unreachable URL is fine, the note is written
+  // unconditionally either way, per the Pass L principle).
+  const shareRes = await fetch(`${BASE}/api/capture`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      url: "https://example.com/e2e-share-test",
+      insight: "the branding hook at the start is the whole idea",
+    }),
+  });
+  assert.equal(shareRes.status, 201, "share capture was not accepted");
+
+  await runPipeline("the share fixture");
+
+  const resourcesDir = path.join(root, "vault", "04-Resources");
+  let sharedNote = null;
+  for (let i = 0; i < 100; i++) {
+    if (fs.existsSync(resourcesDir)) {
+      const found = fs.readdirSync(resourcesDir)
+        .map((f) => path.join(resourcesDir, f))
+        .find((p) => fs.readFileSync(p, "utf8").includes("e2e-share-test"));
+      if (found) { sharedNote = found; break; }
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(sharedNote, "the shared link never became a resource note");
+  const sharedText = fs.readFileSync(sharedNote, "utf8");
+  assert.match(sharedText, /type: resource/);
+  assert.match(sharedText, /source_url: https:\/\/example\.com\/e2e-share-test/);
+  assert.match(sharedText, /## Insight/);
+  assert.match(sharedText, /branding hook at the start/);
+  // the URL itself must NOT be duplicated inside ## Insight (Pass S2)
+  const insightBlock = sharedText.split("## Insight")[1] || "";
+  assert.ok(!insightBlock.includes("https://example.com/e2e-share-test"),
+    "the raw URL leaked into ## Insight instead of staying only in source_url");
+  console.log("✓ Share capture ({url, insight}) becomes a resource note, URL kept out of ## Insight");
+
+  // search finds it by the insight text alone, not just the title (Pass S4)
+  const searchRes = await fetch(
+    `${BASE}/api/resources?q=${encodeURIComponent("branding hook")}`,
+    { headers: { Authorization: `Bearer ${TOKEN}` } });
+  const searchBody = await searchRes.json();
+  assert.ok(searchBody.items.some((i) => i.url === "https://example.com/e2e-share-test"),
+    "search by insight text did not find the shared note");
+  console.log("✓ Resource search matches on the saved insight, not just the title");
+
+  // ---- 11. Photo capture: the cockpit's own photo button (Pass V2/V3/V4) ------
+  // A real file through the real decode→downscale→JPEG pipeline in the
+  // browser, then the real API + one pipeline pass. ANTHROPIC_API_KEY is
+  // deliberately absent from this server's env (only OPENAI/GOOGLE/DEX keys
+  // are set above), so this also proves the "vision unavailable → honest,
+  // undescribed note" degradation path (Pass V3's D-VISION principle).
+  const tinyPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64");
+  const tinyPngPath = path.join(root, "tiny.png");
+  fs.writeFileSync(tinyPngPath, tinyPng);
+
+  await page.goto(`${BASE}/#/today`);
+  const photoInput = page.locator('input[type="file"][aria-label="Attach a photo"]');
+  await photoInput.waitFor({ state: "attached" });
+  await photoInput.setInputFiles(tinyPngPath);
+  await page.getByText("✅ Captured").waitFor();
+
+  // the toast fires optimistically, before the upload's own await settles
+  // (same pattern as the mic button) — poll the inbox for the upload to
+  // actually land before triggering a pipeline run, so /api/run doesn't
+  // race the in-flight request.
+  const photoInboxDir = path.join(root, "inbox");
+  let photoLanded = false;
+  for (let i = 0; i < 50; i++) {
+    if (fs.readdirSync(photoInboxDir).some((f) => !f.startsWith("."))) { photoLanded = true; break; }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(photoLanded, "the photo upload never landed in the inbox");
+
+  await runPipeline("the photo capture");
+
+  const attachmentsDir = path.join(root, "vault", "attachments");
+  let attachment = null;
+  for (let i = 0; i < 100; i++) {
+    if (fs.existsSync(attachmentsDir)) {
+      const found = fs.readdirSync(attachmentsDir);
+      if (found.length) { attachment = found[0]; break; }
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(attachment, "the photo never landed in vault/attachments");
+  assert.ok(fs.statSync(path.join(attachmentsDir, attachment)).size > 0, "the attachment landed empty");
+
+  let photoNote = null;
+  for (let i = 0; i < 50; i++) {
+    const found = fs.readdirSync(resourcesDir)
+      .map((f) => path.join(resourcesDir, f))
+      .find((p) => fs.readFileSync(p, "utf8").includes(`attachments/${attachment}`));
+    if (found) { photoNote = found; break; }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(photoNote, "no resource note references the captured photo");
+  const photoText = fs.readFileSync(photoNote, "utf8");
+  assert.match(photoText, /platform: photo/);
+  assert.match(photoText, /enriched: false/);   // no ANTHROPIC_API_KEY in this server's env
+  assert.match(photoText, new RegExp(`!\\[\\[attachments/${attachment}\\]\\]`));
+  console.log("✓ Photo capture: browser downscale → attachments/ → honest undescribed resource note");
+
+  // ---- 12. Whole-vault search (Pass Q) -------------------------------------------
+  const searchWord = "trellisworthy";
+  const searchCaptureRes = await fetch(`${BASE}/api/capture`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ text: `a ${searchWord} garden structure idea`, tag: "idea" }),
+  });
+  assert.equal(searchCaptureRes.status, 201, "seed capture for search did not land");
+  await runPipeline("the search fixture");
+
+  // idea → musing (classify.TAG_TO_TYPE)
+  const musingsDir = path.join(root, "vault", "02-Musings");
+  let searchNoteFound = false;
+  for (let i = 0; i < 100; i++) {
+    if (fs.existsSync(musingsDir) &&
+        fs.readdirSync(musingsDir).some((f) =>
+          fs.readFileSync(path.join(musingsDir, f), "utf8").includes(searchWord))) {
+      searchNoteFound = true;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(searchNoteFound, "the search fixture note never landed in 02-Musings");
+
+  await page.goto(`${BASE}/#/search`);
+  await page.getByLabel("Search everything in the vault").fill(searchWord);
+  await page.getByText(new RegExp(`${searchWord}`, "i")).first().waitFor();
+  await page.getByText(/^1 result$/).waitFor();
+  const obsidianHref = await page.getByRole("link", { name: "Open in Obsidian" }).first().getAttribute("href");
+  assert.ok(obsidianHref && obsidianHref.startsWith("obsidian://open?vault="),
+    `search result's Obsidian link was ${obsidianHref}`);
+
+  // a too-short query shows the "keep typing" hint, not a request at all
+  await page.getByLabel("Search everything in the vault").fill("a");
+  await page.getByText(`Keep typing — at least 2 characters.`).waitFor();
+  console.log("✓ Whole-vault search finds a seeded note and links back to Obsidian");
+
   console.log("\nE2E: all checks passed.");
 } catch (err) {
   failed = true;
   console.error("\nE2E FAILED:", err);
 } finally {
   if (browser) await browser.close();
-  uvicorn.kill("SIGTERM");
-  fs.rmSync(root, { recursive: true, force: true });
+  if (uvicorn) uvicorn.kill("SIGTERM");
+  if (root) fs.rmSync(root, { recursive: true, force: true });
 }
 process.exit(failed ? 1 : 0);

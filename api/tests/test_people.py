@@ -125,6 +125,28 @@ def test_draft_returns_raw_channels_never_a_message_link(vault_env, monkeypatch)
         assert not [d for d in delivery if d in payload]
 
 
+def test_draft_attempts_are_logged_so_providers_sees_them(vault_env, monkeypatch):
+    """D6: a draft's LLM attempts used to be invisible to events.db — GET
+    /api/providers never counted them."""
+    root, _, _ = vault_env
+    from pipeline import llm
+
+    monkeypatch.setattr(
+        llm, "complete_text",
+        lambda prompt, config: ("hey — long time", "claude-haiku",
+                                [llm.Attempt("gemini-flash", "rate-limit"),
+                                 llm.Attempt("claude-haiku", "served", confidence=None)]))
+    with Server(root) as s:
+        s.req("POST", "/api/people/voice", {"samples": ["hey! long time"]})
+        code, _ = s.req("POST", "/api/people/20260701090000/draft", {})
+        assert code == 200
+        code, body = s.req("GET", "/api/providers")
+        assert code == 200
+        by_name = {p["provider"]: p for p in body["providers"]}
+        assert by_name["claude-haiku"]["served"] == 1
+        assert by_name["gemini-flash"]["fell_through"] == 1
+
+
 def test_draft_can_be_asked_for_a_specific_channel(vault_env, monkeypatch):
     root, _, _ = vault_env
     from pipeline import llm

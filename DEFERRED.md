@@ -33,7 +33,7 @@
 - Pass 12: n8n / Supabase real API integrations — they stay launcher tiles; each needs its own auth story. (Dex left this list in Pass D — its REST API needed a key, not a dependency.)
 - Pass 12: pull Gmail/Calendar items INTO the vault as notes (currently read-only display in Integrations) — needs a routing decision per SCHEMA-REFERENCE before anything is written.
 - Pass P: Plaud SDK ingest (pulling recordings straight off the Note Pro over BLE/Wi-Fi) — the official SDK's binaries are proprietary and need a partner token, so the watched-folder path ships instead.
-- Pass P: speaker diarization ("who said what") on meeting transcripts — needs a second model in the chain; the transcript stays undiarized for now.
+- ~~Pass P: speaker diarization ("who said what") on meeting transcripts~~ — SHIPPED in Pass PN: a Plaud recording's own speaker-labelled transcript is read verbatim (`pipeline/plaud.py`), never re-transcribed, so diarization comes from the device rather than a second model.
 - Pass P: per-chunk resume for a long recording (today a re-run re-transcribes every segment, and one permanently failed segment stays a placeholder).
 - Pass P: transliteration quality dial — no way yet to re-run Hindi → Hinglish on an existing note with a better model.
 - ~~Pass MW: real Dex sync (write-back / CardDAV)~~ — SHIPPED in Pass D as marker-delimited, human-confirmed profile push (Dex REST + Google People API; no CardDAV, no iCloud).
@@ -49,9 +49,17 @@
 - Pass MW: a People sample-purge endpoint in the API — scripts/seed_people.py --purge covers it for now.
 - Pass MW: PDL credits counter is read from the response header per call; no running total is stored between calls.
 - NOT DEFERRED — PERMANENTLY OUT (CLAUDE.md §4): sending email or any message from the app. Drafts are written to Gmail and sent by the human, in Gmail. api/tests/test_google.py fails the build if a send path ever appears.
-- Pass 13: Resources gallery/drawer don't render local `attachments/` covers (bearer-auth means a plain `<img src>` can't authenticate) — falls back to the existing category-initial tile; needs an authed image-serving route or a signed short-lived URL scheme.
+- Pass 13: Resources gallery/drawer don't render local `attachments/` covers (bearer-auth means a plain `<img src>` can't authenticate) — falls back to the existing category-initial tile; needs an authed image-serving route or a signed short-lived URL scheme. Still true after Pass V2/V3's photo capture landed — nothing added an attachments-serving route.
 - Pass 13: Instagram/YouTube reel and video CONTENT understanding (downloading media, frame-sampling to vision) — only metadata/caption/transcript extraction ships this pass, same as Pass L.
 - Pass 13: Apify setup for real Instagram captions/thumbnails — the seam already exists (pipeline/enrich.py); fallback-first (owner's own words + AI description) ships without it.
 - Pass 13: the iOS Shortcut has no offline queue / auto-retry — a failed POST (no signal, server down) is lost from the Shortcut's perspective; the user would need to re-share.
-- Pass 13: cross-type search (currently resources only) — a photo classified to todo/musing/etc. isn't covered by GET /api/resources?q=.
-- Pass 13: mock-api.py never got GET /api/resources (a Pass 6 gap, found while screenshotting for this pass's render gate) — Resources.tsx dev/mock-driven work requires the real API server; the mock only serves an honest 404 there today.
+- Pass V2/V3: carousel-image OCR / multi-frame description for Instagram carousels — vision.py describes one photo at a time; a carousel share still goes through Pass L's Apify enrichment, not vision.
+- Pass V2/V4: Android PWA `share_target` — iOS Safari ignores it, so the Shortcut is the only cross-platform share-sheet path this round; an Android-only share target is a separate, smaller add later.
+- Pass V3: download a resource's cover image into `attachments/` instead of hot-linking it — matches how a photo capture's own attachment already works, but link covers (YouTube thumbnails, IG display URLs) still point at the source.
+- Pass V4: EXIF capture date in frontmatter — photo notes use the upload timestamp; the original shot date (if any) isn't read out of the file.
+- Pass V4: multi-image batch share (several photos in one Shortcut/PWA action) — today's photo button and Shortcut step both handle exactly one image per share.
+- Pass H1: vault-sync via Syncthing for non-Railway (VPS/Docker) deploys — GO-LIVE.md's §5 already covers this via folder-level sync; a git-based VAULT_GIT_REMOTE is the Railway-specific fix for a mounted volume no Obsidian ever opens directly.
+- Pass Q: semantic/embedding search — the search is a literal case-insensitive substring scan (title/frontmatter/body); "gift ideas" won't find a note about "presents". A real semantic layer needs an embedding store, which is a new kind of persisted state this pass deliberately didn't add.
+- Pass Q: search result relevance ranking beyond title > frontmatter > body — within one rank, results sort by file path, not by how well they match (word proximity, match count, recency).
+- Pass Q: search doesn't cover `06-Todos/` daily files (those are checkbox lines, not frontmatter notes) or the `_System/my-voice.md` writing sample — both are intentionally out of scope, not an oversight, but worth a line if that ever surprises someone.
+- Pass 13: on-device OCR hint (a `.{stem}.ocr` sidecar, parallel to the `.{stem}.insight` one) as a free-cost-skip before any paid vision provider — kept from the earlier round's design; not yet wired into a Shortcut step.

@@ -116,7 +116,9 @@ def test_resources_filters(env):
 
 def test_search_matches_description_insight_extras_and_body(env):
     """Pass 13: ?q= used to match the title only — the owner wants to find
-    things by what they actually remember about them."""
+    things by what they actually remember about them. Supersedes Pass S4's
+    narrower description/insight-only version (kept dropped — this covers
+    the same ground plus type-extra fields and the full body)."""
     tmp, vault, *_ = env
     res = vault / "04-Resources"
     _write_resource(res, "20260601120000", rt="recipe", status="inbox",
@@ -150,6 +152,17 @@ def test_search_matches_description_insight_extras_and_body(env):
         # case-insensitive
         _, body = s.req("GET", "/api/resources?q=CUMIN")
         assert [i["title"] for i in body["items"]] == ["Weeknight Dinner"]
+
+
+def test_resource_summary_exposes_description(env):
+    tmp, vault, *_ = env
+    res = vault / "04-Resources"
+    _write_resource(res, "20260601120000", rt="book", status="inbox",
+                    title="Refactoring UI", sample=False, created="2026-06-01",
+                    description="A book about design for developers.")
+    with Server(tmp) as s:
+        _, body = s.req("GET", "/api/resources")
+        assert body["items"][0]["description"] == "A book about design for developers."
 
 
 def test_missing_folder_is_empty_not_error(env):

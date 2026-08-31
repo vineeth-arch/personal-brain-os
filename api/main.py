@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -29,9 +30,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from pipeline import classify, config as config_mod, enrich, intake, route as proute, sidecar, todos as ptodos, watcher
+from pipeline import classify, config as config_mod, enrich, intake, route as proute, todos as ptodos, watcher
+from pipeline.events import EventLog
 
-from . import (build_status, google, integrations, multipart, notes, people as people_mod,
+from . import (build_status, google, integrations, notes, people as people_mod,
                push as push_mod, selfcheck, service, watchdog)
 
 log = logging.getLogger("api")
@@ -108,10 +110,18 @@ def _generic_envelope(status: int) -> dict:
 
 class ApproveBody(BaseModel):
     type: str
+    # confirmed 07-People ids — the pipeline only ever SUGGESTS attendees
+    # (via events.db, GET /api/review); a human confirming here is what
+    # actually writes them (CLAUDE.md §3). Ignored for anything but a
+    # conversation note — omitting it behaves exactly as before this field
+    # existed.
+    attendees: list[str] = []
 
 
 class CaptureBody(BaseModel):
-    text: str
+    text: str | None = None
+    url: str | None = None
+    insight: str | None = None
     tag: str | None = None
 
 
@@ -121,9 +131,14 @@ class EngineBody(BaseModel):
 
 class ConfigBody(BaseModel):
     engine: str | None = None
+    language: str | None = None
     confidence_threshold: float | None = None
     ntfy_topic: str | None = None
     ntfy_url: str | None = None
+    transliteration_engine: str | None = None
+    transliteration_ollama_url: str | None = None
+    transliteration_ollama_model: str | None = None
+    transliteration_openrouter_model: str | None = None
 
 
 class StatusBody(BaseModel):
@@ -423,7 +438,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 f"'{body.type}' isn't one of the 11 types in SCHEMA-REFERENCE.md.",
                 "Pick one of the type chips and try again.")
         try:
-            moved_to = notes.approve(config.vault_path, note_id, body.type)
+            moved_to = notes.approve(config.vault_path, note_id, body.type, body.attendees)
         except LookupError:
             raise Envelope(
                 404, "That note isn't waiting for review anymore.",
@@ -433,12 +448,26 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
 
     @app.post("/api/capture", status_code=201)
     def capture(body: CaptureBody, config=Depends(require_token)):
-        text = body.text.strip()
-        if not text:
-            raise Envelope(
-                400, "There was nothing to capture.",
-                "The capture text was empty.",
-                "Type a thought first, then press Capture.")
+        # Two shapes, same route (Pass S): {text} is the quick-capture box;
+        # {url, insight?} is a share (the "→ Brain Cloud" Shortcut, or a
+        # future in-app share button) — the insight rides ALONGSIDE the URL
+        # rather than being mashed into one blob the pipeline has to unpick.
+        if body.url is not None:
+            url = body.url.strip()
+            if not re.match(r"^https?://", url, re.IGNORECASE):
+                raise Envelope(
+                    400, "That doesn't look like a link.",
+                    "The url field has to start with http:// or https://.",
+                    "Share the link itself, not just a caption or a search term.")
+            insight = (body.insight or "").strip()
+            text = f"{insight}\n\n{url}" if insight else url
+        else:
+            text = (body.text or "").strip()
+            if not text:
+                raise Envelope(
+                    400, "There was nothing to capture.",
+                    "The capture text was empty.",
+                    "Type a thought first, then press Capture.")
         if not notes.valid_tag(body.tag):
             raise Envelope(
                 400, "That's not a capture tag the pipeline knows.",
@@ -447,66 +476,6 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         # the inbox is outside the vault — nothing to git-commit here; the
         # watcher's processing (and any approve) is where vault history is made
         note_id = notes.capture(Path(config.inbox_path), text, body.tag)
-        return {"id": note_id, "status": "captured"}
-
-    @app.post("/api/capture/image", status_code=201)
-    async def capture_image(request: Request, config=Depends(require_token)):
-        content_type = request.headers.get("content-type", "")
-        if "multipart/form-data" not in content_type:
-            raise Envelope(
-                400, "That upload wasn't in the format the server expects.",
-                "The request Content-Type wasn't multipart/form-data.",
-                "This endpoint is for the image-capture Shortcut/PWA — see API-CONTRACT.md.")
-        content_length = request.headers.get("content-length")
-        # fast-reject on the declared size before reading the whole body;
-        # +256KB covers multipart boundary/header overhead, not the photo itself
-        if content_length and int(content_length) > notes.MAX_IMAGE_BYTES + 262_144:
-            raise Envelope(
-                413, "That photo is too large to capture.",
-                f"The upload is over the {notes.MAX_IMAGE_BYTES // (1024 * 1024)}MB limit.",
-                "The share Shortcut resizes photos automatically — if you're using something "
-                "else, resize the image first.")
-        body = await request.body()
-        try:
-            fields = multipart.parse(body, content_type)
-        except multipart.MultipartError:
-            raise Envelope(
-                400, "That upload wasn't in the format the server expects.",
-                "The multipart body couldn't be parsed.",
-                "This endpoint is for the image-capture Shortcut/PWA — see API-CONTRACT.md.")
-
-        file_field = fields.get("file")
-        if not file_field or not file_field["data"]:
-            raise Envelope(
-                400, "No photo was in the upload.",
-                "The 'file' field was missing or empty.",
-                "Check the Shortcut/upload is attaching the photo as 'file'.")
-
-        def _text(name: str) -> str:
-            f = fields.get(name)
-            return f["data"].decode("utf-8", errors="replace") if f else ""
-
-        tag = _text("tag").strip() or None
-        if not notes.valid_tag(tag):
-            raise Envelope(
-                400, "That's not a capture tag the pipeline knows.",
-                f"'{tag}' isn't one of the 8 capture tags in SCHEMA-REFERENCE.md.",
-                "Pick one of the tag chips, or send no tag and let the classifier decide.")
-        try:
-            note_id = notes.capture_image(
-                Path(config.inbox_path), file_field["data"],
-                text=_text("text"), tag=tag, ocr=_text("ocr"))
-        except ValueError as e:
-            if "unrecognized image format" in str(e):
-                raise Envelope(
-                    400, "That file isn't a photo the pipeline recognises.",
-                    "The upload wasn't a JPEG, PNG, or WEBP image.",
-                    "Convert the photo to JPEG or PNG and try again.")
-            raise Envelope(
-                413, "That photo is too large to capture.",
-                f"The image is over the {notes.MAX_IMAGE_BYTES // (1024 * 1024)}MB limit.",
-                "The share Shortcut resizes photos automatically — if you're using something "
-                "else, resize the image first.")
         return {"id": note_id, "status": "captured"}
 
     @app.post("/api/capture/audio", status_code=201)
@@ -551,6 +520,73 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
             os.replace(tmp, path)
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
+            raise
+        # a streamed .webm/.mp4 has no duration in its header — a best-effort
+        # stream-copy remux writes one, so duration_min isn't silently absent
+        # on every mic capture (D7); never blocks the response either way
+        notes.remux_for_duration(path)
+        # the inbox is outside the vault — nothing to git-commit here
+        return {"id": note_id, "status": "captured"}
+
+    @app.post("/api/capture/image", status_code=201)
+    async def capture_image(request: Request, config=Depends(require_token)):
+        """A photo from the "→ Brain Cloud" Shortcut or the cockpit's own photo
+        button (Pass V2). Same raw-body streaming as capture_audio. The client
+        is always the one that resizes and converts — HEIC/large originals
+        never reach this server, so there's nothing to decode here."""
+        ext = notes.image_extension(request.headers.get("content-type"))
+        if ext is None:
+            ctype = request.headers.get("content-type") or "missing"
+            heic = "heic" in ctype.lower() or "heif" in ctype.lower()
+            raise Envelope(
+                400, "That photo isn't in a format the pipeline can read.",
+                f"The upload's Content-Type was '{ctype}'."
+                + (" HEIC photos need converting first." if heic else ""),
+                "Convert it to JPEG on the device — the Shortcut's Convert Image "
+                "step (or the cockpit's own photo button) does this automatically."
+                if heic else
+                "Accepted formats are JPEG, PNG, and WebP.")
+        tag = request.query_params.get("tag") or None
+        if not notes.valid_tag(tag):
+            raise Envelope(
+                400, "That's not a capture tag the pipeline knows.",
+                f"'{tag}' isn't one of the 8 capture tags in SCHEMA-REFERENCE.md.",
+                "Pick one of the tag chips, or send no tag and let it become a resource.")
+
+        inbox = Path(config.inbox_path)
+        path, note_id = notes.image_capture_path(
+            inbox, ext, request.query_params.get("name"), tag)
+        fd, tmp = tempfile.mkstemp(dir=inbox, prefix=".capture-", suffix=".tmp")
+        written = 0
+        try:
+            with os.fdopen(fd, "wb") as f:
+                async for chunk in request.stream():
+                    written += len(chunk)
+                    if written > notes.MAX_IMAGE_BYTES:
+                        raise Envelope(
+                            413, "That photo is too large to upload.",
+                            f"The upload passed the {notes.MAX_IMAGE_BYTES // (1024 * 1024)} MB "
+                            "limit this server accepts.",
+                            "Resize on the device first — the Shortcut and the cockpit's photo "
+                            "button both do this automatically before sending.")
+                    f.write(chunk)
+            if written == 0:
+                raise Envelope(
+                    400, "There was nothing to capture.",
+                    "The upload arrived empty.",
+                    "Try sharing the photo again.")
+            # the insight sidecar (if any) is written BEFORE the image is
+            # renamed into place, so the watcher — which ignores dotfiles —
+            # never sees the image without it
+            insight = request.query_params.get("insight") or ""
+            if insight.strip():
+                notes.image_insight_sidecar(path).write_text(insight.strip(), encoding="utf-8")
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            sidecar = notes.image_insight_sidecar(path)
+            if sidecar.exists():
+                sidecar.unlink(missing_ok=True)
             raise
         # the inbox is outside the vault — nothing to git-commit here
         return {"id": note_id, "status": "captured"}
@@ -603,14 +639,20 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
 
     @app.post("/api/people/{person_id}/draft")
     def person_draft(person_id: str, body: PersonDraftBody, config=Depends(require_token)):
+        # a short-lived connection just for this request — the watcher holds
+        # the long-lived one; both go through sqlite's default busy timeout
+        events = EventLog(db_path, Path(config.vault_path))
         try:
-            result = people_mod.draft(Path(config.vault_path), person_id, body.channel, config)
+            result = people_mod.draft(Path(config.vault_path), person_id, body.channel,
+                                      config, events=events)
         except LookupError:
             raise Envelope(
                 409, "Drafts need your own voice on file first.",
                 "_System/my-voice.md doesn't exist yet, and a draft written without "
                 "it would sound like a chatbot, not like you.",
                 "Paste 3–5 messages you've actually sent in Settings → My voice, then try again.")
+        finally:
+            events.close()
         if result is None:
             raise Envelope(
                 404, "That person isn't in the vault.",
@@ -743,7 +785,9 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 "Let the next pipeline pass process it, then check again.")
         dest.parent.mkdir(parents=True, exist_ok=True)
         candidate.rename(dest)  # failed/ and inbox/ are outside the vault — no commit
-        sidecar.move_with_sidecar(candidate, dest)  # an image capture's .meta.json travels too
+        # a photo's .insight sidecar (if any) is untouched by this move — it
+        # already lives in the inbox and was never moved to failed/ in the
+        # first place, so it's right where the retried image expects it
         return {"ok": True}
 
     @app.post("/api/run", status_code=202)
@@ -776,18 +820,24 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
     def resource_enrich(note_id: str, config=Depends(require_token)):
         folder = Path(config.vault_path) / proute.TYPE_FOLDER["resource"]
         target = None
+        target_fm: dict = {}
         if folder.is_dir():
             for path in folder.glob("*.md"):
                 fm, _ = notes.parse_frontmatter(path.read_text(encoding="utf-8"))
                 if fm.get("id") == note_id and fm.get("type") == "resource":
-                    target = path
+                    target, target_fm = path, fm
                     break
         if target is None:
             raise Envelope(
                 404, "That resource isn't in the vault.",
                 "No resource note in 04-Resources has that id.",
                 "Refresh the resource list.")
-        enriched = enrich.reenrich_note(target, config)
+        # a photo resource has no source_url to re-fetch — it re-runs vision
+        # on its own attachment instead (Pass V3)
+        if target_fm.get("platform") == "photo":
+            enriched = enrich.reenrich_image_note(target, config)
+        else:
+            enriched = enrich.reenrich_note(target, config)
         notes.git_commit_vault(config.vault_path, f"api: enriched {note_id}")
         return {"ok": True, "enriched": enriched}
 
@@ -809,6 +859,18 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         return {"items": notes.list_resources(
             config.vault_path, category=category, status=status, q=q,
             has_insight=has_insight, sort=sort)}
+
+    @app.get("/api/search")
+    def search(q: str = "", limit: int = notes.SEARCH_DEFAULT_LIMIT, config=Depends(require_token)):
+        """Pass Q: whole-vault search — a filesystem scan, never a SQLite
+        index of note content (CLAUDE.md §1)."""
+        if len(q.strip()) < notes.SEARCH_MIN_QUERY_LEN:
+            raise Envelope(
+                400, "That search is too short to be useful.",
+                f"Search needs at least {notes.SEARCH_MIN_QUERY_LEN} characters.",
+                "Type a bit more, then search again.")
+        capped = max(1, min(limit, notes.SEARCH_MAX_LIMIT))
+        return {"items": notes.search_vault(config.vault_path, q.strip(), limit=capped)}
 
     # 'sample' routes are declared before '/{note_id}' so the literal path wins.
     @app.get("/api/resources/sample/count")
@@ -961,11 +1023,37 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
             last_commit = head.stdout.strip()
         return {"last_backup": last_backup, "last_vault_commit": last_commit}
 
+    # ---- vault git-sync (Pass H1 — the island fix) ---------------------------------
+
+    @app.post("/api/vault/sync")
+    def vault_sync_route(config=Depends(require_token)):
+        from pipeline import vaultsync
+        from pipeline.events import EventLog
+
+        if vaultsync.remote_config(config) is None:
+            raise Envelope(
+                400, "Vault sync isn't configured.",
+                "Neither VAULT_GIT_REMOTE nor vault_sync.remote in config.json is set.",
+                "Set VAULT_GIT_REMOTE (and VAULT_GIT_TOKEN) as service variables, or "
+                "vault_sync.remote in config.json, then try again.")
+        result = vaultsync.sync(Path(config.vault_path), config)
+        events = EventLog(db_path, Path(config.vault_path))
+        try:
+            events.log(str(config.vault_path), "vault_sync",
+                      "ok" if result.status == "ok" else "failed",
+                      message=f"status={result.status} ahead={result.ahead} behind={result.behind}"
+                              + (f" — {result.detail}" if result.detail else ""))
+        finally:
+            events.close()
+        integrations.bust_cache(app.state)
+        return {"ok": result.status == "ok", "status": result.status, "detail": result.detail,
+                "ahead": result.ahead, "behind": result.behind}
+
     # ---- integrations ----------------------------------------------------------------
 
     @app.get("/api/integrations")
     def get_integrations(fresh: int = 0, config=Depends(require_token)):
-        return integrations.get_integrations(app.state, config, heartbeat_path, bool(fresh))
+        return integrations.get_integrations(app.state, config, heartbeat_path, bool(fresh), db_path)
 
     @app.post("/api/integrations/engine")
     def set_engine(body: EngineBody, config=Depends(require_token)):

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { NoteType, ReviewItem } from "../api/types";
+import type { NoteType, ReviewItem, SuggestedAttendee } from "../api/types";
 import { NOTE_TYPES } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
 import { StreakDots } from "../components/StreakDots";
@@ -11,6 +11,14 @@ const reducedMotion = () =>
   window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 function confidenceSentence(item: ReviewItem): string {
+  // A conversation's type isn't a guess — two-or-more speakers decided it
+  // deterministically (pipeline/watcher.py), so "100% sure" would be honest
+  // but beside the point. The real ask on this card is confirming who's in it.
+  if (item.suggested_type === "conversation") {
+    return item.suggested_attendees.length > 0
+      ? "More than one voice — confirm who's in it below."
+      : "More than one voice in this recording.";
+  }
   const pct = Math.round(item.confidence * 100);
   return `I think this is a ${item.suggested_type} — ${pct}% sure.`;
 }
@@ -18,11 +26,68 @@ function confidenceSentence(item: ReviewItem): string {
 interface CardProps {
   item: ReviewItem;
   isTop: boolean;
-  onDecide: (item: ReviewItem, type: NoteType) => void;
+  onDecide: (item: ReviewItem, type: NoteType, attendeeIds: string[]) => void;
   leaving: boolean;
 }
 
+// Toggleable chips for the pipeline's attendee suggestions. Start all
+// confirmed — pipeline.plaud.match_people never guesses between two people
+// sharing a name, so what it did suggest is already conservative; unchecking
+// a false positive is the one tap that should matter, not building the list
+// up from nothing.
+function AttendeeChips({
+  attendees,
+  confirmed,
+  onToggle,
+}: {
+  attendees: SuggestedAttendee[];
+  confirmed: Set<string>;
+  onToggle: (id: string) => void;
+}) {
+  if (attendees.length === 0) return null;
+  return (
+    <div className="mt-3">
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+        Who was in this conversation?
+      </p>
+      <div className="mt-1.5 flex flex-wrap gap-2" role="group" aria-label="Confirm attendees">
+        {attendees.map((a) => {
+          const on = confirmed.has(a.id);
+          return (
+            <button
+              key={a.id}
+              type="button"
+              aria-pressed={on}
+              onClick={() => onToggle(a.id)}
+              className={`min-h-11 rounded-full border px-4 text-sm font-semibold ${
+                on
+                  ? "bg-emphasis border-emphasis text-emphasis"
+                  : "bg-subtle border-subtle text-subtle"
+              }`}
+            >
+              {a.name}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function ReviewCard({ item, isTop, onDecide, leaving }: CardProps) {
+  const [confirmed, setConfirmed] = useState<Set<string>>(
+    () => new Set(item.suggested_attendees.map((a) => a.id)),
+  );
+  const toggle = (id: string) =>
+    setConfirmed((s) => {
+      const next = new Set(s);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const confirmedIds = () =>
+    item.suggested_attendees.filter((a) => confirmed.has(a.id)).map((a) => a.id);
+
   return (
     <article
       data-review-card={item.id}
@@ -39,9 +104,11 @@ function ReviewCard({ item, isTop, onDecide, leaving }: CardProps) {
       <p className="text-default mt-2 line-clamp-3 text-sm">{item.excerpt}</p>
       <p className="text-emphasis mt-3 text-sm font-semibold">{confidenceSentence(item)}</p>
 
+      <AttendeeChips attendees={item.suggested_attendees} confirmed={confirmed} onToggle={toggle} />
+
       <button
         type="button"
-        onClick={() => onDecide(item, item.suggested_type)}
+        onClick={() => onDecide(item, item.suggested_type, confirmedIds())}
         className={`mt-4 min-h-12 w-full rounded-xl text-base font-bold ${
           isTop ? "bg-brand-default text-brand" : "bg-inverted text-inverted"
         }`}
@@ -58,7 +125,7 @@ function ReviewCard({ item, isTop, onDecide, leaving }: CardProps) {
             <button
               key={t}
               type="button"
-              onClick={() => onDecide(item, t)}
+              onClick={() => onDecide(item, t, confirmedIds())}
               className={`bg-subtle border-subtle text-default hover:border-emphasis min-h-11 rounded-full border px-4 text-sm font-semibold ${
                 t === item.suggested_type ? "border-emphasis text-emphasis" : ""
               }`}
@@ -103,7 +170,7 @@ export function Triage() {
     }
   }, [review.data]);
 
-  const decide = async (item: ReviewItem, type: NoteType) => {
+  const decide = async (item: ReviewItem, type: NoteType, attendeeIds: string[] = []) => {
     // One tap = one decision. Animate out (instant under reduced motion), then POST.
     decided.current.add(item.id);
     const remove = () => setItems((cur) => (cur ? cur.filter((i) => i.id !== item.id) : cur));
@@ -121,7 +188,7 @@ export function Triage() {
       }, 250);
     }
     try {
-      await api.approve(item.id, type);
+      await api.approve(item.id, type, attendeeIds);
       toast(type === item.suggested_type ? `Approved as ${type}` : `Filed as ${type}`);
     } catch (err) {
       const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;

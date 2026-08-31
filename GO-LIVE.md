@@ -253,7 +253,60 @@ todo file exactly like a voice memo would. See `DEFERRED.md` for what this
 pass intentionally left out (video/reel *content* understanding, Apify for
 real Instagram captions, editing extracted fields from the cockpit).
 
-## 8. Verify (2 min)
+## 8. Connect a Plaud Note Pro (optional, 10 min)
+
+Two independent lanes — wire up either or both, and the folder lane needs no
+cloud account at all.
+
+**Folder lane (recommended — LAN only, no cloud round-trip).** applaud is a
+third-party local-sync tool: it talks to the Note Pro over your LAN and writes
+each recording as a bundle folder (audio + Plaud's own speaker-labelled
+transcript + AI summary) that this cockpit already recognises without any
+config on the note itself.
+
+```bash
+docker compose --profile sync --profile tunnel --profile applaud up -d
+```
+
+1. Visit `http://<server-ip>:44471/setup` (SSH-tunnel it like the Syncthing
+   UI in §5 rather than opening the port) and pair the device — containerized
+   setup needs the pairing token pasted by hand, no browser auto-detect.
+2. Add `./data/plaud-recordings` (or wherever `PLAUD_RECORDINGS_DIR` points)
+   to `watch_folders` in `data/config.json`, and restart the `app` service —
+   this is the one manual step: applaud writing bundles and the cockpit
+   watching for them are two separate config surfaces.
+3. Record something, let applaud sync it, and check the note lands in
+   `12-Conversations` with `transcript_source: plaud` and real speaker labels
+   — no whisper spend, no re-transcription.
+
+Recordings without a second speaker (a solo voice memo) classify normally,
+same as any other capture — `conversation` is only for 2+ voices.
+
+**Cloud-pull lane (optional, on-demand backfill).** For a recording that never
+reached the folder — synced from another device, or before applaud was
+running — `scripts/plaud_pull.py` fetches it from Plaud's cloud into the exact
+same bundle shape, so the next watcher tick imports it exactly like a local
+sync. It needs `plaud_cloud.enabled: true` and a `destination` folder in
+`config.json` (see `config.example.json` for the full block); the default
+backend shells out to the official `@plaud-ai/cli` (`npm i -g @plaud-ai/cli`,
+then `plaud login` once — this is the one dependency this repo's constitution
+required asking about first, approved for this pass specifically), or set
+`plaud_cloud.backend` to `"mcp"` to use Plaud's official MCP server instead —
+no extra install, since this cockpit already depends on the `mcp` package.
+
+Run it by hand whenever you want a backfill: `python scripts/plaud_pull.py`
+(add `--dry-run` to preview, `--since 2026-01-01` to widen the window). It is
+never run automatically by the watcher — a network hiccup here can't cost a
+capture that's already safely on disk via the folder lane.
+
+**Honesty note**: docs.plaud.ai was unreachable while this cloud lane was
+built, so its exact CLI flags and MCP tool names are a best-effort guess, not
+verified against a live account — every one of them is a config value
+(`plaud_cloud.cli.*` / `plaud_cloud.mcp.*`), so a wrong guess is a one-line
+config edit, not a rewrite. The folder lane above has no such caveat — it's
+plain files on disk, the same path every other capture already takes.
+
+## 9. Verify (2 min)
 
 Integrations screen: whisper/OpenAI engine, model key, ntfy (optional),
 vault git, watcher heartbeat, Gmail, Calendar — all green or deliberately

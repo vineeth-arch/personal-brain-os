@@ -120,6 +120,58 @@ def test_end_to_end(vault_env):
     events.close()
 
 
+def test_the_same_link_shared_twice_is_one_note_pass_s3(tmp_path, monkeypatch):
+    """Sharing the same reel twice (each share carrying its own tracking
+    param) must not create a second resource note — the second share's
+    thought is appended to the first note instead."""
+    vault = tmp_path / "vault"
+    inbox = tmp_path / "inbox"
+    archive = tmp_path / "archive"
+    failed = tmp_path / "failed"
+    for d in (vault, inbox, archive, failed):
+        d.mkdir()
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed)
+
+    def fetch(url, data=None, timeout=10, headers=None):
+        return b'{"title": "A great reel"}' if "oembed" not in url else b'{"title": "A great reel"}'
+
+    def no_router(prompt, cfg, validate):
+        return None, None, []
+
+    from pipeline.events import EventLog
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    deps = watcher.Deps(transcriber=None, enrich_fetch=fetch, enrich_router=no_router)
+
+    (inbox / "share1.txt").write_text(
+        "check the hook part\n\nhttps://instagram.com/reel/abc123?igsh=first", encoding="utf-8")
+    watcher.run_once(config, events, deps)
+
+    resources = list((vault / "04-Resources").glob("*.md"))
+    assert len(resources) == 1
+    first_text = resources[0].read_text(encoding="utf-8")
+    assert "check the hook part" in first_text
+
+    (inbox / "share2.txt").write_text(
+        "the transition at 0:08 is so clean\n\nhttps://instagram.com/reel/abc123?igsh=second",
+        encoding="utf-8")
+    watcher.run_once(config, events, deps)
+
+    resources = list((vault / "04-Resources").glob("*.md"))
+    assert len(resources) == 1, "the second share duplicated the note instead of merging"
+    merged_text = resources[0].read_text(encoding="utf-8")
+    assert "check the hook part" in merged_text            # first thought survives
+    assert "the transition at 0:08 is so clean" in merged_text  # second thought added
+    assert merged_text.count("## Insight") == 1
+
+    # a DIFFERENT link must still get its own note
+    (inbox / "different.txt").write_text("https://instagram.com/reel/zzz999", encoding="utf-8")
+    watcher.run_once(config, events, deps)
+    assert len(list((vault / "04-Resources").glob("*.md"))) == 2
+    events.close()
+
+
 def test_mic_recording_runs_end_to_end(tmp_path, monkeypatch):
     """Pass V: a .webm from the cockpit's mic button is a first-class capture —
     the browser's format must reach a routed note like any phone recording."""
@@ -149,6 +201,82 @@ def test_mic_recording_runs_end_to_end(tmp_path, monkeypatch):
     # source archived, never deleted; inbox drained
     assert not any(inbox.iterdir())
     assert len(list(archive.iterdir())) == 1
+
+
+def test_untagged_photo_becomes_a_described_resource_note(tmp_path, monkeypatch):
+    """Pass V3: a photo shared with no capture tag is a resource note by
+    default (D-PHOTO), with the sidecar insight preserved and the image moved
+    into the vault's own attachments/ store."""
+    from pipeline.events import EventLog
+
+    vault, inbox, archive, failed = (tmp_path / d for d in ("vault", "inbox", "archive", "failed"))
+    for d in (vault, inbox, archive, failed):
+        d.mkdir()
+    # exactly what api/notes.image_capture_path + image_insight_sidecar write
+    (inbox / ".2026-07-03-0900 sunset.insight").write_text("worth revisiting", encoding="utf-8")
+    (inbox / "2026-07-03-0900 sunset.jpg").write_bytes(b"jpeg-bytes")
+
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed)
+    events = EventLog(tmp_path / "events.db", vault)
+
+    def vision_caller(path, mime, key):
+        import json
+        return json.dumps({"description": "a sunset over the bay", "resource_type": "place",
+                           "extracted_text": ""})
+
+    deps = watcher.Deps(transcriber=None, vision_caller=vision_caller)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key-for-test")
+    results = watcher.run_once(config, events, deps)
+
+    assert len(results) == 1 and results[0].status != "failed", results[0].error
+    resources = _notes_of_type(vault, "04-Resources", "resource")
+    assert len(resources) == 1
+    text = resources[0].read_text(encoding="utf-8")
+    assert "platform: photo" in text and "resource_type: place" in text
+    assert "worth revisiting" in text
+    assert "![[attachments/" in text
+
+    # the photo landed in the vault's attachments/, sidecar consumed, inbox drained
+    attachments = list((vault / "attachments").glob("*.jpg"))
+    assert len(attachments) == 1
+    assert not any(inbox.iterdir())
+    events.close()
+
+
+def test_tagged_photo_routes_to_that_types_folder(tmp_path, monkeypatch):
+    """Pass V3: a photo shared WITH a capture tag files as that type's note
+    instead of a resource (D-PHOTO 'Both')."""
+    from pipeline.events import EventLog
+
+    vault, inbox, archive, failed = (tmp_path / d for d in ("vault", "inbox", "archive", "failed"))
+    for d in (vault, inbox, archive, failed):
+        d.mkdir()
+    (inbox / "2026-07-03-0900 whiteboard #idea.jpg").write_bytes(b"jpeg-bytes")
+
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed)
+    events = EventLog(tmp_path / "events.db", vault)
+
+    # a vision provider that comes back empty — exercises the "vision failed,
+    # note written anyway" path deterministically (no dependence on whether
+    # ANTHROPIC_API_KEY happens to be set in the environment running this test)
+    deps = watcher.Deps(transcriber=None, vision_caller=lambda path, mime, key: "not json")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key-for-test")
+    results = watcher.run_once(config, events, deps)
+
+    assert len(results) == 1 and results[0].status != "failed", results[0].error
+    musings = _notes_of_type(vault, "02-Musings", "musing")
+    assert len(musings) == 1
+    fm = _fm(musings[0])
+    assert fm["source"] == "share"
+    assert fm["origin"] == "human"
+    text = musings[0].read_text(encoding="utf-8")
+    assert "![[attachments/" in text
+    assert "## AI description" not in text  # vision had no key — honest, no invented description
+    events.close()
 
 
 class HindiTranscriber(Transcriber):
@@ -236,3 +364,34 @@ def test_a_dead_transliteration_engine_still_writes_the_note(tmp_path, monkeypat
     rows = sqlite3.connect(tmp_path / "events.db").execute(
         "SELECT status, message FROM events WHERE stage = 'transliterate'").fetchall()
     assert rows and rows[0][0] == "failed" and "Devanagari" in rows[0][1]
+
+
+def test_run_once_drains_watched_folders_too(tmp_path, monkeypatch):
+    """D1: watch_folders used to only sweep inside --loop. Every entry point
+    (one-shot run, --backlog, POST /api/run which shells out to `python -m
+    pipeline`) must pick up recordings sitting in an app-owned folder."""
+    from pipeline.events import EventLog
+
+    vault, inbox, archive, failed = (tmp_path / d for d in ("vault", "inbox", "archive", "failed"))
+    watched = tmp_path / "PlaudDesktop"
+    for d in (vault, inbox, archive, failed, watched):
+        d.mkdir()
+    old = (watched / "meeting.m4a")
+    old.write_bytes(b"fake audio")
+    import os
+    import time
+    stale = time.time() - 300
+    os.utime(old, (stale, stale))
+
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed,
+                    raw={"watch_folders": [{"path": str(watched), "source": "plaud"}]})
+    events = EventLog(tmp_path / "events.db", vault)
+    deps = watcher.Deps(transcriber=FakeTranscriber(), classifier_fn=stub_classifier)
+
+    results = watcher.run_once(config, events, deps)
+
+    assert old.exists(), "the watched folder's own copy is never touched"
+    assert len(results) == 1 and results[0].status != "failed"
+    assert not any((inbox / "plaud").glob("*")), "the copy was processed and archived, not left behind"

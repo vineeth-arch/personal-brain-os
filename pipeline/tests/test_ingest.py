@@ -122,3 +122,20 @@ def test_malformed_entries_are_skipped(env):
 
 def test_no_watch_folders_configured_is_a_quiet_no_op(env):
     assert ingest.sweep(SimpleNamespace(inbox_path=env.inbox, raw={}), env.events) == []
+
+
+def test_recordings_nested_in_date_subfolders_are_found(env):
+    """D19: Plaud Desktop (and others) nest exports by date — a shallow scan
+    would leave them invisible forever."""
+    nested = env.watched / "2026" / "08-20"
+    nested.mkdir(parents=True)
+    _recording(nested, "meeting.m4a")
+    copied = ingest.sweep(cfg(env), env.events)
+    assert len(copied) == 1 and copied[0].parent == env.inbox / "plaud"
+
+
+def test_hidden_subfolders_are_never_descended_into(env):
+    hidden = env.watched / ".Trash"
+    hidden.mkdir()
+    _recording(hidden, "deleted.m4a")
+    assert ingest.sweep(cfg(env), env.events) == []

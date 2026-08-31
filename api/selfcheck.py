@@ -102,6 +102,14 @@ def run(root: Path) -> dict:
         check("whisper", "whisper.cpp configured", bool(config.whispercpp_binary),
               "Binary path set." if config.whispercpp_binary
               else "No binary path yet — transcription can't run.")
+        # D18: engine=openai with no key is a fresh-install trap (the example
+        # config defaults to openai) — every audio capture would quarantine
+        # from the first one, one at a time, with no signal until then.
+        engine_ready = config.engine != "openai" or bool(config.openai_key)
+        check("transcription-engine", "transcription engine has what it needs", engine_ready,
+              "Ready." if engine_ready else
+              "Cloud transcription is selected but has no key — captures will fail "
+              "until you set OPENAI_API_KEY or switch engines in Settings.")
         check("ntfy", "ntfy push configured", bool(config.ntfy_url and config.ntfy_topic),
               "Configured." if (config.ntfy_url and config.ntfy_topic)
               else "Not configured — no failure pushes.")

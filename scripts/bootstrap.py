@@ -150,6 +150,15 @@ def bootstrap_interactive(root: Path) -> Path:
     config["transcription"]["whispercpp"]["binary_path"] = \
         ask("whisper.cpp binary (empty to skip audio for now)", whisper)
 
+    # D18: this used to be left at whatever config.example.json shipped
+    # (currently "openai") regardless of what the user just typed above for
+    # whisper.cpp — every capture would then quarantine on first use unless
+    # OPENAI_API_KEY happened to be set too. Same rule bootstrap_docker
+    # already follows: prefer the key that's actually present.
+    config["transcription"]["engine"] = (
+        "openai" if os.environ.get("OPENAI_API_KEY") else "whispercpp"
+    )
+
     token = secrets.token_urlsafe(32)
     config["api"]["auth_token"] = token
     _make_folders(config)
@@ -157,6 +166,9 @@ def bootstrap_interactive(root: Path) -> Path:
     path = _write_config(root, config)
     print()
     print("Wrote", path, "and created the four folders.")
+    print(f"Transcription engine: {config['transcription']['engine']}"
+          + ("" if config["transcription"]["engine"] == "openai"
+             else " (set OPENAI_API_KEY in your shell to use cloud transcription instead)"))
     print("Your cockpit access token (also in config.json):")
     print(f"  {token}")
     return path

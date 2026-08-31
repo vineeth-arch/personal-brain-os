@@ -16,10 +16,12 @@ import shutil
 import sqlite3
 import subprocess
 import tempfile
+import urllib.parse
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from pipeline import classify, route
+from pipeline import classify, relationships, route
+from pipeline.enrich import insight_text as _insight_text
 
 log = logging.getLogger("api")
 
@@ -148,11 +150,48 @@ def _confidence_map(db_path: Path) -> dict[str, float]:
     return out
 
 
+def _suggested_attendees_map(db_path: Path) -> dict[str, dict[str, str]]:
+    """note filename -> {speaker label: person id} — the same join
+    _confidence_map does, over the 'attendees' stage instead of 'classify'.
+    Never written to frontmatter (SCHEMA-REFERENCE.md §7); this is the only
+    way a suggestion ever reaches the API, exactly like classify confidence."""
+    if not db_path.exists():
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT r.message,"
+                " (SELECT a.message FROM events a"
+                "  WHERE a.file = r.file AND a.stage = 'attendees' AND a.id < r.id"
+                "  ORDER BY a.id DESC LIMIT 1)"
+                " FROM events r WHERE r.stage = 'route' AND r.status = 'ok' ORDER BY r.id"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        log.exception("attendees join failed")
+        return {}
+    for route_msg, attendees_msg in rows:
+        if not route_msg or not attendees_msg:
+            continue
+        try:
+            suggested = json.loads(attendees_msg).get("suggested") or {}
+        except json.JSONDecodeError:
+            continue
+        for name in route_msg.removeprefix("wrote ").split(", "):
+            out[name.strip()] = suggested
+    return out
+
+
 def list_review(vault: Path, db_path: Path) -> list[dict]:
     inbox_dir = vault / route.INBOX_FOLDER
     if not inbox_dir.is_dir():
         return []
     confidences = _confidence_map(db_path)
+    suggestions = _suggested_attendees_map(db_path)
+    people_by_id = {p.id: p.name for p in relationships.load_people(vault)}
     items = []
     for path in sorted(inbox_dir.glob("*.md")):
         text = read_note(path)
@@ -161,14 +200,22 @@ def list_review(vault: Path, db_path: Path) -> list[dict]:
         fm, body = parse_frontmatter(text)
         if fm.get("status") != "needs-review":
             continue
+        note_type = fm.get("type", "musing")
+        # always present ([] when there is nothing to suggest) so the client
+        # never has to special-case a missing key
+        attendees = [
+            {"id": pid, "label": label, "name": people_by_id.get(pid, label)}
+            for label, pid in suggestions.get(path.name, {}).items()
+        ] if note_type == "conversation" else []
         items.append({
             "id": fm.get("id", ""),
             "file": f"{route.INBOX_FOLDER}/{path.name}",
             "title": _DATE_PREFIX_RE.sub("", path.stem),
             "excerpt": body.strip()[:EXCERPT_CHARS],
-            "suggested_type": fm.get("type", "musing"),
+            "suggested_type": note_type,
             "confidence": confidences.get(path.name, 0.5),
             "created": fm.get("created", ""),
+            "suggested_attendees": attendees,
         })
     return items
 
@@ -189,9 +236,19 @@ def count_review(vault: Path) -> int:
     return n
 
 
-def approve(vault: Path, note_id: str, new_type: str) -> str:
+def approve(vault: Path, note_id: str, new_type: str,
+           attendees: list[str] | None = None) -> str:
     """Restamp type/status and move the note to its folder. Returns the
-    vault-relative destination. Raises LookupError if the id isn't in review."""
+    vault-relative destination. Raises LookupError if the id isn't in review.
+
+    `attendees` — confirmed 07-People ids, ignored unless new_type is
+    "conversation" — is the ONLY way `attendees:` is ever filled in: the
+    pipeline always writes it empty (SCHEMA-REFERENCE.md §7). Confirming here
+    is what appends the dated interaction-log line to each person, via the
+    same relationships.log_contact the People screen uses (CLAUDE.md §3 — no
+    AI bulk-write reaches a person note unreviewed). An id that doesn't
+    resolve to a real person is skipped rather than failing the whole
+    approve — a stale suggestion should not block filing the note."""
     inbox_dir = vault / route.INBOX_FOLDER
     target: Path | None = None
     text = ""
@@ -235,15 +292,46 @@ def approve(vault: Path, note_id: str, new_type: str) -> str:
         dest.unlink(missing_ok=True)   # roll back rather than duplicate the id
         log.exception("could not remove the inbox copy of %s — approve rolled back", note_id)
         raise
-    git_commit_vault(vault, f"api: filed {note_id} as {new_type}")
+
+    # Confirming attendees happens only AFTER the note is safely filed — had
+    # the move above failed, no person note should have been touched at all.
+    confirmed_names: list[str] = []
+    if attendees and new_type == "conversation":
+        confirmed_ids: list[str] = []
+        title = _DATE_PREFIX_RE.sub("", dest.stem)
+        for person_id in attendees:
+            person = relationships.find_person(vault, person_id)
+            if person is None:
+                continue          # a stale/unknown suggestion — skip it
+            note_line = f"Conversation: {title} ([[{note_id}]])"
+            person.path.write_text(
+                relationships.log_contact(person, note_line, date.today()), encoding="utf-8")
+            confirmed_names.append(person.name)
+            confirmed_ids.append(person_id)
+        if confirmed_ids:
+            fm_block, sep, body = dest.read_text(encoding="utf-8").partition("\n---\n")
+            dest.write_text(
+                route.stamp_list_field(fm_block, "attendees", confirmed_ids) + sep + body,
+                encoding="utf-8")
+
+    commit_msg = f"api: filed {note_id} as {new_type}"
+    if confirmed_names:
+        commit_msg += f" · confirmed attendees: {', '.join(confirmed_names)}"
+    git_commit_vault(vault, commit_msg)
     return str(dest.relative_to(vault))
 
 
 # ---- capture ----------------------------------------------------------------
 
 def _slug(text: str) -> str:
-    words = " ".join(text.split()[:6])
-    slug = re.sub(r"[^\w\s-]", "", words.replace("#", "")).strip()
+    words = text.split()[:6]
+    if len(words) == 1 and re.match(r"^https?://", words[0], re.IGNORECASE):
+        # a bare URL has no word breaks to slug on — use its host instead,
+        # e.g. https://youtube.com/watch?v=abc -> "youtube-com"
+        host = urllib.parse.urlparse(words[0]).netloc.removeprefix("www.")
+        words = [host] if host else words
+    joined = " ".join(words)
+    slug = re.sub(r"[^\w\s-]", "", joined.replace("#", "")).strip()
     slug = re.sub(r"[\s_]+", "-", slug)
     return slug[:60] or "note"
 
@@ -286,104 +374,6 @@ def valid_tag(tag: str | None) -> bool:
     return tag is None or tag in classify.TAG_TO_TYPE
 
 
-# ---- image capture (Pass 13) -------------------------------------------------
-# iPhone Shortcut / PWA share path. The server NEVER trusts a client-supplied
-# filename (no path-traversal surface); the name is entirely server-derived
-# from the owner's own thought text, exactly like capture() above. Format is
-# detected from magic bytes, never from the client's Content-Type or the
-# multipart filename field, which callers may spoof or get wrong.
-
-MAX_IMAGE_BYTES = 15 * 1024 * 1024          # 15MB — the Shortcut resizes below this
-DOWNSCALE_THRESHOLD_BYTES = 3 * 1024 * 1024  # courtesy ffmpeg pass above this size
-DOWNSCALE_MAX_EDGE = 2048
-SIDECAR_FIELD_CAP = 20_000                   # a sidecar field rides into an LLM prompt later
-
-_IMAGE_MAGIC: list[tuple[bytes, str, str]] = [
-    (b"\xff\xd8\xff", ".jpg", "image/jpeg"),
-    (b"\x89PNG\r\n\x1a\n", ".png", "image/png"),
-]
-
-
-def detect_image_type(data: bytes) -> tuple[str, str] | None:
-    """(extension, mime) by magic bytes, or None if unrecognized. WEBP needs
-    a 12-byte RIFF....WEBP check that doesn't fit the simple prefix table."""
-    for magic, ext, mime in _IMAGE_MAGIC:
-        if data[:len(magic)] == magic:
-            return ext, mime
-    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
-        return ".webp", "image/webp"
-    return None
-
-
-def _downscale_if_needed(data: bytes, ext: str) -> bytes:
-    """Courtesy resize for anything over the threshold, via ffmpeg. Best
-    effort only: ffmpeg missing, unavailable for this format, or failing for
-    any reason keeps the ORIGINAL bytes — a capture must never fail just
-    because a resize didn't work (the Shortcut already resizes on-phone;
-    this is a safety net for images that arrive big some other way, e.g.
-    Syncthing)."""
-    if len(data) <= DOWNSCALE_THRESHOLD_BYTES or ext not in (".jpg", ".png"):
-        return data
-    if not shutil.which("ffmpeg"):
-        return data
-    try:
-        with tempfile.TemporaryDirectory() as td:
-            src = Path(td) / f"in{ext}"
-            dst = Path(td) / f"out{ext}"
-            src.write_bytes(data)
-            subprocess.run(
-                ["ffmpeg", "-y", "-i", str(src), "-vf",
-                 f"scale='min({DOWNSCALE_MAX_EDGE},iw)':-2", str(dst)],
-                capture_output=True, timeout=30, check=True)
-            if dst.exists() and dst.stat().st_size > 0:
-                return dst.read_bytes()
-    except Exception as e:  # ffmpeg missing a codec, timeout, bad input, etc.
-        log.info("image downscale skipped, keeping original: %s", e)
-    return data
-
-
-def capture_image(inbox: Path, data: bytes, *, text: str, tag: str | None, ocr: str) -> str:
-    """Write an image capture + its sidecar. The sidecar (the owner's thought
-    and any on-device OCR text) is written FIRST, then the image, both
-    atomically — the watcher must never observe an image without its sidecar
-    already in place (pipeline/intake.py reads the sidecar once it sees the
-    image). Raises ValueError for an unrecognized format or an oversized
-    file; the caller turns that into a three-part envelope."""
-    if len(data) > MAX_IMAGE_BYTES:
-        raise ValueError(f"image is {len(data)} bytes, over the {MAX_IMAGE_BYTES} limit")
-    detected = detect_image_type(data)
-    if detected is None:
-        raise ValueError("unrecognized image format (not JPEG, PNG, or WEBP)")
-    ext, _mime = detected
-    data = _downscale_if_needed(data, ext)
-
-    inbox.mkdir(parents=True, exist_ok=True)
-    now = datetime.now()
-    stamp = now.strftime("%Y-%m-%d-%H%M")
-    name = _slug(text) if text.strip() else "photo"
-    suffix = f" #{tag}" if tag else ""
-
-    def _paths(n: int) -> tuple[Path, Path]:
-        stem = f"{stamp} {name}{suffix}" if n == 1 else f"{stamp} {name}-{n}{suffix}"
-        img = inbox / f"{stem}{ext}"
-        return img, inbox / f"{stem}.meta.json"
-
-    i = 1
-    path, sidecar_file = _paths(i)
-    while path.exists() or sidecar_file.exists():
-        i += 1
-        path, sidecar_file = _paths(i)
-
-    sidecar_payload = json.dumps({
-        "text": text.strip()[:SIDECAR_FIELD_CAP],
-        "ocr": ocr.strip()[:SIDECAR_FIELD_CAP],
-        "source": "photo",
-    })
-    _atomic_write_bytes(sidecar_file, sidecar_payload.encode("utf-8"), inbox)
-    _atomic_write_bytes(path, data, inbox)
-    return now.strftime("%Y%m%d%H%M") + "00"
-
-
 # ---- audio capture (Pass V) --------------------------------------------------
 # audio the browser's MediaRecorder can produce, mapped to the extension the
 # intake stage recognises. Safari records mp4/m4a, everything else webm.
@@ -424,6 +414,77 @@ def audio_capture_path(inbox: Path, ext: str, name: str | None, tag: str | None,
         i += 1
         path = inbox / f"{stamp} {slug}-{i}{suffix}{ext}"
     return path, now.strftime("%Y%m%d%H%M") + "00"
+
+
+# A browser MediaRecorder's .webm/.mp4 is a streamed container with no overall
+# duration in its header — ffprobe's format=duration comes back N/A, which
+# means every mic capture would silently skip duration_min (D7/D4). A quick
+# stream-copy remux (no re-encode, no quality loss) writes that header field.
+REMUX_EXT = {".webm", ".mp4"}
+
+
+def remux_for_duration(path: Path) -> None:
+    """Best-effort in place; any failure (no ffmpeg, odd container) leaves the
+    original untouched — this is a metadata nicety, never load-bearing."""
+    if path.suffix.lower() not in REMUX_EXT:
+        return
+    tmp = path.with_name(f".remux-{path.name}")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(path), "-c", "copy", str(tmp)],
+            check=True, capture_output=True, timeout=60)
+        os.replace(tmp, path)
+    except (OSError, subprocess.SubprocessError):
+        Path(tmp).unlink(missing_ok=True)
+
+
+# ---- image capture (Pass V2) -------------------------------------------------
+# A photo shared from the "→ Brain Cloud" Shortcut or the cockpit's own photo
+# button. HEIC never reaches this server — resizing AND format conversion
+# happen on the device (the Shortcut's Resize/Convert steps, the PWA's canvas
+# downscale), so no new dependency is needed here (CLAUDE.md §7: no Pillow,
+# no server-side image decode).
+IMAGE_MIME_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+MAX_IMAGE_BYTES = 15 * 1024 * 1024
+INSIGHT_SIDECAR_SUFFIX = ".insight"
+
+
+def image_extension(content_type: str | None) -> str | None:
+    """Extension for a photo's Content-Type, or None if it isn't an image
+    this server accepts. HEIC/HEIF are deliberately absent — the caller's
+    envelope names the on-device conversion step instead of trying to decode
+    it here."""
+    base = (content_type or "").split(";")[0].strip().lower()
+    return IMAGE_MIME_EXT.get(base)
+
+
+def image_capture_path(inbox: Path, ext: str, name: str | None, tag: str | None,
+                       now: datetime | None = None) -> tuple[Path, str]:
+    """Reserve the inbox filename for a photo — same stamping and collision
+    rule as audio_capture_path."""
+    inbox.mkdir(parents=True, exist_ok=True)
+    now = now or datetime.now()
+    stamp = now.strftime("%Y-%m-%d-%H%M")
+    slug = _slug(name) if name and name.strip() else "photo"
+    suffix = f" #{tag}" if tag else ""
+    path = inbox / f"{stamp} {slug}{suffix}{ext}"
+    i = 1
+    while path.exists():
+        i += 1
+        path = inbox / f"{stamp} {slug}-{i}{suffix}{ext}"
+    return path, now.strftime("%Y%m%d%H%M") + "00"
+
+
+def image_insight_sidecar(image_path: Path) -> Path:
+    """The dotfile carrying a photo's quick thought. Dotfiles are invisible to
+    intake.poll (pipeline/intake.py), and this is written to disk BEFORE the
+    image itself, so the watcher can never see the image without its sidecar
+    already there — no race, no ordering dependency between the two writes."""
+    return image_path.with_name(f".{image_path.stem}{INSIGHT_SIDECAR_SUFFIX}")
 
 
 # ---- resurface ----------------------------------------------------------------
@@ -494,22 +555,6 @@ def _parse_date(value: str) -> date | None:
 def _note_title(path: Path, fm: dict[str, str]) -> str:
     """Frontmatter title wins; fall back to the human filename sans date prefix."""
     return fm.get("title") or _DATE_PREFIX_RE.sub("", path.stem)
-
-
-def _insight_text(body: str) -> str:
-    """Text under a '## Insight' H2, up to the next H2 or EOF. '' when absent/blank."""
-    out: list[str] = []
-    capturing = False
-    for line in body.splitlines():
-        stripped = line.strip()
-        if stripped.lower() == _INSIGHT_HEADING:
-            capturing = True
-            continue
-        if capturing and stripped.startswith("## "):
-            break
-        if capturing:
-            out.append(line)
-    return "\n".join(out).strip()
 
 
 def _sections(body: str) -> list[dict[str, str]]:
@@ -604,6 +649,9 @@ def _resource_summary(vault: Path, path: Path, fm: dict[str, str], body: str) ->
         "file": str(path.relative_to(vault)),
         "has_insight": bool(insight),
         "insight": insight or None,
+        # exposed so `q` can match the description too (Pass S4) — the
+        # gallery already showed this in the detail drawer, just not here
+        "description": fm.get("description") or None,
     }
 
 
@@ -643,7 +691,10 @@ def list_resources(vault: Path, *, category: str | None = None, status: str | No
             # not just its title, but the description, the type-extra fields
             # (a recipe's ingredients, a movie's where_to_watch, ...), the
             # insight, and the full note body — the body already contains the
-            # insight section, so it isn't searched twice.
+            # insight section, so it isn't searched twice. More thorough than
+            # _matches_query's title/description/insight-only check (Pass Q's
+            # own whole-vault GET /api/search covers the general case; this
+            # is specifically the Resources screen's own inline filter).
             extras = " ".join(fm.get(k, "") for k in RESOURCE_EXTRA_FIELDS)
             haystack = f"{item['title']} {fm.get('description', '')} {extras} {body}".lower()
             if q.lower() not in haystack:
@@ -740,3 +791,85 @@ def sample_titles(paths: list[Path]) -> list[str]:
         fm, _ = parse_frontmatter(read_note(path) or "")
         titles.append(_note_title(path, fm))
     return titles
+
+
+# ---- whole-vault search (Pass Q) --------------------------------------------
+# A filesystem scan, not an index — no note content ever touches SQLite
+# (CLAUDE.md §1). At personal-vault scale (a few thousand notes) this is well
+# under 100ms; there is nothing here worth caching.
+
+# raw/ (source recordings — the pipeline never reads it, SCHEMA-REFERENCE.md
+# §1) and _System/ (logs, not knowledge) are excluded — the same boundary the
+# pipeline itself respects.
+SEARCH_EXCLUDED_FOLDERS = {"raw", "_System"}
+SEARCH_MIN_QUERY_LEN = 2
+SEARCH_DEFAULT_LIMIT = 50
+SEARCH_MAX_LIMIT = 100
+SEARCH_EXCERPT_RADIUS = 80
+
+
+def _search_excerpt(text: str, q_lower: str) -> str:
+    """The matched line, trimmed to ~160 chars centered on the match — never
+    the whole body. Falls back to the start of the text if, somehow, the
+    match isn't found on any single line (shouldn't happen: body_match is
+    only set when `q_lower in body.lower()`, but a line-by-line re-scan is
+    cheap insurance against a body containing a comparison client wouldn't
+    naturally split on lines)."""
+    for line in text.splitlines():
+        idx = line.lower().find(q_lower)
+        if idx == -1:
+            continue
+        start = max(0, idx - SEARCH_EXCERPT_RADIUS)
+        end = min(len(line), idx + len(q_lower) + SEARCH_EXCERPT_RADIUS)
+        prefix = "…" if start > 0 else ""
+        suffix = "…" if end < len(line) else ""
+        return f"{prefix}{line[start:end].strip()}{suffix}"
+    return text.strip()[: SEARCH_EXCERPT_RADIUS * 2]
+
+
+def search_vault(vault: Path, q: str, limit: int = SEARCH_DEFAULT_LIMIT) -> list[dict]:
+    """Every note whose title, frontmatter values, or body contains `q`
+    (case-insensitive substring), ranked title-match > frontmatter-match >
+    body-match, then by file path for a stable order. `limit` is capped by
+    the caller at SEARCH_MAX_LIMIT; the `q` length floor is enforced by the
+    caller too (SEARCH_MIN_QUERY_LEN) — this function trusts its input.
+    """
+    q_lower = q.lower()
+    hits: list[tuple[int, str, dict]] = []
+    for path in sorted(vault.rglob("*.md")):
+        rel_parts = path.relative_to(vault).parts
+        if not rel_parts or rel_parts[0] in SEARCH_EXCLUDED_FOLDERS:
+            continue
+        if any(part.startswith(".") for part in rel_parts):
+            continue
+        text = read_note(path)
+        if text is None:
+            continue
+        fm, body = parse_frontmatter(text)
+        if not fm:
+            continue   # not a note the pipeline wrote — nothing reliable to search
+        title = _note_title(path, fm)
+
+        if q_lower in title.lower():
+            matched_in, rank, excerpt = "title", 0, title
+        else:
+            fm_hit = next((f"{k}: {v}" for k, v in fm.items()
+                          if k != "id" and q_lower in str(v).lower()), None)
+            if fm_hit is not None:
+                matched_in, rank, excerpt = "frontmatter", 1, fm_hit
+            elif q_lower in body.lower():
+                matched_in, rank, excerpt = "body", 2, _search_excerpt(body, q_lower)
+            else:
+                continue
+
+        hits.append((rank, str(path), {
+            "id": fm.get("id", ""),
+            "type": fm.get("type", ""),
+            "title": title,
+            "file": "/".join(rel_parts),
+            "folder": rel_parts[0],
+            "excerpt": excerpt,
+            "matched_in": matched_in,
+        }))
+    hits.sort(key=lambda h: (h[0], h[1]))
+    return [h[2] for h in hits[:limit]]

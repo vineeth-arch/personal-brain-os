@@ -107,6 +107,7 @@ function HealthCard({
   onRecheck,
   onEngine,
   onNtfy,
+  onVaultSync,
   busy,
 }: {
   card: IntegrationCard;
@@ -114,12 +115,14 @@ function HealthCard({
   onRecheck: () => void;
   onEngine: (engine: EngineName) => void;
   onNtfy: () => void;
+  onVaultSync: () => void;
   busy: boolean;
 }) {
   const [confirmCloud, setConfirmCloud] = useState(false);
   const isWhisper = card.id === "transcription-whispercpp";
   const isOpenAI = card.id === "transcription-openai";
   const isNtfy = card.id === "ntfy";
+  const isVaultSync = card.id === "vault-git-sync";
   const active = (isWhisper && engine === "whispercpp") || (isOpenAI && engine === "openai");
 
   let action: React.ReactNode;
@@ -132,6 +135,17 @@ function HealthCard({
         className="border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold disabled:opacity-60"
       >
         Send test push
+      </button>
+    );
+  } else if (isVaultSync) {
+    action = (
+      <button
+        type="button"
+        onClick={onVaultSync}
+        disabled={busy}
+        className="border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold disabled:opacity-60"
+      >
+        Sync now
       </button>
     );
   } else if (isOpenAI) {
@@ -578,6 +592,21 @@ export function Integrations() {
     }
   };
 
+  const syncVault = async () => {
+    setBusy(true);
+    try {
+      const result = await api.vaultSync();
+      toast(result.ok ? "✅ Vault synced." : `Vault sync: ${result.status} — ${result.detail}`,
+        result.ok ? "ok" : "error");
+      refetch();
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(envelope ? `${envelope.what} ${envelope.todo}` : "Vault sync didn't reach the server.", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const connectGoogle = async () => {
     setBusy(true);
     try {
@@ -630,6 +659,7 @@ export function Integrations() {
               onRecheck={recheck}
               onEngine={switchEngine}
               onNtfy={testNtfy}
+              onVaultSync={syncVault}
               busy={busy}
             />
           ))}

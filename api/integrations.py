@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import subprocess
 import tempfile
 import time
@@ -54,8 +55,10 @@ class ConfigError(Exception):
 def safe_config(config) -> dict:
     """The safe subset only. Presence booleans for keys — never values, never
     the auth token (CLAUDE.md §7)."""
+    tl = (config.raw.get("transliteration") or {})
     return {
         "engine": config.engine,
+        "language": getattr(config, "language", ""),
         "confidence_threshold": config.confidence_threshold,
         "ntfy_url": config.ntfy_url,
         "ntfy_topic": config.ntfy_topic,
@@ -64,6 +67,13 @@ def safe_config(config) -> dict:
         "keys": {
             "anthropic": bool(config.anthropic_key),
             "openai": bool(config.openai_key),
+        },
+        "transliteration": {
+            "engine": (tl.get("engine") or ""),
+            "ollama_url": (tl.get("ollama") or {}).get("url", ""),
+            "ollama_model": (tl.get("ollama") or {}).get("model", ""),
+            "openrouter_model": (tl.get("openrouter") or {}).get("model", ""),
+            "openrouter_key_present": bool(os.environ.get("OPENROUTER_API_KEY")),
         },
     }
 
@@ -91,16 +101,42 @@ def write_config(config_path: Path, config, changes: dict) -> None:
             f"{threshold} is outside the valid range.",
             "Pick a value between 0 and 1 (0.7 is the tested default).",
         )
+    tl_engine = changes.get("transliteration_engine")
+    if tl_engine is not None and tl_engine not in ("", "ollama", "openrouter"):
+        raise ConfigError(
+            "Couldn't change the Hindi → Hinglish engine.",
+            "The request didn't name a known engine (off, ollama, or openrouter).",
+            "Pick one of the three options and try again.",
+        )
+    if tl_engine == "openrouter" and not os.environ.get("OPENROUTER_API_KEY"):
+        raise ConfigError(
+            "Can't switch transliteration to OpenRouter.",
+            "OPENROUTER_API_KEY is not set on the server, so OpenRouter can't run.",
+            "export OPENROUTER_API_KEY=... in the server's shell, or use Ollama instead.",
+        )
 
     raw = json.loads(config_path.read_text(encoding="utf-8"))
     if engine is not None:
         raw.setdefault("transcription", {})["engine"] = engine
+    if changes.get("language") is not None:
+        raw.setdefault("transcription", {})["language"] = str(changes["language"])
     if threshold is not None:
         raw.setdefault("classification", {})["confidence_threshold"] = float(threshold)
     if changes.get("ntfy_topic") is not None:
         raw.setdefault("ntfy", {})["topic"] = str(changes["ntfy_topic"])
     if changes.get("ntfy_url") is not None:
         raw.setdefault("ntfy", {})["url"] = str(changes["ntfy_url"])
+    if tl_engine is not None:
+        raw.setdefault("transliteration", {})["engine"] = tl_engine
+    if changes.get("transliteration_ollama_url") is not None:
+        raw.setdefault("transliteration", {}).setdefault("ollama", {})["url"] = \
+            str(changes["transliteration_ollama_url"])
+    if changes.get("transliteration_ollama_model") is not None:
+        raw.setdefault("transliteration", {}).setdefault("ollama", {})["model"] = \
+            str(changes["transliteration_ollama_model"])
+    if changes.get("transliteration_openrouter_model") is not None:
+        raw.setdefault("transliteration", {}).setdefault("openrouter", {})["model"] = \
+            str(changes["transliteration_openrouter_model"])
 
     fd, tmp = tempfile.mkstemp(dir=config_path.parent, prefix=".config-", suffix=".tmp")
     try:
@@ -388,6 +424,85 @@ def _check_git(config) -> dict:
     return card
 
 
+def _latest_event(db_path: Path, stage: str) -> tuple[str, str, str] | None:
+    """(timestamp, status, message) of the most recent events.db row for
+    `stage`, or None. Read-only — this card never writes to the pipeline's
+    own database."""
+    if not Path(db_path).exists():
+        return None
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            row = conn.execute(
+                "SELECT timestamp, status, message FROM events WHERE stage = ? "
+                "ORDER BY id DESC LIMIT 1", (stage,)).fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        return None
+    return tuple(row) if row else None
+
+
+def _check_vault_git_sync(config, db_path: Path) -> dict:
+    """Pass H1 — distinct from _check_vault_sync (local inbox/vault
+    reachability) and _check_git (local commit hygiene): this is whether the
+    vault's git history actually reaches a REMOTE, the island fix (F1)."""
+    from pipeline import vaultsync
+
+    card = {"id": "vault-git-sync", "group": "health", "name": "Vault git-sync", "icon": "cloud-sync",
+            "description": "Pushes/pulls the vault's git history to a private repo, so every "
+                           "machine that opens it has the same notes."}
+    cfg = vaultsync.remote_config(config)
+    if cfg is None:
+        card.update(
+            status="unknown", badge="Not configured",
+            detail="No remote is set — fine on a single machine, essential once more than "
+                   "one opens this vault.",
+            error={
+                "what": "This vault only lives on this machine.",
+                "cause": "Neither VAULT_GIT_REMOTE (env) nor vault_sync.remote (config.json) is set.",
+                "todo": "Create a private GitHub repo, set VAULT_GIT_REMOTE + VAULT_GIT_TOKEN "
+                        "(or vault_sync.remote in config.json), then press Sync now.",
+            })
+        return card
+    _remote, _token, branch = cfg
+    ahead, behind = vaultsync.ahead_behind(Path(config.vault_path), branch)
+    card["meta"] = {"branch": branch, "ahead": ahead, "behind": behind}
+
+    last = _latest_event(db_path, "vault_sync")
+    if last is None:
+        card.update(status="unknown", badge="Never synced",
+                    detail=f"Configured for “{branch}”, but no sync has run yet.",
+                    error={
+                        "what": "The vault hasn't synced to its remote yet.",
+                        "cause": "Configured, but no --loop tick or manual sync has run.",
+                        "todo": "Press Sync now, or wait for the next watcher tick.",
+                    })
+        return card
+
+    ts, status, message = last
+    when = ts[11:16] if len(ts) >= 16 else ts
+    if status != "ok":
+        card.update(status="warn", badge="Sync failed",
+                    detail=f"The last attempt ({when}) didn't complete.",
+                    error={
+                        "what": "The last vault sync didn't complete.",
+                        "cause": message or "See the event log for detail.",
+                        "todo": "If a conflict is named above, resolve it by hand (pull normally, "
+                                "fix it in Obsidian/git), then press Sync now again.",
+                    })
+    elif ahead or behind:
+        pending = []
+        if ahead:
+            pending.append(f"{ahead} local commit{'s' if ahead != 1 else ''} not yet pushed")
+        if behind:
+            pending.append(f"{behind} remote commit{'s' if behind != 1 else ''} not yet pulled")
+        card.update(status="ok", badge="Pending", detail=f"Last synced {when}. " + "; ".join(pending) + ".")
+    else:
+        card.update(status="ok", badge="Up to date", detail=f"Last synced {when}. Nothing pending.")
+    return card
+
+
 def _check_watcher(heartbeat_path: Path) -> dict:
     card = {"id": "watcher", "group": "health", "name": "Watcher", "icon": "pulse",
             "description": "The background process that picks up new captures."}
@@ -499,7 +614,8 @@ def _link_cards(config) -> list[dict]:
 
 # ---- assembly + cache -----------------------------------------------------------
 
-def build_payload(config, heartbeat_path: Path, fresh: bool, state: dict) -> dict:
+def build_payload(config, heartbeat_path: Path, fresh: bool, state: dict,
+                  db_path: Path | None = None) -> dict:
     cards = [
         _check_whisper(config),
         _check_key_service(
@@ -515,6 +631,7 @@ def build_payload(config, heartbeat_path: Path, fresh: bool, state: dict) -> dic
         _check_ntfy(config, state),
         _check_vault_sync(config),
         _check_git(config),
+        _check_vault_git_sync(config, db_path or Path()),
         _check_watcher(heartbeat_path),
     ]
     cards.extend(_google_cards(config))
@@ -527,14 +644,15 @@ def build_payload(config, heartbeat_path: Path, fresh: bool, state: dict) -> dic
     }
 
 
-def get_integrations(app_state, config, heartbeat_path: Path, fresh: bool) -> dict:
+def get_integrations(app_state, config, heartbeat_path: Path, fresh: bool,
+                     db_path: Path | None = None) -> dict:
     """60s cache per app instance; fresh=1 (and any mutation via bust_cache)
     re-runs every check."""
     cache = app_state.integrations_cache
     now = time.monotonic()
     if not fresh and cache.get("payload") and now - cache.get("ts", 0) < CACHE_SECONDS:
         return cache["payload"]
-    payload = build_payload(config, heartbeat_path, fresh, app_state.integrations_state)
+    payload = build_payload(config, heartbeat_path, fresh, app_state.integrations_state, db_path)
     cache["ts"] = now
     cache["payload"] = payload
     return payload

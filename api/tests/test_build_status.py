@@ -13,7 +13,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from api.build_status import (_PROBES, _probe_binary_runs, _probe_config_field_contains,
-                              _probe_file_contains, _probe_file_exists)
+                              _probe_file_contains, _probe_file_exists,
+                              _probe_vault_sync_configured, _probe_whisper_model_present)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -138,6 +139,8 @@ def test_every_manifest_item_carries_the_fields_its_probe_needs():
         "git_log_contains": lambda i: i.get("needle"),
         "vault_query": lambda i: i.get("query"),
         "endpoint_ok": lambda i: True,
+        "vault_sync_configured": lambda i: True,
+        "whisper_model_present": lambda i: True,
     }
     for item in manifest["items"]:
         assert required[item["type"]](item), f"{item['id']} is missing a field its probe reads"
@@ -146,11 +149,60 @@ def test_every_manifest_item_carries_the_fields_its_probe_needs():
         assert len(item["next_action"]) > 20, f"{item['id']}'s next_action says too little"
 
 
+# ---- Pass H probe types -----------------------------------------------------
+
+def test_vault_sync_configured_via_env(monkeypatch):
+    monkeypatch.setenv("VAULT_GIT_REMOTE", "https://github.com/me/vault.git")
+    monkeypatch.delenv("VAULT_GIT_BRANCH", raising=False)
+    config = SimpleNamespace(raw={})
+    ok, detail = _probe_vault_sync_configured(REPO_ROOT, {}, config, None)
+    assert ok is True and "configured" in detail.lower()
+
+
+def test_vault_sync_configured_via_config_json(monkeypatch):
+    monkeypatch.delenv("VAULT_GIT_REMOTE", raising=False)
+    config = SimpleNamespace(raw={"vault_sync": {"remote": "https://github.com/me/vault.git"}})
+    ok, _detail = _probe_vault_sync_configured(REPO_ROOT, {}, config, None)
+    assert ok is True
+
+
+def test_vault_sync_not_configured(monkeypatch):
+    monkeypatch.delenv("VAULT_GIT_REMOTE", raising=False)
+    config = SimpleNamespace(raw={})
+    ok, detail = _probe_vault_sync_configured(REPO_ROOT, {}, config, None)
+    assert ok is False and "neither" in detail.lower()
+
+
+def test_vault_sync_no_config_at_all():
+    ok, detail = _probe_vault_sync_configured(REPO_ROOT, {}, None, None)
+    assert ok is False and "config.json doesn't exist" in detail
+
+
+def test_whisper_model_present(tmp_path):
+    model = tmp_path / "ggml-small.en.bin"
+    model.write_bytes(b"fake model")
+    config = SimpleNamespace(whispercpp_model=str(model))
+    ok, detail = _probe_whisper_model_present(REPO_ROOT, {}, config, None)
+    assert ok is True and "is present" in detail
+
+
+def test_whisper_model_missing(tmp_path):
+    config = SimpleNamespace(whispercpp_model=str(tmp_path / "not-here.bin"))
+    ok, detail = _probe_whisper_model_present(REPO_ROOT, {}, config, None)
+    assert ok is False and "isn't on this machine" in detail
+
+
+def test_whisper_model_path_unset():
+    config = SimpleNamespace(whispercpp_model="")
+    ok, detail = _probe_whisper_model_present(REPO_ROOT, {}, config, None)
+    assert ok is False and "empty" in detail.lower()
+
+
 def test_the_shipped_passes_actually_probe_true():
     """These milestones describe code in this repo, so they must tick here."""
     manifest = json.loads((REPO_ROOT / "checks.json").read_text(encoding="utf-8"))
     by_id = {i["id"]: i for i in manifest["items"]}
-    for pass_id in ("passV", "passP", "passMW", "passD", "passX", "pass12"):
+    for pass_id in ("passV", "passP", "passMW", "passD", "passX", "pass12", "passS", "passV2", "passH"):
         item = by_id[pass_id]
         ok, detail = _PROBES[item["type"]](REPO_ROOT, item, None, None)
         assert ok is True, f"{pass_id} should be done in this repo but probed false: {detail}"

@@ -49,7 +49,7 @@
     "supabase": "https://app.supabase.com/project/_"
   },
   "apify": {
-    "actor_id": ""
+    "actor_id": "apify~instagram-scraper"
   },
   "todos": {
     "digest": false
@@ -58,5 +58,29 @@
     "tunnel_hostname": "",
     "public_url": "",
     "mcp_connected": false
+  },
+  "plaud_cloud": {
+    "enabled": false,
+    "backend": "cli",
+    "destination": "",
+    "since_days": 30,
+    "cli": {
+      "binary": "plaud",
+      "list_args": ["files", "--json"],
+      "transcript_args": ["transcript", "{id}", "--json"],
+      "summary_args": ["summary", "{id}", "--json"],
+      "audio_url_args": ["files", "{id}", "--json"],
+      "timeout": 30
+    },
+    "mcp": {
+      "command": "npx",
+      "args": ["-y", "@plaud-ai/mcp-server"],
+      "list_tool": "list_recordings",
+      "transcript_tool": "get_transcript",
+      "summary_tool": "get_summary",
+      "audio_url_tool": "get_audio_url",
+      "id_param": "recording_id",
+      "timeout": 30
+    }
   }
 }

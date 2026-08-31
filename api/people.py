@@ -145,8 +145,24 @@ def build_draft_prompt(person: relationships.Person, voice: str, channel: str) -
     )
 
 
+def _log_attempts(events, person_id: str, attempts: list) -> None:
+    """Same shape the watcher writes for classify/extract calls, so a draft's
+    provider attempts show up in GET /api/providers instead of being invisible
+    there (D6). `events` is optional and never allowed to fail the request."""
+    if not events:
+        return
+    try:
+        fkey = f"people-draft:{person_id}"
+        for att in attempts:
+            conf_note = f" confidence={att.confidence:.2f}" if att.confidence is not None else ""
+            events.log(fkey, "llm", "ok" if att.outcome == "served" else "failed",
+                       message=f"provider={att.provider} outcome={att.outcome}" + conf_note)
+    except Exception:
+        log.exception("failed to log draft LLM attempts")
+
+
 def draft(vault_path: Path, person_id: str, channel: str | None,
-          config, *, router=None, priority: list[str] | None = None) -> dict | None:
+          config, *, router=None, priority: list[str] | None = None, events=None) -> dict | None:
     """A reconnection message in the owner's voice. Returns None for unknown id.
 
     Raises LookupError when the voice file is missing — the caller turns that
@@ -163,6 +179,7 @@ def draft(vault_path: Path, person_id: str, channel: str | None,
     voice = voice_path(vault_path).read_text(encoding="utf-8")
     prompt = build_draft_prompt(person, voice, chosen)
     text, provider, attempts = (router or llm.complete_text)(prompt, config)
+    _log_attempts(events, person_id, attempts)
     if not text:
         return {"text": "", "channel": chosen, "channels": person.channels,
                 "provider": None, "attempts": [a.__dict__ for a in attempts]}

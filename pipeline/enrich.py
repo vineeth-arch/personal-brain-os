@@ -14,9 +14,10 @@ import json
 import logging
 import os
 import re
+import shutil
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -37,6 +38,13 @@ _OG_IMAGE_RE = re.compile(
     re.IGNORECASE)
 _TIMEDTEXT_RE = re.compile(r"<text[^>]*>(.*?)</text>", re.IGNORECASE | re.DOTALL)
 
+# Tracking params a share sheet tacks onto an otherwise-identical URL. Anything
+# NOT in this list survives normalization — a YouTube ?v= or an Amazon /dp/
+# still has to identify the resource, so only params known to carry no
+# resource identity get dropped.
+_TRACKING_PARAMS = {"igsh", "igshid", "si", "feature", "fbclid", "gclid",
+                    "mibextid", "ref", "ref_src", "s"}
+
 
 @dataclass
 class Enrichment:
@@ -49,6 +57,9 @@ class Enrichment:
     caption: str = ""        # IG caption / web description
     transcript: str = ""     # YouTube transcript when available
     detail: str = ""         # plain-English reason when enriched is false
+    # Instagram carousel slides — [{image_url, caption}], capped at 20. Empty
+    # for a single post/reel and for every other platform.
+    slides: list = field(default_factory=list)
 
 
 def extract_url(text: str) -> str | None:
@@ -58,6 +69,35 @@ def extract_url(text: str) -> str | None:
 
 def is_link_text(text: str) -> bool:
     return extract_url(text) is not None
+
+
+def strip_urls(text: str) -> str:
+    """The user's words, minus any URL — the link already lives in
+    `source_url`, so leaving it in `## Insight` too just crowds out the one
+    line of thought the user actually typed. Collapses the blank space a
+    removed URL leaves behind (including a run of spaces left mid-line, not
+    just at the edges) so the result reads as one clean sentence; whitespace-
+    only input returns ''. Handles every URL in the text (not just the one
+    that made this a link capture, D14) — a re-share sometimes carries a
+    second link in the thought itself."""
+    without = _URL_RE.sub("", text or "")
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in without.splitlines()]
+    return "\n".join(ln for ln in lines if ln).strip()
+
+
+def normalize_url(url: str) -> str:
+    """A URL stripped of per-share noise, so the SAME reel/video shared twice
+    (each carrying its own `?igsh=` or `?si=` tracking id) is recognized as
+    one link. Lowercase host, no fragment, no trailing slash, no known
+    tracking params — but a resource-identifying param like YouTube's `?v=`
+    or an Amazon `/dp/...` path is never touched."""
+    parsed = urllib.parse.urlsplit(url.strip())
+    query = [(k, v) for k, v in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            if k not in _TRACKING_PARAMS and not k.lower().startswith("utm_")]
+    path = parsed.path.rstrip("/") or parsed.path
+    return urllib.parse.urlunsplit((
+        parsed.scheme.lower(), parsed.netloc.lower(), path,
+        urllib.parse.urlencode(query), ""))
 
 
 # ---- HTTP seam --------------------------------------------------------------
@@ -87,6 +127,58 @@ def _parse_timedtext(xml: str) -> str:
     return " ".join(p for p in parts if p)[:4000]
 
 
+# D12: video.google.com/timedtext (the old source of this transcript) is dead
+# — it now answers empty for every video, so transcripts were effectively
+# always missing. The innertube endpoint below is what the YouTube apps
+# themselves call; the public ANDROID client context needs no key and no
+# cookies. Best-effort throughout: any failure here — a changed response
+# shape, no captions on the video, a network error — degrades to no
+# transcript, exactly as the old code did. It never blocks the note.
+_INNERTUBE_URL = "https://www.youtube.com/youtubei/v1/player"
+_INNERTUBE_CONTEXT = {
+    "client": {"clientName": "ANDROID", "clientVersion": "19.09.37", "androidSdkVersion": 30}
+}
+_PREFERRED_CAPTION_LANGS = ("en", "hi")
+
+
+def _parse_captions_payload(raw: bytes) -> str:
+    """A caption track body, in whichever shape the baseUrl answered with:
+    json3 (`&fmt=json3` — an `events[].segs[].utf8` structure) or, when that
+    param is ignored, the same XML shape the old timedtext endpoint used."""
+    text = raw.decode("utf-8", "ignore")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        return _parse_timedtext(text)
+    parts = []
+    for event in data.get("events") or []:
+        for seg in event.get("segs") or []:
+            if seg.get("utf8"):
+                parts.append(seg["utf8"])
+    return _unescape("".join(parts))[:4000]
+
+
+def _fetch_youtube_transcript(vid: str, fetch) -> str:
+    if not vid:
+        return ""
+    try:
+        body = json.dumps({"videoId": vid, "context": _INNERTUBE_CONTEXT}).encode()
+        data = json.loads(fetch(_INNERTUBE_URL, data=body, timeout=HTTP_TIMEOUT))
+        tracks = (((data.get("captions") or {}).get("playerCaptionsTracklistRenderer") or {})
+                  .get("captionTracks") or [])
+        if not tracks:
+            return ""
+        track = next((t for t in tracks if t.get("languageCode") in _PREFERRED_CAPTION_LANGS),
+                     tracks[0])
+        base_url = track.get("baseUrl")
+        if not base_url:
+            return ""
+        raw = fetch(base_url + "&fmt=json3")
+        return _parse_captions_payload(raw)
+    except Exception:
+        return ""   # transcript is optional and often unavailable — never fail on it
+
+
 def _enrich_youtube(url: str, vid: str, fetch) -> Enrichment:
     try:
         oembed = "https://www.youtube.com/oembed?" + urllib.parse.urlencode(
@@ -95,18 +187,54 @@ def _enrich_youtube(url: str, vid: str, fetch) -> Enrichment:
     except Exception:
         return Enrichment("youtube", False, url,
                           detail="YouTube didn't return oEmbed data — the video may be private or removed. The note is saved.")
-    transcript = ""
-    if vid:
-        try:  # transcript is optional and often empty — never fail on it
-            raw = fetch(f"https://video.google.com/timedtext?lang=en&v={vid}")
-            transcript = _parse_timedtext(raw.decode("utf-8", "ignore"))
-        except Exception:
-            transcript = ""
     return Enrichment("youtube", True, url,
                       title=str(data.get("title", "")),
                       author=str(data.get("author_name", "")),
                       cover=str(data.get("thumbnail_url", "")),
-                      transcript=transcript)
+                      transcript=_fetch_youtube_transcript(vid, fetch))
+
+
+MAX_SLIDES = 20
+
+
+def _slides_from_item(item: dict) -> list:
+    """A carousel's slides, or [] for a single post/reel. Apify's Instagram
+    actors don't all agree on the field name for carousel children —
+    `childPosts` (the common shape) and `images` (seen on some actor
+    versions) are both handled defensively; anything else is treated as "no
+    carousel data" rather than raised."""
+    slides = []
+    child_posts = item.get("childPosts")
+    if isinstance(child_posts, list):
+        for cp in child_posts[:MAX_SLIDES]:
+            if not isinstance(cp, dict):
+                continue
+            image_url = str(cp.get("displayUrl") or cp.get("thumbnailUrl") or cp.get("url") or "")
+            if image_url:
+                slides.append({"image_url": image_url, "caption": str(cp.get("caption") or "")})
+        if slides:
+            return slides
+    images = item.get("images")
+    if isinstance(images, list):
+        for img in images[:MAX_SLIDES]:
+            if isinstance(img, str) and img:
+                slides.append({"image_url": img, "caption": ""})
+            elif isinstance(img, dict):
+                image_url = str(img.get("url") or img.get("displayUrl") or "")
+                if image_url:
+                    slides.append({"image_url": image_url, "caption": str(img.get("caption") or "")})
+    return slides[:MAX_SLIDES]
+
+
+def _slides_text(slides: list) -> str:
+    """The '## Slides' body text: a numbered list, image URL + caption when
+    one exists. '' for no slides (single post/reel) — the section is omitted
+    entirely rather than written empty."""
+    lines = []
+    for n, slide in enumerate(slides, 1):
+        caption = f" — {slide['caption']}" if slide.get("caption") else ""
+        lines.append(f"{n}. {slide['image_url']}{caption}")
+    return "\n".join(lines)
 
 
 def _enrich_instagram(url: str, config, fetch) -> Enrichment:
@@ -129,7 +257,8 @@ def _enrich_instagram(url: str, config, fetch) -> Enrichment:
             raise ValueError("empty payload")
         return Enrichment("instagram", True, url,
                           title=caption[:80] or "instagram-post", caption=caption,
-                          cover=cover, author=str(item.get("ownerUsername", "")))
+                          cover=cover, author=str(item.get("ownerUsername", "")),
+                          slides=_slides_from_item(item))
     except Exception:
         # The broad catch is deliberate — this scraper is ToS-grey and breaks
         # routinely — but it once swallowed a TypeError from a changed call
@@ -167,6 +296,50 @@ def enrich_url(url: str, config, fetch=None) -> Enrichment:
     return _enrich_web(url, fetch)
 
 
+# ---- dedup: the same link shared twice is one note, not two -----------------
+
+def find_by_source_url(vault_path: Path, url: str) -> Path | None:
+    """An existing resource note whose source_url normalizes to the same
+    place as `url` — checked before writing a new note, so re-sharing a reel
+    (each share carrying its own ?igsh=/?si= tracking id) appends a second
+    thought instead of duplicating the note."""
+    if not url:
+        return None
+    target = normalize_url(url)
+    folder = Path(vault_path) / route.TYPE_FOLDER["resource"]
+    if not folder.is_dir():
+        return None
+    for path in sorted(folder.glob("*.md")):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        fm, _ = _parse_note(text)
+        if fm.get("type") == "resource" and fm.get("source_url") == target:
+            return path
+    return None
+
+
+def append_insight(path: Path, new_text: str) -> None:
+    """Add one more thought to an already-saved resource note. NEVER
+    overwrites what's there — SCHEMA §7 marks insight 'never overwritten by
+    AI', and appending a second share's thought is exactly the case that
+    guarantee exists for. A blank/URL-only share adds nothing and is a
+    silent no-op (the duplicate was still recognized; there's just no new
+    thought to record)."""
+    addition = strip_urls(new_text)
+    if not addition:
+        return
+    text = path.read_text(encoding="utf-8")
+    fm, body = _parse_note(text)
+    existing = insight_text(body)
+    combined = f"{existing}\n\n{addition}" if existing else addition
+    body = _replace_section(body, "Insight", combined)
+    fm_block = text.split("---\n", 2)[1]
+    path.write_text("---\n" + fm_block.rstrip("\n") + "\n---\n\n" + body.strip() + "\n",
+                    encoding="utf-8")
+
+
 # ---- structuring via the Pass B router --------------------------------------
 
 def _structure_prompt(user_text: str, enr: Enrichment) -> str:
@@ -179,6 +352,10 @@ def _structure_prompt(user_text: str, enr: Enrichment) -> str:
         ctx.append(f"Caption: {enr.caption[:1500]}")
     if enr.transcript:
         ctx.append(f"Transcript: {enr.transcript[:2500]}")
+    if enr.slides:
+        slide_text = " ".join(s.get("caption", "") for s in enr.slides if s.get("caption"))
+        if slide_text:
+            ctx.append(f"Slides: {slide_text[:1500]}")
     return (
         "Structure this saved link into a resource note. Return ONLY JSON with keys: "
         "resource_type, title, description, is_recipe, ingredients, steps.\n"
@@ -234,7 +411,7 @@ def build_resource_note(item, enr: Enrichment, structured: dict, user_text: str,
         "meta_origin: ai",
         f"title: {route._scalar(title)}",
         f"cover: {route._scalar(enr.cover)}",
-        f"source_url: {route._scalar(enr.url)}",
+        f"source_url: {route._scalar(normalize_url(enr.url) if enr.url else enr.url)}",
         f"description: {route._scalar(structured.get('description', ''))}",
         "status: inbox",
         f"platform: {route._scalar(enr.platform)}",
@@ -247,9 +424,10 @@ def build_resource_note(item, enr: Enrichment, structured: dict, user_text: str,
         "---",
     ]
     body = ["\n".join(fm), ""]
-    insight = user_text.strip()
+    insight = strip_urls(user_text)
     if insight:
-        # the user's own words, verbatim — origin human (never overwritten by AI)
+        # the user's own words, verbatim minus the link itself (which already
+        # lives in source_url) — origin human, never overwritten by AI
         body += ["## Insight", "", insight, ""]
     if is_recipe:
         ing = structured.get("ingredients") or []
@@ -262,6 +440,9 @@ def build_resource_note(item, enr: Enrichment, structured: dict, user_text: str,
         body += ["## Transcript", "", enr.transcript, ""]
     elif enr.caption:
         body += ["## Caption", "", enr.caption, ""]
+    slides_text = _slides_text(enr.slides)
+    if slides_text:
+        body += ["## Slides", "", slides_text, ""]
     if not enr.enriched and enr.detail:
         body += ["## Enrichment", "", f"> {enr.detail}", ""]
     return "\n".join(body).rstrip() + "\n"
@@ -284,6 +465,210 @@ def route_link(item, user_text: str, enr: Enrichment, structured: dict,
     path.write_text(build_resource_note(item, enr, structured, user_text,
                                         note_id, created, now_iso, attempts), encoding="utf-8")
     return path
+
+
+# ---- image capture (Pass V2/V3) ---------------------------------------------
+# A photo is media, not something to classify — no LLM classify call, no
+# review gate. It's either a resource note (default, D-PHOTO) or, when the
+# user attached a capture tag, that type's note instead. Vision description
+# is best-effort decoration on top, same as link enrichment (Pass L).
+
+IMAGE_INSIGHT_SUFFIX = ".insight"  # must match api/notes.INSIGHT_SIDECAR_SUFFIX
+
+
+def take_image_insight(image_path: Path) -> str:
+    """Read + delete the '.<stem>.insight' dotfile the capture endpoint
+    writes BEFORE the image itself lands (api/notes.image_insight_sidecar),
+    so by the time the watcher gets to the image any sidecar is already
+    here — no race, no ordering dependency. '' when the photo was shared
+    with no quick thought."""
+    sidecar = image_path.with_name(f".{image_path.stem}{IMAGE_INSIGHT_SUFFIX}")
+    if not sidecar.is_file():
+        return ""
+    try:
+        return sidecar.read_text(encoding="utf-8").strip()
+    finally:
+        sidecar.unlink(missing_ok=True)
+
+
+def move_image_to_vault(item, vault_path: Path) -> Path:
+    """Move a captured photo out of the inbox into the vault's own
+    attachments/ store — its permanent home, alongside raw/ and wiki/ outside
+    the numbered folders (SCHEMA §1). Unlike audio/text, an image IS vault
+    content once captured (it's embedded straight into its note), so this
+    replaces the generic Stage 6 archive step rather than running beside it."""
+    folder = Path(vault_path) / "attachments"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = item.captured.strftime("%Y%m%d%H%M%S")
+    slug = route._kebab(item.name) if item.name else "photo"
+    dest = folder / f"{stamp}-{slug}{item.path.suffix.lower()}"
+    i = 1
+    while dest.exists():
+        i += 1
+        dest = folder / f"{stamp}-{slug}-{i}{item.path.suffix.lower()}"
+    shutil.move(str(item.path), str(dest))
+    return dest
+
+
+def build_image_note(item, vision: dict | None, insight: str, attachment_rel: str,
+                     note_id: str, created: str, now_iso: str, attempts: int) -> str:
+    """No capture tag: a resource note like any other share, platform: photo
+    instead of youtube/instagram/web (D-PHOTO default)."""
+    description = str((vision or {}).get("description") or "").strip()
+    rtype = str((vision or {}).get("resource_type") or "").lower()
+    if rtype not in RESOURCE_TYPES:
+        rtype = "article"
+    title = (insight.splitlines()[0].strip() if insight else "") or description or "photo"
+    extracted = str((vision or {}).get("extracted_text") or "").strip()
+    fm = [
+        "---",
+        f"id: {note_id}",
+        "type: resource",
+        f"resource_type: {rtype}",
+        f"created: {created}",
+        f"source: {item.source}",
+        "origin: human",
+        "meta_origin: ai",
+        f"title: {route._scalar(title)}",
+        f"cover: {route._scalar(attachment_rel)}",
+        "source_url: ",
+        f"description: {route._scalar(description)}",
+        "status: inbox",
+        "platform: photo",
+        f"enriched: {'true' if vision else 'false'}",
+        f"enrich_attempts: {attempts}",
+        f"enrich_last: {now_iso}",
+        "categories: []",
+        "subjects: []",
+        "tags: []",
+        "---",
+    ]
+    body = ["\n".join(fm), ""]
+    if insight:
+        # the user's own quick thought, verbatim — origin human, same
+        # guarantee as a link's ## Insight
+        body += ["## Insight", "", insight, ""]
+    body += [f"![[{attachment_rel}]]", ""]
+    if extracted:
+        body += ["## Extracted text", "", extracted, ""]
+    if not vision:
+        body += ["## Enrichment", "",
+                 "> The photo couldn't be described automatically (no vision "
+                 "provider configured, or the attempt failed). The note is "
+                 "saved; the photo is still here.", ""]
+    return "\n".join(body).rstrip() + "\n"
+
+
+def route_image(item, vision: dict | None, insight: str, attachment_rel: str,
+                vault_path: Path, attempts: int = 1) -> Path:
+    note_id = item.captured.strftime("%Y%m%d%H%M%S")
+    created = item.captured.strftime("%Y-%m-%d")
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    title = (insight.splitlines()[0].strip() if insight else "") or \
+            str((vision or {}).get("description") or "").strip() or "photo"
+    dest_dir = Path(vault_path) / route.TYPE_FOLDER["resource"]
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    base = f"{created}-{route._kebab(title)}"
+    path = dest_dir / f"{base}.md"
+    i = 1
+    while path.exists():
+        i += 1
+        path = dest_dir / f"{base}-{i}.md"
+    path.write_text(build_image_note(item, vision, insight, attachment_rel,
+                                     note_id, created, now_iso, attempts), encoding="utf-8")
+    return path
+
+
+def build_tagged_image_note(item, cls, vision: dict | None, insight: str,
+                            attachment_rel: str, note_id: str, created: str) -> str:
+    """A photo captured WITH a capture tag: filed as that type's note instead
+    of a resource (D-PHOTO 'Both') — universal frontmatter only (SCHEMA §2),
+    same as every other tag-routed capture. The vision description is
+    AI-written, so it lives under its own heading rather than folding into
+    the human's own words — mirroring how enrichment-owned sections
+    (## Transcript, ## Caption) stay apart from ## Insight elsewhere here."""
+    fm = [
+        "---",
+        f"id: {note_id}",
+        f"type: {cls.type}",
+        f"created: {created}",
+        "source: share",
+        "origin: human",
+        "meta_origin: human",
+        f"status: {route.STATUS_INITIAL.get(cls.type, 'active')}",
+        f"categories: {route._yaml_links([])}",
+        f"subjects: {route._yaml_links([])}",
+        f"tags: {route._yaml_list(cls.tags)}",
+        "---",
+    ]
+    body = ["\n".join(fm), ""]
+    if insight:
+        body += [insight, ""]
+    body += [f"![[{attachment_rel}]]", ""]
+    description = (vision or {}).get("description")
+    if description:
+        body += ["## AI description", "", description, ""]
+    extracted = (vision or {}).get("extracted_text")
+    if extracted:
+        body += ["## Extracted text", "", extracted, ""]
+    return "\n".join(body).rstrip() + "\n"
+
+
+def route_tagged_image(item, cls, vision: dict | None, insight: str,
+                       attachment_rel: str, vault_path: Path) -> Path:
+    note_id = item.captured.strftime("%Y%m%d%H%M%S")
+    created = item.captured.strftime("%Y-%m-%d")
+    dest_dir = Path(vault_path) / route.TYPE_FOLDER[cls.type]
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    base = f"{created}-{route._kebab(cls.title)}"
+    path = dest_dir / f"{base}.md"
+    i = 1
+    while path.exists():
+        i += 1
+        path = dest_dir / f"{base}-{i}.md"
+    path.write_text(build_tagged_image_note(item, cls, vision, insight, attachment_rel,
+                                            note_id, created), encoding="utf-8")
+    return path
+
+
+def reenrich_image_note(path: Path, config, caller=None) -> bool:
+    """Re-attempt vision for one photo resource note (platform: photo),
+    merging the result in exactly like reenrich_note does for links — only
+    the vision-owned fields/sections are touched; status, rating,
+    categories/subjects/tags, and ## Insight are the user's and stay put.
+    False (no change) when the note has no cover to describe."""
+    from . import vision as vision_mod  # local import: vision imports nothing from enrich
+
+    text = path.read_text(encoding="utf-8")
+    fm, body = _parse_note(text)
+    cover = fm.get("cover", "")
+    if not cover:
+        return False
+    vault_path = path.parents[1]   # <vault>/04-Resources/<note>.md
+    attempts = int(fm.get("enrich_attempts", "1") or "1") + 1
+    result = vision_mod.describe(vault_path / cover, config, caller=caller)
+
+    fm_block = text.split("---\n", 2)[1]
+    updates = {
+        "description": (result or {}).get("description", "") or fm.get("description", ""),
+        "resource_type": (result or {}).get("resource_type", "") or fm.get("resource_type", "article"),
+        "enriched": "true" if result else "false",
+        "enrich_attempts": str(attempts),
+        "enrich_last": datetime.now().isoformat(timespec="seconds"),
+    }
+    for key in ("description", "resource_type", "enriched", "enrich_attempts", "enrich_last"):
+        fm_block = route.stamp_field(fm_block, key, route._scalar(updates[key]))
+
+    body = _replace_section(body, "Extracted text", (result or {}).get("extracted_text", ""))
+    body = _replace_section(
+        body, "Enrichment",
+        "" if result else "> The photo couldn't be described automatically (no vision "
+                          "provider configured, or the attempt failed). The note is "
+                          "saved; the photo is still here.")
+
+    path.write_text("---\n" + fm_block.rstrip("\n") + "\n---\n\n" + body.strip() + "\n",
+                    encoding="utf-8")
+    return bool(result)
 
 
 # ---- frontmatter round-trip for retry ---------------------------------------
@@ -309,9 +694,23 @@ def _parse_note(text: str) -> tuple[dict, str]:
     return fm, parts[2]
 
 
-def _insight_from_body(body: str) -> str:
-    m = re.search(r"^## Insight\s*\n(.*?)(?:\n## |\Z)", body, re.DOTALL | re.MULTILINE)
-    return m.group(1).strip() if m else ""
+# D17: the canonical '## Insight' reader — api/notes.py imports this rather
+# than keeping its own copy (two parsers with different case-sensitivity was
+# an easy way for them to quietly drift apart).
+def insight_text(body: str) -> str:
+    """Text under a '## Insight' H2, up to the next H2 or EOF. '' when absent/blank."""
+    out: list[str] = []
+    capturing = False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.lower() == "## insight":
+            capturing = True
+            continue
+        if capturing and stripped.startswith("## "):
+            break
+        if capturing:
+            out.append(line)
+    return "\n".join(out).strip()
 
 
 # The only frontmatter fields enrichment owns. Everything else on a resource
@@ -321,7 +720,7 @@ ENRICHED_FIELDS = ("title", "cover", "description", "platform",
                    "enriched", "enrich_attempts", "enrich_last")
 
 # Likewise the only body sections enrichment owns.
-ENRICHED_SECTIONS = ("Transcript", "Caption", "Enrichment")
+ENRICHED_SECTIONS = ("Transcript", "Caption", "Slides", "Enrichment")
 
 
 def _replace_section(body: str, heading: str, text: str) -> str:
@@ -364,7 +763,7 @@ def reenrich_note(path: Path, config, fetch=None, router=None) -> bool:
     if not url:
         return False
     attempts = int(fm.get("enrich_attempts", "1") or "1") + 1
-    user_text = _insight_from_body(body)
+    user_text = insight_text(body)
     enr = enrich_url(url, config, fetch=fetch)
     structured = structure(user_text, enr, config, router=router)
 
@@ -383,6 +782,7 @@ def reenrich_note(path: Path, config, fetch=None, router=None) -> bool:
 
     body = _replace_section(body, "Transcript", enr.transcript)
     body = _replace_section(body, "Caption", "" if enr.transcript else enr.caption)
+    body = _replace_section(body, "Slides", _slides_text(enr.slides))
     body = _replace_section(
         body, "Enrichment", f"> {enr.detail}" if (not enr.enriched and enr.detail) else "")
 
@@ -391,17 +791,32 @@ def reenrich_note(path: Path, config, fetch=None, router=None) -> bool:
     return enr.enriched
 
 
-def retry_pending(config, events, now: datetime | None = None, fetch=None, router=None) -> None:
+def retry_pending(config, events, now: datetime | None = None, fetch=None, router=None,
+                  vision_caller=None) -> None:
     """--loop tick: one auto re-attempt for enriched:false notes older than 24h.
-    Never raises — enrichment is decoration."""
+    Never raises — enrichment (link or vision) is decoration."""
     try:
-        _retry_pending(config, events, now or datetime.now(), fetch, router)
+        _retry_pending(config, events, now or datetime.now(), fetch, router, vision_caller)
     except Exception:
         import logging
         logging.getLogger("pipeline").exception("enrich retry failed")
 
 
-def _retry_pending(config, events, now: datetime, fetch, router) -> None:
+# Apify is the one integration this app can't verify before the fact — a
+# note can fail its guaranteed re-attempt for no better reason than "the
+# owner hadn't configured Apify yet". A hard stop at attempt 2 would then
+# strand that note unenriched forever, even after they set APIFY_TOKEN. So an
+# Instagram note gets extra tries, but only while Apify is now actually
+# configured (never an unbounded retry loop), and only up to this cap.
+MAX_ENRICH_ATTEMPTS = 4
+
+
+def _apify_configured(config) -> bool:
+    return bool(os.environ.get("APIFY_TOKEN")) and bool(
+        (getattr(config, "raw", {}).get("apify") or {}).get("actor_id"))
+
+
+def _retry_pending(config, events, now: datetime, fetch, router, vision_caller=None) -> None:
     folder = Path(config.vault_path) / route.TYPE_FOLDER["resource"]
     if not folder.is_dir():
         return
@@ -409,14 +824,20 @@ def _retry_pending(config, events, now: datetime, fetch, router) -> None:
         fm, _ = _parse_note(path.read_text(encoding="utf-8"))
         if fm.get("type") != "resource" or fm.get("enriched") != "false":
             continue
-        if int(fm.get("enrich_attempts", "1") or "1") >= 2:
-            continue  # exactly one auto re-attempt
+        attempts = int(fm.get("enrich_attempts", "1") or "1")
+        if attempts >= MAX_ENRICH_ATTEMPTS:
+            continue
+        if attempts >= 2 and not (fm.get("platform") == "instagram" and _apify_configured(config)):
+            continue  # past the guaranteed one re-attempt, and no reason to think this one differs
         try:
             last = datetime.fromisoformat(fm.get("enrich_last", ""))
         except ValueError:
             continue
         if (now - last).total_seconds() < 24 * 3600:
             continue
-        enriched = reenrich_note(path, config, fetch=fetch, router=router)
+        if fm.get("platform") == "photo":
+            enriched = reenrich_image_note(path, config, caller=vision_caller)
+        else:
+            enriched = reenrich_note(path, config, fetch=fetch, router=router)
         events.log(str(path), "enrich", "ok",
                    message=f"platform={fm.get('platform', '')} enriched={str(enriched).lower()} retry=auto")

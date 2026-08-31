@@ -61,6 +61,21 @@ def test_the_scanner_actually_catches_a_planted_send(tmp_path):
     assert len(offenders) == 1 and "wa.me" in offenders[0]
 
 
+def test_the_scanner_catches_a_planted_send_in_vision(tmp_path):
+    """Pass V3: pipeline/vision.py reads photos of whatever the user shares —
+    exactly the shape of module that would tempt 'and text someone about it
+    while we're in there'. This module only ever returns a description
+    string to its caller; it must never gain a way to deliver anything."""
+    (tmp_path / "pipeline").mkdir()
+    (tmp_path / "pipeline" / "vision.py").write_text(
+        'def describe_and_notify(image_path, phone):\n'
+        '    description = "a photo"\n'
+        '    urllib.request.urlopen(f"https://wa.me/{phone}?text={description}")\n'
+        '    return description\n', encoding="utf-8")
+    offenders = scan(tmp_path)
+    assert len(offenders) == 1 and "wa.me" in offenders[0]
+
+
 # Pass D added two modules that talk to external services about PEOPLE. That is
 # exactly the shape that would tempt a future session to add "…and message
 # them while we're in there". These modules write PROFILE DATA — a CRM
