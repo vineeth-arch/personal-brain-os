@@ -28,9 +28,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from pipeline import classify, config as config_mod, enrich, intake, route as proute, todos as ptodos, watcher
+from pipeline import classify, config as config_mod, enrich, intake, route as proute, sidecar, todos as ptodos, watcher
 
-from . import build_status, google, integrations, notes, selfcheck, service, watchdog
+from . import build_status, google, integrations, multipart, notes, selfcheck, service, watchdog
 
 log = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
@@ -389,6 +389,66 @@ def create_app(root: Path | None = None) -> FastAPI:
         note_id = notes.capture(Path(config.inbox_path), text, body.tag)
         return {"id": note_id, "status": "captured"}
 
+    @app.post("/api/capture/image", status_code=201)
+    async def capture_image(request: Request, config=Depends(require_token)):
+        content_type = request.headers.get("content-type", "")
+        if "multipart/form-data" not in content_type:
+            raise Envelope(
+                400, "That upload wasn't in the format the server expects.",
+                "The request Content-Type wasn't multipart/form-data.",
+                "This endpoint is for the image-capture Shortcut/PWA — see API-CONTRACT.md.")
+        content_length = request.headers.get("content-length")
+        # fast-reject on the declared size before reading the whole body;
+        # +256KB covers multipart boundary/header overhead, not the photo itself
+        if content_length and int(content_length) > notes.MAX_IMAGE_BYTES + 262_144:
+            raise Envelope(
+                413, "That photo is too large to capture.",
+                f"The upload is over the {notes.MAX_IMAGE_BYTES // (1024 * 1024)}MB limit.",
+                "The share Shortcut resizes photos automatically — if you're using something "
+                "else, resize the image first.")
+        body = await request.body()
+        try:
+            fields = multipart.parse(body, content_type)
+        except multipart.MultipartError:
+            raise Envelope(
+                400, "That upload wasn't in the format the server expects.",
+                "The multipart body couldn't be parsed.",
+                "This endpoint is for the image-capture Shortcut/PWA — see API-CONTRACT.md.")
+
+        file_field = fields.get("file")
+        if not file_field or not file_field["data"]:
+            raise Envelope(
+                400, "No photo was in the upload.",
+                "The 'file' field was missing or empty.",
+                "Check the Shortcut/upload is attaching the photo as 'file'.")
+
+        def _text(name: str) -> str:
+            f = fields.get(name)
+            return f["data"].decode("utf-8", errors="replace") if f else ""
+
+        tag = _text("tag").strip() or None
+        if not notes.valid_tag(tag):
+            raise Envelope(
+                400, "That's not a capture tag the pipeline knows.",
+                f"'{tag}' isn't one of the 8 capture tags in SCHEMA-REFERENCE.md.",
+                "Pick one of the tag chips, or send no tag and let the classifier decide.")
+        try:
+            note_id = notes.capture_image(
+                Path(config.inbox_path), file_field["data"],
+                text=_text("text"), tag=tag, ocr=_text("ocr"))
+        except ValueError as e:
+            if "unrecognized image format" in str(e):
+                raise Envelope(
+                    400, "That file isn't a photo the pipeline recognises.",
+                    "The upload wasn't a JPEG, PNG, or WEBP image.",
+                    "Convert the photo to JPEG or PNG and try again.")
+            raise Envelope(
+                413, "That photo is too large to capture.",
+                f"The image is over the {notes.MAX_IMAGE_BYTES // (1024 * 1024)}MB limit.",
+                "The share Shortcut resizes photos automatically — if you're using something "
+                "else, resize the image first.")
+        return {"id": note_id, "status": "captured"}
+
     @app.post("/api/failed/{event_id}/retry")
     def retry(event_id: int, config=Depends(require_token)):
         row = service.failed_row(db_path, event_id)
@@ -419,6 +479,7 @@ def create_app(root: Path | None = None) -> FastAPI:
                 "Let the next pipeline pass process it, then check again.")
         dest.parent.mkdir(parents=True, exist_ok=True)
         candidate.rename(dest)  # failed/ and inbox/ are outside the vault — no commit
+        sidecar.move_with_sidecar(candidate, dest)  # an image capture's .meta.json travels too
         return {"ok": True}
 
     @app.post("/api/run", status_code=202)

@@ -5,6 +5,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from . import sidecar
+
 
 def archive(src: Path, archive_path: Path) -> Path:
     archive_path = Path(archive_path)
@@ -13,4 +15,5 @@ def archive(src: Path, archive_path: Path) -> Path:
     if dest.exists():
         dest = archive_path / f"{src.stem}-{src.stat().st_mtime_ns}{src.suffix}"
     shutil.move(str(src), str(dest))
+    sidecar.move_with_sidecar(src, dest)  # an image capture's .meta.json travels with it
     return dest

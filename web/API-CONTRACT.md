@@ -98,6 +98,27 @@ capture into `inbox_path` with the tag baked into the filename so
 
 `201 {"id": "20260703061500", "status": "captured"}`
 
+### `POST /api/capture/image` (Pass 13)
+
+`multipart/form-data`, not JSON — the one exception to "every route is
+JSON in, JSON out" in this contract. Fields: `file` (required, JPEG/PNG/WEBP,
+detected by magic bytes — content-type and filename from the client are
+never trusted), `text` (optional, the owner's thought — also used to derive
+the note title), `tag` (optional, one of the 8 capture tags), `ocr` (optional,
+on-device-extracted text, e.g. from the iOS Shortcut's "Extract Text from
+Image" action — when present it skips a paid vision call entirely).
+
+The server NEVER uses the client-supplied filename to build a path — the
+saved filename is always derived from `text` (or "photo") + `tag`, exactly
+like `POST /api/capture`. A same-named collision gets a numeric suffix
+applied to both the image and its sidecar together, so the pair never drifts
+apart. Images over 15MB are rejected — the iOS Shortcut resizes to ~2048px
+JPEG before sending, so this should only fire for other upload paths (e.g. a
+image dropped in over Syncthing without going through this endpoint at all).
+
+`201 {"id": "20260703061500", "status": "captured"}` · `400` unrecognized
+format, missing file, or invalid tag · `413` over 15MB.
+
 ### `GET /api/failed`
 
 ```json

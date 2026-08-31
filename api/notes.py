@@ -7,10 +7,12 @@ commit with a descriptive message (CLAUDE.md §3 — revertible AI-era changes).
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random
 import re
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -196,6 +198,19 @@ def _slug(text: str) -> str:
     return slug[:60] or "note"
 
 
+def _atomic_write_bytes(path: Path, data: bytes, tmp_dir: Path) -> None:
+    """Write-then-rename so a concurrently polling watcher never sees a half
+    file — shared by every capture kind (text, image, image sidecar)."""
+    fd, tmp = tempfile.mkstemp(dir=tmp_dir, prefix=".capture-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def capture(inbox: Path, text: str, tag: str | None) -> str:
     """Write a text capture the intake stage will parse (source=manual, tag
     free-routes). Returns the id the pipeline will mint for this note —
@@ -213,20 +228,110 @@ def capture(inbox: Path, text: str, tag: str | None) -> str:
         # break the free tag-route (intake._NAME_RE binds the tag last)
         path = inbox / f"{stamp} {name}-{i}{suffix}.md"
 
-    # atomic-ish write so a concurrently polling watcher never sees a half file
-    fd, tmp = tempfile.mkstemp(dir=inbox, prefix=".capture-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(text.rstrip() + "\n")
-        os.replace(tmp, path)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+    _atomic_write_bytes(path, (text.rstrip() + "\n").encode(), inbox)
     return now.strftime("%Y%m%d%H%M") + "00"
 
 
 def valid_tag(tag: str | None) -> bool:
     return tag is None or tag in classify.TAG_TO_TYPE
+
+
+# ---- image capture (Pass 13) -------------------------------------------------
+# iPhone Shortcut / PWA share path. The server NEVER trusts a client-supplied
+# filename (no path-traversal surface); the name is entirely server-derived
+# from the owner's own thought text, exactly like capture() above. Format is
+# detected from magic bytes, never from the client's Content-Type or the
+# multipart filename field, which callers may spoof or get wrong.
+
+MAX_IMAGE_BYTES = 15 * 1024 * 1024          # 15MB — the Shortcut resizes below this
+DOWNSCALE_THRESHOLD_BYTES = 3 * 1024 * 1024  # courtesy ffmpeg pass above this size
+DOWNSCALE_MAX_EDGE = 2048
+SIDECAR_FIELD_CAP = 20_000                   # a sidecar field rides into an LLM prompt later
+
+_IMAGE_MAGIC: list[tuple[bytes, str, str]] = [
+    (b"\xff\xd8\xff", ".jpg", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", ".png", "image/png"),
+]
+
+
+def detect_image_type(data: bytes) -> tuple[str, str] | None:
+    """(extension, mime) by magic bytes, or None if unrecognized. WEBP needs
+    a 12-byte RIFF....WEBP check that doesn't fit the simple prefix table."""
+    for magic, ext, mime in _IMAGE_MAGIC:
+        if data[:len(magic)] == magic:
+            return ext, mime
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp", "image/webp"
+    return None
+
+
+def _downscale_if_needed(data: bytes, ext: str) -> bytes:
+    """Courtesy resize for anything over the threshold, via ffmpeg. Best
+    effort only: ffmpeg missing, unavailable for this format, or failing for
+    any reason keeps the ORIGINAL bytes — a capture must never fail just
+    because a resize didn't work (the Shortcut already resizes on-phone;
+    this is a safety net for images that arrive big some other way, e.g.
+    Syncthing)."""
+    if len(data) <= DOWNSCALE_THRESHOLD_BYTES or ext not in (".jpg", ".png"):
+        return data
+    if not shutil.which("ffmpeg"):
+        return data
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / f"in{ext}"
+            dst = Path(td) / f"out{ext}"
+            src.write_bytes(data)
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", str(src), "-vf",
+                 f"scale='min({DOWNSCALE_MAX_EDGE},iw)':-2", str(dst)],
+                capture_output=True, timeout=30, check=True)
+            if dst.exists() and dst.stat().st_size > 0:
+                return dst.read_bytes()
+    except Exception as e:  # ffmpeg missing a codec, timeout, bad input, etc.
+        log.info("image downscale skipped, keeping original: %s", e)
+    return data
+
+
+def capture_image(inbox: Path, data: bytes, *, text: str, tag: str | None, ocr: str) -> str:
+    """Write an image capture + its sidecar. The sidecar (the owner's thought
+    and any on-device OCR text) is written FIRST, then the image, both
+    atomically — the watcher must never observe an image without its sidecar
+    already in place (pipeline/intake.py reads the sidecar once it sees the
+    image). Raises ValueError for an unrecognized format or an oversized
+    file; the caller turns that into a three-part envelope."""
+    if len(data) > MAX_IMAGE_BYTES:
+        raise ValueError(f"image is {len(data)} bytes, over the {MAX_IMAGE_BYTES} limit")
+    detected = detect_image_type(data)
+    if detected is None:
+        raise ValueError("unrecognized image format (not JPEG, PNG, or WEBP)")
+    ext, _mime = detected
+    data = _downscale_if_needed(data, ext)
+
+    inbox.mkdir(parents=True, exist_ok=True)
+    now = datetime.now()
+    stamp = now.strftime("%Y-%m-%d-%H%M")
+    name = _slug(text) if text.strip() else "photo"
+    suffix = f" #{tag}" if tag else ""
+
+    def _paths(n: int) -> tuple[Path, Path]:
+        stem = f"{stamp} {name}{suffix}" if n == 1 else f"{stamp} {name}-{n}{suffix}"
+        img = inbox / f"{stem}{ext}"
+        return img, inbox / f"{stem}.meta.json"
+
+    i = 1
+    path, sidecar_file = _paths(i)
+    while path.exists() or sidecar_file.exists():
+        i += 1
+        path, sidecar_file = _paths(i)
+
+    sidecar_payload = json.dumps({
+        "text": text.strip()[:SIDECAR_FIELD_CAP],
+        "ocr": ocr.strip()[:SIDECAR_FIELD_CAP],
+        "source": "photo",
+    })
+    _atomic_write_bytes(sidecar_file, sidecar_payload.encode(), inbox)
+    _atomic_write_bytes(path, data, inbox)
+    return now.strftime("%Y%m%d%H%M") + "00"
 
 
 # ---- resurface ----------------------------------------------------------------

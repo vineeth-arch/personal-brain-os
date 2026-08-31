@@ -6,6 +6,8 @@ import shutil
 import urllib.request
 from pathlib import Path
 
+from . import sidecar
+
 
 class StageError(Exception):
     """A stage failure with the three user-facing parts.
@@ -48,4 +50,5 @@ def quarantine(src: Path, failed_path: Path) -> Path:
     if dest.exists():
         dest = failed_path / f"{src.stem}-{src.stat().st_mtime_ns}{src.suffix}"
     shutil.move(str(src), str(dest))
+    sidecar.move_with_sidecar(src, dest)  # an image capture's .meta.json travels with it
     return dest
