@@ -1,5 +1,12 @@
-"""Stage 1 — intake. Poll the inbox for audio + text, parse optional filename
-metadata "YYYY-MM-DD-HHmm <name> #tag.ext". The inbox is source-agnostic."""
+"""Stage 1 — intake. Poll the inbox for audio + text + images, parse optional
+filename metadata "YYYY-MM-DD-HHmm <name> #tag.ext". The inbox is
+source-agnostic.
+
+An image's `<stem>.meta.json` sidecar (Pass 13 — the owner's typed thought +
+any on-device OCR, written by POST /api/capture/image) is never itself a
+capture: its extension isn't in any *_EXT set below, so it falls through to
+the "unknown type" branch and is silently skipped by poll() — pipeline/photo.py
+reads it directly once it sees the paired image."""
 from __future__ import annotations
 
 import re
@@ -11,6 +18,7 @@ from . import enrich
 
 AUDIO_EXT = {".m4a", ".mp3", ".wav", ".aac", ".opus", ".ogg", ".oga", ".flac"}
 TEXT_EXT = {".txt", ".md"}
+IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 
 # "2026-07-03-0900 morning walk #idea"  (time, name, tag all after the date are optional)
 _NAME_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})-(?P<time>\d{4})\s+(?P<name>.*?)"
@@ -20,17 +28,19 @@ _NAME_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})-(?P<time>\d{4})\s+(?P<name>
 @dataclass
 class Item:
     path: Path
-    kind: str                 # "audio" | "text" | "link"
+    kind: str                 # "audio" | "text" | "link" | "image"
     captured: datetime
     name: str                 # human title hint from filename
     tag: str | None           # capture/routing tag from filename, if any
-    source: str               # "voice" | "manual"
+    source: str               # "voice" | "manual" | "photo"
 
 
 def _parse(path: Path) -> Item | None:
     ext = path.suffix.lower()
     if ext in AUDIO_EXT:
         kind, source = "audio", "voice"
+    elif ext in IMAGE_EXT:
+        kind, source = "image", "photo"
     elif ext in TEXT_EXT:
         # a text capture whose body is (or contains) a URL becomes a link —
         # enriched into a resource note instead of classified (Pass L)

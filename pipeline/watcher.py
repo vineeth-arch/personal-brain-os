@@ -17,7 +17,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import archive, classify as classify_mod, config as config_mod, enrich, errors, extract, intake, route, todos
+from . import archive, classify as classify_mod, config as config_mod, enrich, errors, extract, intake, photo, route, todos, vision
 from .events import EventLog
 from .transcribe import Transcriber, build_transcriber
 
@@ -37,6 +37,7 @@ class Deps:
     extract_llm: object = None        # llm_fn(prompt, config) -> str; None = real Haiku
     enrich_fetch: object = None       # fetch(url, data=, timeout=) -> bytes; None = real HTTP
     enrich_router: object = None      # router(prompt, config, validate) -> (data, provider, attempts)
+    vision_router: object = None      # router(image_bytes, mime, config) -> (data, provider, attempts)
     sleep: object = time.sleep        # retry backoff seam (tests inject a recorder)
 
 
@@ -78,47 +79,88 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
     fkey = str(item.path)
     res = Result(name=item.path.name)
     try:
-        # Stage 2 — transcribe (text skips inside _transcribe); transient
-        # failures are retried with backoff before they can reach quarantine
-        t0 = time.monotonic()
-        transcript = _transcribe_with_retry(item, deps)
-        events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000))
+        if item.kind == "image":
+            # An image is routed exactly like a voice memo: vision.extract()
+            # stands in for transcription (Stage 2), then the UNCHANGED
+            # classify/route machinery handles typing and filing — only the
+            # resource case gets its own note-builder (photo.py), because
+            # resource is the only schema type with cover/description fields.
+            t0 = time.monotonic()
+            image_bytes, mime = photo.load_image_for_processing(item)
+            sidecar_data = photo.read_sidecar(item.path)
+            transcript, vision_source, attempts = vision.extract(
+                image_bytes, mime, sidecar_data["ocr"], config, router=deps.vision_router)
+            events.log(fkey, "vision", "ok", int((time.monotonic() - t0) * 1000),
+                       message=f"source={vision_source} chars={len(transcript)}")
+            for att in attempts:
+                events.log(fkey, "vision", "ok" if att.outcome == "served" else "failed",
+                           message=f"provider={att.provider} outcome={att.outcome}")
 
-        if item.kind == "link":
-            # A link IS a resource — no classify LLM, no review gate. Enrich
-            # (best-effort) then route to 04-Resources. Enrichment never fails
-            # the note (Pass L principle).
             t0 = time.monotonic()
-            url = enrich.extract_url(transcript)
-            enr = (enrich.enrich_url(url, config, fetch=deps.enrich_fetch) if url
-                   else enrich.Enrichment("web", False, "", detail="No URL found in the capture."))
-            structured = enrich.structure(transcript, enr, config, router=deps.enrich_router)
-            paths = [enrich.route_link(item, transcript, enr, structured, config.vault_path)]
-            events.log(fkey, "enrich", "ok", int((time.monotonic() - t0) * 1000),
-                       message=f"platform={enr.platform} enriched={str(enr.enriched).lower()}")
-            events.log(fkey, "route", "ok", 0, message=f"wrote {paths[0].name}")
-            cls = classify_mod.Classification(type="resource", title=structured.get("title", item.name),
-                                              confidence=1.0, needs_review=False, routed_by="link")
-            status = "ok"
-        else:
-            # Stage 3 — classify
-            t0 = time.monotonic()
-            cls = classify_mod.classify(item, transcript, config, deps.classifier_fn)
+            cls = photo.classify_image(item, transcript, config, deps.classifier_fn)
             status = "needs_review" if cls.needs_review else "ok"
-            provider_note = f" provider={cls.provider}" if cls.provider else ""
             events.log(fkey, "classify", status, int((time.monotonic() - t0) * 1000),
-                       message=f"type={cls.type} confidence={cls.confidence:.2f} by={cls.routed_by}"
-                               + provider_note)
-            for att in cls.attempts:   # router stats — aggregated by GET /api/providers
+                       message=f"type={cls.type} confidence={cls.confidence:.2f} by={cls.routed_by}")
+            for att in cls.attempts:
                 conf_note = f" confidence={att.confidence:.2f}" if att.confidence is not None else ""
                 events.log(fkey, "llm", "ok" if att.outcome == "served" else "failed",
                            message=f"provider={att.provider} outcome={att.outcome}" + conf_note)
 
-            # Stage 4 — route
             t0 = time.monotonic()
-            paths = route.route(item, cls, transcript, config.vault_path)
+            ext = photo.ext_for_mime(mime)
+            cover_rel = photo.copy_to_attachments(item, image_bytes, ext, config.vault_path)
+            if cls.type == "resource":
+                structured = photo.structure(sidecar_data["text"], transcript, config,
+                                             router=deps.enrich_router)
+                paths = [photo.route_image_resource(item, structured, transcript,
+                                                    sidecar_data["text"], config.vault_path, cover_rel)]
+            else:
+                body = photo.generic_image_body(cover_rel, sidecar_data["text"], transcript)
+                paths = route.route(item, cls, body, config.vault_path)
             events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
                        message=f"wrote {', '.join(p.name for p in paths)}")
+        else:
+            # Stage 2 — transcribe (text skips inside _transcribe); transient
+            # failures are retried with backoff before they can reach quarantine
+            t0 = time.monotonic()
+            transcript = _transcribe_with_retry(item, deps)
+            events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000))
+
+            if item.kind == "link":
+                # A link IS a resource — no classify LLM, no review gate. Enrich
+                # (best-effort) then route to 04-Resources. Enrichment never fails
+                # the note (Pass L principle).
+                t0 = time.monotonic()
+                url = enrich.extract_url(transcript)
+                enr = (enrich.enrich_url(url, config, fetch=deps.enrich_fetch) if url
+                       else enrich.Enrichment("web", False, "", detail="No URL found in the capture."))
+                structured = enrich.structure(transcript, enr, config, router=deps.enrich_router)
+                paths = [enrich.route_link(item, transcript, enr, structured, config.vault_path)]
+                events.log(fkey, "enrich", "ok", int((time.monotonic() - t0) * 1000),
+                           message=f"platform={enr.platform} enriched={str(enr.enriched).lower()}")
+                events.log(fkey, "route", "ok", 0, message=f"wrote {paths[0].name}")
+                cls = classify_mod.Classification(type="resource", title=structured.get("title", item.name),
+                                                  confidence=1.0, needs_review=False, routed_by="link")
+                status = "ok"
+            else:
+                # Stage 3 — classify
+                t0 = time.monotonic()
+                cls = classify_mod.classify(item, transcript, config, deps.classifier_fn)
+                status = "needs_review" if cls.needs_review else "ok"
+                provider_note = f" provider={cls.provider}" if cls.provider else ""
+                events.log(fkey, "classify", status, int((time.monotonic() - t0) * 1000),
+                           message=f"type={cls.type} confidence={cls.confidence:.2f} by={cls.routed_by}"
+                                   + provider_note)
+                for att in cls.attempts:   # router stats — aggregated by GET /api/providers
+                    conf_note = f" confidence={att.confidence:.2f}" if att.confidence is not None else ""
+                    events.log(fkey, "llm", "ok" if att.outcome == "served" else "failed",
+                               message=f"provider={att.provider} outcome={att.outcome}" + conf_note)
+
+                # Stage 4 — route
+                t0 = time.monotonic()
+                paths = route.route(item, cls, transcript, config.vault_path)
+                events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
+                           message=f"wrote {', '.join(p.name for p in paths)}")
 
         # Stage 5 — extract action items (append only)
         t0 = time.monotonic()

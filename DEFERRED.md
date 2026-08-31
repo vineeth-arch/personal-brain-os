@@ -33,3 +33,8 @@
 - Pass 12: Dex / n8n / Supabase real API integrations — they stay launcher tiles; each needs its own auth story and (for Dex) a dependency the locked list doesn't include.
 - Pass 12: pull Gmail/Calendar items INTO the vault as notes (currently read-only display in Integrations) — needs a routing decision per SCHEMA-REFERENCE before anything is written.
 - NOT DEFERRED — PERMANENTLY OUT (CLAUDE.md §4): sending email or any message from the app. Drafts are written to Gmail and sent by the human, in Gmail. api/tests/test_google.py fails the build if a send path ever appears.
+- Pass 13: Resources gallery/drawer don't render local `attachments/` covers (bearer-auth means a plain `<img src>` can't authenticate) — falls back to the existing category-initial tile; needs an authed image-serving route or a signed short-lived URL scheme.
+- Pass 13: Instagram/YouTube reel and video CONTENT understanding (downloading media, frame-sampling to vision) — only metadata/caption/transcript extraction ships this pass, same as Pass L.
+- Pass 13: Apify setup for real Instagram captions/thumbnails — the seam already exists (pipeline/enrich.py); fallback-first (owner's own words + AI description) ships without it.
+- Pass 13: the iOS Shortcut has no offline queue / auto-retry — a failed POST (no signal, server down) is lost from the Shortcut's perspective; the user would need to re-share.
+- Pass 13: cross-type search (currently resources only) — a photo classified to todo/musing/etc. isn't covered by GET /api/resources?q=.
