@@ -35,7 +35,7 @@ def person_note(folder: Path, name: str, *, last_contact="2026-08-01", cadence="
         + (f"sample: {sample}\n" if sample else "")
         + "---\n\n"
         f"# {name}\n\n## Context\n\nMet at a studio visit.\n\n## Needs\n\nA studio in Dubai.\n\n"
-        f"## Interaction log\n\n{log}\n\n## Next action\n\n{next_action}\n")
+        f"## Interaction log\n\n{log}\n\n## Next action\n\n{next_action}\n", encoding="utf-8")
     return path
 
 
@@ -66,7 +66,7 @@ def test_blank_channel_values_are_dropped():
 
 def test_non_person_notes_are_ignored(vault):
     (vault / rel.PEOPLE_FOLDER / "readme.md").write_text(
-        "---\nid: 1\ntype: musing\n---\n\nnot a person\n")
+        "---\nid: 1\ntype: musing\n---\n\nnot a person\n", encoding="utf-8")
     assert rel.load_people(vault) == []
 
 
@@ -163,7 +163,7 @@ def test_log_contact_appends_a_dated_line_and_resets_last_contact(vault):
     path = person_note(vault / rel.PEOPLE_FOLDER, "Priya Raman", last_contact="2026-06-01")
     person = rel.load_people(vault)[0]
     updated = rel.log_contact(person, "Sent a note about the studio", TODAY, channel="whatsapp")
-    path.write_text(updated)
+    path.write_text(updated, encoding="utf-8")
 
     again = rel.load_people(vault)[0]
     assert again.last_contact == TODAY
@@ -178,14 +178,14 @@ def test_log_contact_appends_a_dated_line_and_resets_last_contact(vault):
 def test_logging_contact_revives_a_cold_person(vault):
     path = person_note(vault / rel.PEOPLE_FOLDER, "X", status="cold")
     person = rel.load_people(vault)[0]
-    path.write_text(rel.log_contact(person, "caught up", TODAY))
+    path.write_text(rel.log_contact(person, "caught up", TODAY), encoding="utf-8")
     assert rel.load_people(vault)[0].status == "active"
 
 
 def test_set_warmth_stage_only_accepts_the_six_stages(vault):
     path = person_note(vault / rel.PEOPLE_FOLDER, "X", stage="engaging")
     person = rel.load_people(vault)[0]
-    path.write_text(rel.set_warmth_stage(person, "conversing"))
+    path.write_text(rel.set_warmth_stage(person, "conversing"), encoding="utf-8")
     assert rel.load_people(vault)[0].warmth_stage == "conversing"
     with pytest.raises(ValueError):
         rel.set_warmth_stage(rel.load_people(vault)[0], "besties")
@@ -200,7 +200,7 @@ def test_next_stage_walks_the_ladder_and_stops_at_the_top():
 def test_append_context_keeps_existing_context(vault):
     path = person_note(vault / rel.PEOPLE_FOLDER, "X")
     person = rel.load_people(vault)[0]
-    path.write_text(rel.append_context(person, ["- Head of Studio at Alserkal <!-- origin: ai -->"]))
+    path.write_text(rel.append_context(person, ["- Head of Studio at Alserkal <!-- origin: ai -->"]), encoding="utf-8")
     context = rel.load_people(vault)[0].sections["Context"]
     assert "Met at a studio visit." in context and "Head of Studio" in context
 

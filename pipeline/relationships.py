@@ -156,7 +156,7 @@ def _unquote(value: str) -> str:
 
 def parse_person(path: Path) -> Person | None:
     try:
-        text = path.read_text()
+        text = path.read_text(encoding="utf-8")
     except OSError:
         return None
     if not text.startswith("---\n"):
@@ -317,7 +317,7 @@ def log_contact(person: Person, note: str, when: date, *, channel: str = "") -> 
     """Append a dated line to the interaction log and reset last_contact.
 
     Returns the new file text (the caller writes it and commits the vault)."""
-    text = person.path.read_text()
+    text = person.path.read_text(encoding="utf-8")
     detail = note.strip() or "Reached out."
     via = f" ({channel})" if channel else ""
     text = _append_to_section(text, "Interaction log", f"- {when.isoformat()}{via} — {detail}")
@@ -330,7 +330,7 @@ def log_contact(person: Person, note: str, when: date, *, channel: str = "") -> 
 def set_warmth_stage(person: Person, stage: str) -> str:
     if stage not in WARMTH_STAGES:
         raise ValueError(f"{stage!r} is not one of the six warmth stages")
-    return _replace_field(person.path.read_text(), "warmth_stage", stage)
+    return _replace_field(person.path.read_text(encoding="utf-8"), "warmth_stage", stage)
 
 
 def next_stage(stage: str) -> str | None:
@@ -416,13 +416,13 @@ def create_person(vault_path: Path, name: str, channel_kind: str, channel_value:
     while path.exists():
         path = folder / f"{filename[:-3]}-{suffix}.md"
         suffix += 1
-    path.write_text(text)
+    path.write_text(text, encoding="utf-8")
     return parse_person(path)
 
 
 def append_context(person: Person, lines: list[str]) -> str:
     """Add AI-found facts under ## Context, flagged as AI-written (SCHEMA §1)."""
-    text = person.path.read_text()
+    text = person.path.read_text(encoding="utf-8")
     for line in lines:
         text = _append_to_section(text, "Context", line)
     return text

@@ -192,7 +192,7 @@ def test_the_mcp_layer_has_no_way_to_send_anything():
     tools must not be able to contact anybody."""
     from api.tests.test_no_send import SEND_PATTERNS
 
-    source = MCP_SCRIPT.read_text()
+    source = MCP_SCRIPT.read_text(encoding="utf-8")
     offenders = [f"{i}: {line.strip()}"
                  for i, line in enumerate(source.splitlines(), start=1)
                  if SEND_PATTERNS.search(line)]

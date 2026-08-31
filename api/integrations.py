@@ -91,7 +91,7 @@ def write_config(config_path: Path, config, changes: dict) -> None:
             "Pick a value between 0 and 1 (0.7 is the tested default).",
         )
 
-    raw = json.loads(config_path.read_text())
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
     if engine is not None:
         raw.setdefault("transcription", {})["engine"] = engine
     if threshold is not None:
@@ -103,7 +103,7 @@ def write_config(config_path: Path, config, changes: dict) -> None:
 
     fd, tmp = tempfile.mkstemp(dir=config_path.parent, prefix=".config-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(raw, f, indent=2)
             f.write("\n")
         os.replace(tmp, config_path)
@@ -400,7 +400,7 @@ def _check_watcher(heartbeat_path: Path) -> dict:
                     })
         return card
     try:
-        stamp = datetime.fromisoformat(heartbeat_path.read_text().strip())
+        stamp = datetime.fromisoformat(heartbeat_path.read_text(encoding="utf-8").strip())
         age_min = int((datetime.now() - stamp).total_seconds() / 60)
     except ValueError:
         age_min = -1

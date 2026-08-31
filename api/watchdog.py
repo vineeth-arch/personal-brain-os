@@ -43,7 +43,7 @@ def _heartbeat_age_minutes(heartbeat_path: Path, now: datetime) -> float | None:
     if not heartbeat_path.exists():
         return None
     try:
-        stamp = datetime.fromisoformat(heartbeat_path.read_text().strip())
+        stamp = datetime.fromisoformat(heartbeat_path.read_text(encoding="utf-8").strip())
     except ValueError:
         return float("inf")
     return (now - stamp).total_seconds() / 60

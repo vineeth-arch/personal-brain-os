@@ -137,7 +137,7 @@ def finish_connect(states: dict, config_path: Path, state: str, code: str) -> No
             "The token response had no refresh token (the client may be misconfigured).",
             "Remove the app at myaccount.google.com/permissions, then Connect Google again.")
 
-    raw = json.loads(config_path.read_text())
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
     raw.setdefault("google", {})["refresh_token"] = refresh
     # What Google ACTUALLY granted, so "do we have the contacts permission?"
     # is answerable without a network call (and so a link made before Pass D
@@ -145,7 +145,7 @@ def finish_connect(states: dict, config_path: Path, state: str, code: str) -> No
     raw["google"]["scopes"] = tokens.get("scope") or ""
     fd, tmp = tempfile.mkstemp(dir=config_path.parent, prefix=".config-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(raw, f, indent=2)
             f.write("\n")
         os.replace(tmp, config_path)
@@ -155,11 +155,11 @@ def finish_connect(states: dict, config_path: Path, state: str, code: str) -> No
 
 
 def disconnect(config_path: Path, token_cache: dict) -> None:
-    raw = json.loads(config_path.read_text())
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
     raw.pop("google", None)
     fd, tmp = tempfile.mkstemp(dir=config_path.parent, prefix=".config-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(raw, f, indent=2)
             f.write("\n")
         os.replace(tmp, config_path)

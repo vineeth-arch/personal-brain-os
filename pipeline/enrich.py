@@ -289,7 +289,7 @@ def route_link(item, user_text: str, enr: Enrichment, structured: dict,
         i += 1
         path = dest_dir / f"{base}-{i}.md"
     path.write_text(build_resource_note(item, enr, structured, user_text,
-                                        note_id, created, now_iso, attempts))
+                                        note_id, created, now_iso, attempts), encoding="utf-8")
     return path
 
 
@@ -419,7 +419,7 @@ def _retry_pending(config, events, now: datetime, fetch, router) -> None:
     if not folder.is_dir():
         return
     for path in sorted(folder.glob("*.md")):
-        fm, _ = _parse_note(path.read_text())
+        fm, _ = _parse_note(path.read_text(encoding="utf-8"))
         if fm.get("type") != "resource" or fm.get("enriched") != "false":
             continue
         if int(fm.get("enrich_attempts", "1") or "1") >= 2:

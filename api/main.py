@@ -279,7 +279,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
     def status(config=Depends(require_token)):
         heartbeat = None
         if heartbeat_path.exists():
-            heartbeat = heartbeat_path.read_text().strip() or None
+            heartbeat = heartbeat_path.read_text(encoding="utf-8").strip() or None
         try:
             pending = len(intake.poll(config.inbox_path))
         except OSError:
@@ -717,7 +717,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         target = None
         if folder.is_dir():
             for path in folder.glob("*.md"):
-                fm, _ = notes.parse_frontmatter(path.read_text())
+                fm, _ = notes.parse_frontmatter(path.read_text(encoding="utf-8"))
                 if fm.get("id") == note_id and fm.get("type") == "resource":
                     target = path
                     break

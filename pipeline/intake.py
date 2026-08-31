@@ -42,7 +42,7 @@ def _parse(path: Path, source_hint: str | None = None) -> Item | None:
         # a text capture whose body is (or contains) a URL becomes a link —
         # enriched into a resource note instead of classified (Pass L)
         try:
-            kind = "link" if enrich.is_link_text(path.read_text()) else "text"
+            kind = "link" if enrich.is_link_text(path.read_text(encoding="utf-8")) else "text"
         except OSError:
             kind = "text"
         source = "manual"

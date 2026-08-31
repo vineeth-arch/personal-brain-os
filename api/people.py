@@ -86,9 +86,9 @@ def voice_path(vault_path: Path) -> Path:
 
 def voice_status(vault_path: Path) -> dict:
     path = voice_path(vault_path)
-    exists = path.is_file() and bool(path.read_text().strip())
+    exists = path.is_file() and bool(path.read_text(encoding="utf-8").strip())
     return {"exists": exists, "file": VOICE_FILE,
-            "samples": _count_samples(path.read_text()) if exists else 0}
+            "samples": _count_samples(path.read_text(encoding="utf-8")) if exists else 0}
 
 
 def _count_samples(text: str) -> int:
@@ -111,7 +111,7 @@ def write_voice(vault_path: Path, samples: list[str]) -> dict:
             "same length, same greetings, same punctuation, same bluntness.", ""]
     for i, sample in enumerate(cleaned, start=1):
         body += [f"### Sample {i}", "", sample, ""]
-    path.write_text("\n".join(body).rstrip() + "\n")
+    path.write_text("\n".join(body).rstrip() + "\n", encoding="utf-8")
     git_commit_vault(Path(vault_path), "api: wrote my-voice.md from pasted samples")
     return voice_status(vault_path)
 
@@ -160,7 +160,7 @@ def draft(vault_path: Path, person_id: str, channel: str | None,
         raise LookupError(VOICE_FILE)
 
     chosen = channel or person.preferred_channel(priority) or "whatsapp"
-    voice = voice_path(vault_path).read_text()
+    voice = voice_path(vault_path).read_text(encoding="utf-8")
     prompt = build_draft_prompt(person, voice, chosen)
     text, provider, attempts = (router or llm.complete_text)(prompt, config)
     if not text:

@@ -23,7 +23,7 @@ def test_refuses_on_missing_config(tmp_path):
 
 
 def test_refuses_on_unparseable_config(tmp_path):
-    (tmp_path / "config.json").write_text("{not json")
+    (tmp_path / "config.json").write_text("{not json", encoding="utf-8")
     with pytest.raises(SystemExit) as exc:
         create_app(root=tmp_path)
     assert "isn't valid JSON" in str(exc.value)
@@ -31,9 +31,9 @@ def test_refuses_on_unparseable_config(tmp_path):
 
 def test_refuses_on_missing_vault_dir(env):
     root, vault, _, _ = env
-    config = json.loads((root / "config.json").read_text())
+    config = json.loads((root / "config.json").read_text(encoding="utf-8"))
     config["vault_path"] = str(root / "nowhere")
-    (root / "config.json").write_text(json.dumps(config))
+    (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
     with pytest.raises(SystemExit) as exc:
         create_app(root=root)
     message = str(exc.value)
@@ -42,10 +42,10 @@ def test_refuses_on_missing_vault_dir(env):
 
 def test_numbered_list_covers_every_problem(env):
     root, _, _, _ = env
-    config = json.loads((root / "config.json").read_text())
+    config = json.loads((root / "config.json").read_text(encoding="utf-8"))
     config["vault_path"] = str(root / "nowhere")
     config["inbox_path"] = str(root / "also-nowhere")
-    (root / "config.json").write_text(json.dumps(config))
+    (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
     with pytest.raises(SystemExit) as exc:
         create_app(root=root)
     message = str(exc.value)
@@ -81,7 +81,7 @@ def test_backup_creates_real_vault_commit_and_db_copy(env):
     import subprocess
     from .test_api import _seed_events
     root, vault, _, _ = env
-    (vault / "note.md").write_text("something uncommitted\n")
+    (vault / "note.md").write_text("something uncommitted\n", encoding="utf-8")
     _seed_events(root / "events.db", [
         {"timestamp": "2026-07-01T09:00:00", "file": "/in/a.m4a", "stage": "archive",
          "status": "ok"}])

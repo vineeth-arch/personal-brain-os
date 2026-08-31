@@ -89,7 +89,7 @@ def test_no_send_path_exists_anywhere():
             # the guard tests spell the patterns out in order to forbid them
             if path.name in {"test_google.py", "test_no_send.py"}:
                 continue
-            for i, line in enumerate(path.read_text().splitlines(), start=1):
+            for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
                 if pattern.search(line):
                     offenders.append(f"{path.relative_to(REPO_ROOT)}:{i}: {line.strip()}")
     assert not offenders, (
@@ -176,12 +176,12 @@ def test_connect_state_is_single_use(monkeypatch, google_client, tmp_path):
     state = dict(x.split("=", 1) for x in url.split("?", 1)[1].split("&"))["state"]
 
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"vault_path": "/v"}))
+    config_path.write_text(json.dumps({"vault_path": "/v"}), encoding="utf-8")
     monkeypatch.setattr(google, "_token_request",
                         lambda fields: {"refresh_token": "new-refresh"})
 
     google.finish_connect(states, config_path, state, "auth-code")
-    assert json.loads(config_path.read_text())["google"]["refresh_token"] == "new-refresh"
+    assert json.loads(config_path.read_text(encoding="utf-8"))["google"]["refresh_token"] == "new-refresh"
 
     # replaying the same state must fail — it was consumed
     with pytest.raises(google.GoogleError) as e:
@@ -191,7 +191,7 @@ def test_connect_state_is_single_use(monkeypatch, google_client, tmp_path):
 
 def test_unknown_state_is_rejected(google_client, tmp_path):
     config_path = tmp_path / "config.json"
-    config_path.write_text("{}")
+    config_path.write_text("{}", encoding="utf-8")
     with pytest.raises(google.GoogleError):
         google.finish_connect({}, config_path, "forged-state", "code")
 
@@ -202,7 +202,7 @@ def test_finish_connect_preserves_the_rest_of_config(monkeypatch, google_client,
     config_path = tmp_path / "config.json"
     original = {"vault_path": "/vault", "api": {"auth_token": "keep-me"},
                 "links": {"dex": "https://getdex.com/"}}
-    config_path.write_text(json.dumps(original))
+    config_path.write_text(json.dumps(original), encoding="utf-8")
     states: dict = {}
     url = google.begin_connect(states, "https://x/api/google/callback")
     state = dict(x.split("=", 1) for x in url.split("?", 1)[1].split("&"))["state"]
@@ -210,7 +210,7 @@ def test_finish_connect_preserves_the_rest_of_config(monkeypatch, google_client,
 
     google.finish_connect(states, config_path, state, "code")
 
-    written = json.loads(config_path.read_text())
+    written = json.loads(config_path.read_text(encoding="utf-8"))
     assert written["api"]["auth_token"] == "keep-me"
     assert written["links"]["dex"] == "https://getdex.com/"
     assert written["vault_path"] == "/vault"
@@ -218,10 +218,10 @@ def test_finish_connect_preserves_the_rest_of_config(monkeypatch, google_client,
 
 def test_disconnect_removes_the_token(tmp_path):
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"vault_path": "/v", "google": {"refresh_token": "r"}}))
+    config_path.write_text(json.dumps({"vault_path": "/v", "google": {"refresh_token": "r"}}), encoding="utf-8")
     cache = {"access_token": "at"}
     google.disconnect(config_path, cache)
-    written = json.loads(config_path.read_text())
+    written = json.loads(config_path.read_text(encoding="utf-8"))
     assert "google" not in written
     assert written["vault_path"] == "/v"
     assert cache == {}

@@ -28,7 +28,7 @@ def _person(folder: Path, name: str, person_id: str, *, last_contact="2026-06-01
         f"channels: {channels}\ncadence_days: {cadence}\nlast_contact: {last_contact}\n"
         f"warmth_stage: {stage}\nstatus: active\n---\n\n"
         f"# {name}\n\n## Context\n\nMet at a studio visit.\n\n## Needs\n\nA studio.\n\n"
-        f"## Interaction log\n\n{log}\n\n## Next action\n\n\n")
+        f"## Interaction log\n\n{log}\n\n## Next action\n\n\n", encoding="utf-8")
     return path
 
 
@@ -73,8 +73,8 @@ def test_voice_file_round_trip(vault_env):
         code, body = s.req("POST", "/api/people/voice",
                            {"samples": ["hey! sorry for the slow reply", "Sounds good — Tuesday works."]})
         assert code == 200 and body["exists"] is True and body["samples"] == 2
-        text = (vault / "my-voice.md").read_text() if (vault / "my-voice.md").exists() \
-            else (vault / "_System" / "my-voice.md").read_text()
+        text = (vault / "my-voice.md").read_text(encoding="utf-8") if (vault / "my-voice.md").exists() \
+            else (vault / "_System" / "my-voice.md").read_text(encoding="utf-8")
         # the samples are stored verbatim — they ARE the style guide
         assert "hey! sorry for the slow reply" in text
         assert "origin: human" in text, "nothing here was AI-written"
@@ -184,7 +184,7 @@ def test_logging_contact_resets_the_counter_and_commits(vault_env):
         assert body["suggest_stage"] == "conversing"
         assert body["warmth_stage"] == "engaging"
 
-    text = next((vault / "07-People").glob("*.md")).read_text()
+    text = next((vault / "07-People").glob("*.md")).read_text(encoding="utf-8")
     assert "sent the studio note" in text and "coffee at Alserkal" in text
     log = subprocess.run(["git", "-C", str(vault), "log", "-1", "--format=%s"],
                          capture_output=True, text=True).stdout
@@ -234,10 +234,10 @@ def test_enrich_appends_ai_flagged_facts_under_context(vault_env):
 
 def test_enrich_with_no_match_changes_nothing(vault_env):
     root, vault, _ = vault_env
-    before = next((vault / "07-People").glob("*.md")).read_text()
+    before = next((vault / "07-People").glob("*.md")).read_text(encoding="utf-8")
     out = people.enrich(vault, "20260701090000", fetch=lambda url: ({"data": {}}, 96), today=TODAY)
     assert out["enriched"] is False and "no match" in out["detail"]
-    assert next((vault / "07-People").glob("*.md")).read_text() == before
+    assert next((vault / "07-People").glob("*.md")).read_text(encoding="utf-8") == before
 
 
 # ---- quick-add (Pass X) ----------------------------------------------------------
@@ -255,7 +255,7 @@ def test_quick_add_writes_a_schema_correct_person_note(vault_env):
         assert body["channels"] == {"email": "sara@example.com"}
 
     written = next(p for p in folder.glob("*sara-khalid*.md"))
-    text = written.read_text()
+    text = written.read_text(encoding="utf-8")
     assert "type: person" in text
     assert "origin: human" in text, "the owner typed this — it is not AI-written"
     assert "source: manual" in text

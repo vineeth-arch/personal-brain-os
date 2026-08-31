@@ -84,13 +84,13 @@ def toggle(vault: Path, block_id: str) -> bool:
     state. Raises LookupError if no line carries that id."""
     for todo in scan(vault):
         if todo.block_id == block_id:
-            lines = todo.file.read_text().splitlines()
+            lines = todo.file.read_text(encoding="utf-8").splitlines()
             line = lines[todo.line_no]
             if todo.done:
                 lines[todo.line_no] = line.replace("- [x]", "- [ ]", 1)
             else:
                 lines[todo.line_no] = line.replace("- [ ]", "- [x]", 1)
-            todo.file.write_text("\n".join(lines) + "\n")
+            todo.file.write_text("\n".join(lines) + "\n", encoding="utf-8")
             return not todo.done
     raise LookupError(block_id)
 

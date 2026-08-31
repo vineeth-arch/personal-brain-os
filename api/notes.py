@@ -266,7 +266,7 @@ def capture(inbox: Path, text: str, tag: str | None) -> str:
     # atomic-ish write so a concurrently polling watcher never sees a half file
     fd, tmp = tempfile.mkstemp(dir=inbox, prefix=".capture-", suffix=".tmp")
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text.rstrip() + "\n")
         os.replace(tmp, path)
     except BaseException:
@@ -567,7 +567,7 @@ def set_resource_status(vault: Path, note_id: str, new_status: str) -> dict:
     path = find_resource(vault, note_id)
     if path is None:
         raise LookupError(note_id)
-    text = path.read_text()
+    text = path.read_text(encoding="utf-8")
     fm, _ = parse_frontmatter(text)
     new_text = _restamp(text, fm.get("type", "resource"), new_status)
     if new_status == "consumed":
@@ -575,9 +575,9 @@ def set_resource_status(vault: Path, note_id: str, new_status: str) -> dict:
         if split is not None:
             fm_block, body = split
             new_text = _compose_note(_stamp_field(fm_block, "consumed", date.today().isoformat()), body)
-    path.write_text(new_text)
+    path.write_text(new_text, encoding="utf-8")
     git_commit_vault(vault, f"api: resource {note_id} → {new_status}")
-    fm2, body2 = parse_frontmatter(path.read_text())
+    fm2, body2 = parse_frontmatter(path.read_text(encoding="utf-8"))
     return _resource_summary(vault, path, fm2, body2)
 
 
@@ -587,13 +587,13 @@ def set_resource_insight(vault: Path, note_id: str, text: str) -> dict:
     path = find_resource(vault, note_id)
     if path is None:
         raise LookupError(note_id)
-    split = _split_note(path.read_text())
+    split = _split_note(path.read_text(encoding="utf-8"))
     if split is None:
         raise LookupError(note_id)
     fm_block, body = split
-    path.write_text(_compose_note(_ensure_origin_human(fm_block), set_insight_section(body, text)))
+    path.write_text(_compose_note(_ensure_origin_human(fm_block), set_insight_section(body, text)), encoding="utf-8")
     git_commit_vault(vault, f"api: insight on {note_id}")
-    fm2, body2 = parse_frontmatter(path.read_text())
+    fm2, body2 = parse_frontmatter(path.read_text(encoding="utf-8"))
     return _resource_summary(vault, path, fm2, body2)
 
 

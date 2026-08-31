@@ -82,7 +82,7 @@ def _transcribe(item, deps: Deps, events: EventLog | None = None) -> str:
     recording, in stitched 10-minute segments once it is long enough that one
     request would be refused or crawl (Pass P)."""
     if item.kind in ("text", "link"):
-        return item.path.read_text()
+        return item.path.read_text(encoding="utf-8")
     duration = transcribe_mod.probe_duration_seconds(item.path)
     if transcribe_mod.is_long(item.path, duration):
         def on_event(message, ok):

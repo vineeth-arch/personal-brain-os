@@ -66,7 +66,7 @@ def _probe_file_contains(app_root: Path, item: dict, config, _db):
     if not path.is_file():
         return False, f"{item['path']} isn't there yet."
     try:
-        found = item["needle"] in path.read_text()
+        found = item["needle"] in path.read_text(encoding="utf-8")
     except OSError:
         return False, f"{item['path']} couldn't be read."
     return found, (f"{item['path']} has it." if found

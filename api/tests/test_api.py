@@ -44,7 +44,7 @@ def _note(path: Path, note_id: str, ntype: str, status: str, body: str, created=
     path.write_text(
         f"---\nid: {note_id}\ntype: {ntype}\ncreated: {created}\nsource: voice\n"
         f"origin: human\nmeta_origin: ai\nstatus: {status}\ncategories: []\n"
-        f"subjects: []\ntags: []\n---\n\n{body}\n")
+        f"subjects: []\ntags: []\n---\n\n{body}\n", encoding="utf-8")
 
 
 class Server:
@@ -120,7 +120,7 @@ def env(tmp_path):
         "ntfy": {"url": "", "topic": ""}, "api": {"auth_token": TOKEN},
         "classification": {"confidence_threshold": 0.7}, "links": {"dex": "https://getdex.com/"},
     }
-    (tmp_path / "config.json").write_text(json.dumps(config))
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
     return tmp_path, vault, inbox, failed
 
 
@@ -155,7 +155,7 @@ def test_status_counts(env):
          "message": "boom", "plain_english_error": "What happened: X\nLikely cause: Y\nWhat to do: Z"},
     ])
     _note(vault / "00-Inbox" / "2026-07-01-x.md", "20260701090000", "learning", "needs-review", "body")
-    (inbox / "2026-07-02-0900 pending #todo.md").write_text("later")
+    (inbox / "2026-07-02-0900 pending #todo.md").write_text("later", encoding="utf-8")
     with Server(root) as s:
         code, body = s.req("GET", "/api/status")
         assert code == 200
@@ -190,7 +190,7 @@ def test_approve_write_path(env):
         assert body["moved_to"] == "03-Learnings/2026-07-01-walk.md"
         moved = vault / "03-Learnings" / "2026-07-01-walk.md"
         assert moved.exists() and not (vault / "00-Inbox" / "2026-07-01-walk.md").exists()
-        text = moved.read_text()
+        text = moved.read_text(encoding="utf-8")
         assert "type: learning" in text and "status: active" in text
         assert "id: 20260701090000" in text and "origin: human" in text  # untouched
         # git committed with the descriptive message
@@ -286,7 +286,7 @@ def test_capture_audio_same_minute_collision(env):
 
 def test_failed_and_retry(env):
     root, vault, inbox, failed = env
-    (failed / "memo.m4a").write_text("audio")
+    (failed / "memo.m4a").write_text("audio", encoding="utf-8")
     _seed_events(root / "events.db", [
         {"timestamp": "2026-07-01T05:12:00", "file": str(inbox / "memo.m4a"), "stage": "pipeline",
          "status": "failed", "message": "Could not transcribe the recording.",
@@ -383,7 +383,7 @@ def test_config_get_and_put(env, monkeypatch):
         # a valid change persists and preserves unknown keys (links)
         code, body = s.req("PUT", "/api/config", {"confidence_threshold": 0.8})
         assert code == 200 and body["confidence_threshold"] == 0.8
-        saved = json.loads((root / "config.json").read_text())
+        saved = json.loads((root / "config.json").read_text(encoding="utf-8"))
         assert saved["classification"]["confidence_threshold"] == 0.8
         assert saved["links"] == {"dex": "https://getdex.com/"}
 
@@ -421,7 +421,7 @@ def test_todos_ranges_and_toggle(env):
         f"- [ ] book flights 📅 {(today + timedelta(days=4)).isoformat()} ^20260701090000-4",
         "- [ ] undated thing ^20260701090000-5",
     ]
-    (vault / "06-Todos" / f"{today.isoformat()}.md").write_text("\n".join(lines) + "\n")
+    (vault / "06-Todos" / f"{today.isoformat()}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
     with Server(root) as s:
         assert [i["id"] for i in s.req("GET", "/api/todos?range=today")[1]["items"]] == ["20260701090000-1"]
         overdue = s.req("GET", "/api/todos?range=overdue")[1]["items"]
@@ -432,7 +432,7 @@ def test_todos_ranges_and_toggle(env):
         # toggle round-trips through the file and git-commits the vault
         code, body = s.req("POST", "/api/todos/20260701090000-1/toggle")
         assert code == 200 and body["done"] is True
-        assert "- [x] pay the electrician" in (vault / "06-Todos" / f"{today.isoformat()}.md").read_text()
+        assert "- [x] pay the electrician" in (vault / "06-Todos" / f"{today.isoformat()}.md").read_text(encoding="utf-8")
         logmsg = subprocess.run(["git", "-C", str(vault), "log", "-1", "--format=%s"],
                                 capture_output=True, text=True).stdout.strip()
         assert logmsg == "api: todo 20260701090000-1 marked done"
@@ -479,7 +479,7 @@ def test_resource_enrich_endpoint(env, monkeypatch):
         "source: manual\norigin: human\nmeta_origin: ai\ntitle: a reel\ncover: \n"
         "source_url: https://example.com/x\ndescription: \nstatus: inbox\nplatform: web\n"
         "enriched: false\nenrich_attempts: 1\nenrich_last: 2026-07-04T10:00:00\n"
-        "categories: []\nsubjects: []\ntags: []\n---\n\n## Insight\n\nsaw this\n")
+        "categories: []\nsubjects: []\ntags: []\n---\n\n## Insight\n\nsaw this\n", encoding="utf-8")
     subprocess.run(["git", "-C", str(vault), "add", "-A"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(vault), "commit", "-qm", "seed"], check=True, capture_output=True)
 
@@ -492,7 +492,7 @@ def test_resource_enrich_endpoint(env, monkeypatch):
     with Server(root) as s:
         code, body = s.req("POST", "/api/resources/20260704100000/enrich")
         assert code == 200 and body["enriched"] is True
-        assert "enriched: true" in note.read_text() and "Now Enriched" in note.read_text()
+        assert "enriched: true" in note.read_text(encoding="utf-8") and "Now Enriched" in note.read_text(encoding="utf-8")
         logmsg = subprocess.run(["git", "-C", str(vault), "log", "-1", "--format=%s"],
                                 capture_output=True, text=True).stdout.strip()
         assert logmsg == "api: enriched 20260704100000"

@@ -35,7 +35,7 @@ def stub_classifier(transcript: str, config) -> dict:
 
 def _fm(note_path: Path) -> dict:
     """Parse the flat frontmatter block into a dict (values are raw strings)."""
-    text = note_path.read_text()
+    text = note_path.read_text(encoding="utf-8")
     assert text.startswith("---\n")
     block = text.split("---\n", 2)[1]
     out = {}
@@ -67,7 +67,7 @@ def vault_env(tmp_path, monkeypatch):
 def _notes_of_type(vault: Path, folder: str, ntype: str) -> list[Path]:
     # Skip non-note files (e.g. the daily todo list has no frontmatter).
     return [p for p in (vault / folder).glob("*.md")
-            if p.read_text().startswith("---\n") and _fm(p).get("type") == ntype]
+            if p.read_text(encoding="utf-8").startswith("---\n") and _fm(p).get("type") == ntype]
 
 
 def test_end_to_end(vault_env):
@@ -100,7 +100,7 @@ def test_end_to_end(vault_env):
 
     # Action items appended to a daily todo file (extra write, not the note body).
     todo_days = [p for p in (config.vault_path / "06-Todos").glob("*.md")
-                 if p.stem.count("-") == 2 and "- [ ]" in p.read_text()]
+                 if p.stem.count("-") == 2 and "- [ ]" in p.read_text(encoding="utf-8")]
     assert todo_days, "expected action items appended to 06-Todos/<date>.md"
 
     # Sources archived (never deleted), inbox drained.
@@ -194,7 +194,7 @@ def test_hindi_recording_becomes_one_note_with_both_scripts(tmp_path, monkeypatc
 
     notes = _notes_of_type(vault, "01-Journal", "journal")
     assert len(notes) == 1, "one recording is one note, in either script"
-    text = notes[0].read_text()
+    text = notes[0].read_text(encoding="utf-8")
     body = text.split("---\n", 2)[2]
 
     assert body.strip().startswith("#journal main kal daftar jaunga")   # Hinglish leads
@@ -231,7 +231,7 @@ def test_a_dead_transliteration_engine_still_writes_the_note(tmp_path, monkeypat
 
     notes = _notes_of_type(vault, "01-Journal", "journal")
     assert len(notes) == 1
-    assert "मैं कल दफ़्तर जाऊँगा" in notes[0].read_text()
+    assert "मैं कल दफ़्तर जाऊँगा" in notes[0].read_text(encoding="utf-8")
 
     rows = sqlite3.connect(tmp_path / "events.db").execute(
         "SELECT status, message FROM events WHERE stage = 'transliterate'").fetchall()

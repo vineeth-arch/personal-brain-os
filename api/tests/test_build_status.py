@@ -20,7 +20,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_literal_binary_and_args(tmp_path):
     fake = tmp_path / "fake-launchctl"
-    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     os.chmod(fake, 0o755)
     ok, detail = _probe_binary_runs(tmp_path, {"binary": str(fake), "args": ["list", "x"]},
                                     None, None)
@@ -29,7 +29,7 @@ def test_literal_binary_and_args(tmp_path):
 
 def test_literal_binary_nonzero_exit(tmp_path):
     fake = tmp_path / "fake-launchctl"
-    fake.write_text("#!/bin/sh\nexit 3\n")
+    fake.write_text("#!/bin/sh\nexit 3\n", encoding="utf-8")
     os.chmod(fake, 0o755)
     ok, detail = _probe_binary_runs(tmp_path, {"binary": str(fake), "args": ["list", "x"]},
                                     None, None)
@@ -46,7 +46,7 @@ def test_missing_binary_degrades_gracefully(tmp_path):
 
 def test_config_field_shape_still_works(tmp_path):
     fake = tmp_path / "whisper-cli"
-    fake.write_text("#!/bin/sh\nexit 0\n")
+    fake.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     os.chmod(fake, 0o755)
     config = SimpleNamespace(raw={"transcription": {"whispercpp": {"binary_path": str(fake)}}})
     ok, detail = _probe_binary_runs(
@@ -57,11 +57,11 @@ def test_config_field_shape_still_works(tmp_path):
 # ---- Pass X probe types ----------------------------------------------------------
 
 def test_file_exists_accepts_several_paths(tmp_path):
-    (tmp_path / "a.py").write_text("")
+    (tmp_path / "a.py").write_text("", encoding="utf-8")
     ok, detail = _probe_file_exists(tmp_path, {"paths": ["a.py", "b.py"]}, None, None)
     assert ok is False and "b.py" in detail and "a.py" not in detail.split("isn't")[0]
 
-    (tmp_path / "b.py").write_text("")
+    (tmp_path / "b.py").write_text("", encoding="utf-8")
     ok, _ = _probe_file_exists(tmp_path, {"paths": ["a.py", "b.py"]}, None, None)
     assert ok is True
 
@@ -75,7 +75,7 @@ def test_file_exists_can_anchor_to_the_vault(tmp_path):
     ok, _ = _probe_file_exists(tmp_path, item, config, None)
     assert ok is False, "the repo has no _System/my-voice.md — the vault is what's asked about"
 
-    (vault / "_System" / "my-voice.md").write_text("hey!")
+    (vault / "_System" / "my-voice.md").write_text("hey!", encoding="utf-8")
     ok, _ = _probe_file_exists(tmp_path, item, config, None)
     assert ok is True
     # and with no config at all it reports, it never raises
@@ -86,12 +86,12 @@ def test_file_exists_can_anchor_to_the_vault(tmp_path):
 def test_file_contains_distinguishes_shipped_from_merely_present(tmp_path):
     """The point of this probe: Today.tsx existed long before the mic did."""
     target = tmp_path / "Today.tsx"
-    target.write_text("export function Today() { return null; }")
+    target.write_text("export function Today() { return null; }", encoding="utf-8")
     item = {"path": "Today.tsx", "needle": "MediaRecorder"}
     ok, detail = _probe_file_contains(tmp_path, item, None, None)
     assert ok is False and "doesn't have it yet" in detail
 
-    target.write_text("const rec = new MediaRecorder(stream);")
+    target.write_text("const rec = new MediaRecorder(stream);", encoding="utf-8")
     ok, _ = _probe_file_contains(tmp_path, item, None, None)
     assert ok is True
 
@@ -121,13 +121,13 @@ def test_config_field_contains_reads_the_granted_google_scopes(tmp_path):
 def test_every_manifest_item_has_a_probe_that_exists():
     """An item whose probe type is unknown renders as a permanently-unfinished
     milestone with no way to ever tick — worse than not listing it."""
-    manifest = json.loads((REPO_ROOT / "checks.json").read_text())
+    manifest = json.loads((REPO_ROOT / "checks.json").read_text(encoding="utf-8"))
     unknown = [i["id"] for i in manifest["items"] if i["type"] not in _PROBES]
     assert not unknown, f"checks.json uses probe types nothing implements: {unknown}"
 
 
 def test_every_manifest_item_carries_the_fields_its_probe_needs():
-    manifest = json.loads((REPO_ROOT / "checks.json").read_text())
+    manifest = json.loads((REPO_ROOT / "checks.json").read_text(encoding="utf-8"))
     required = {
         "file_exists": lambda i: i.get("path") or i.get("paths"),
         "file_contains": lambda i: i.get("path") and i.get("needle"),
@@ -148,7 +148,7 @@ def test_every_manifest_item_carries_the_fields_its_probe_needs():
 
 def test_the_shipped_passes_actually_probe_true():
     """These milestones describe code in this repo, so they must tick here."""
-    manifest = json.loads((REPO_ROOT / "checks.json").read_text())
+    manifest = json.loads((REPO_ROOT / "checks.json").read_text(encoding="utf-8"))
     by_id = {i["id"]: i for i in manifest["items"]}
     for pass_id in ("passV", "passP", "passMW", "passD", "passX", "pass12"):
         item = by_id[pass_id]

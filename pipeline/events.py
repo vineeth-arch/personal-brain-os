@@ -86,7 +86,7 @@ class EventLog:
         self.conn.commit()
 
     def heartbeat(self, path: Path) -> None:
-        Path(path).write_text(datetime.now().isoformat(timespec="seconds") + "\n")
+        Path(path).write_text(datetime.now().isoformat(timespec="seconds") + "\n", encoding="utf-8")
 
     def _count(self, where: str, params: tuple = ()) -> int:
         cur = self.conn.execute(f"SELECT COUNT(*) FROM events WHERE {where}", params)

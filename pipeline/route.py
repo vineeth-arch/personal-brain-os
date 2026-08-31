@@ -154,5 +154,5 @@ def route(item, cls, transcript: str, vault_path: Path,
 
     # ponytail: single-note write. Multi-topic splitting of journal/musing needs an
     # LLM topic-segmenter — deferred (see DEFERRED.md); SPLITTABLE guards the seam.
-    path.write_text(f"{frontmatter}\n\n{transcript.rstrip()}\n")
+    path.write_text(f"{frontmatter}\n\n{transcript.rstrip()}\n", encoding="utf-8")
     return [path]

@@ -36,7 +36,7 @@ def scan(root: Path, folders=SERVER_FOLDERS) -> list[str]:
         for path in target.rglob("*"):
             if path.suffix != ".py" or not path.is_file() or path.name in GUARD_FILES:
                 continue
-            for i, line in enumerate(path.read_text().splitlines(), start=1):
+            for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
                 if SEND_PATTERNS.search(line):
                     offenders.append(f"{path.relative_to(root)}:{i}: {line.strip()}")
     return offenders
@@ -56,7 +56,7 @@ def test_the_scanner_actually_catches_a_planted_send(tmp_path):
     (tmp_path / "api" / "helpful.py").write_text(
         'def nudge(person, text):\n'
         '    url = f"https://wa.me/{person.phone}?text={text}"\n'
-        '    urllib.request.urlopen(url)\n')
+        '    urllib.request.urlopen(url)\n', encoding="utf-8")
     offenders = scan(tmp_path)
     assert len(offenders) == 1 and "wa.me" in offenders[0]
 
@@ -82,7 +82,7 @@ def scan_profile_modules(root: Path) -> list[str]:
         path = root / relative
         if not path.is_file():
             continue
-        for i, line in enumerate(path.read_text().splitlines(), start=1):
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
             if MESSAGING_PATTERNS.search(line):
                 offenders.append(f"{relative}:{i}: {line.strip()}")
     return offenders
@@ -103,7 +103,7 @@ def test_the_profile_scanner_catches_a_planted_send(tmp_path):
     (tmp_path / "pipeline" / "dex.py").write_text(
         'def push_and_ping(contact, text):\n'
         '    update_description(contact, text)\n'
-        '    urllib.request.urlopen(f"https://wa.me/{contact.phone}?text=hi")\n')
+        '    urllib.request.urlopen(f"https://wa.me/{contact.phone}?text=hi")\n', encoding="utf-8")
     offenders = scan_profile_modules(tmp_path)
     assert len(offenders) == 1 and "wa.me" in offenders[0]
 
@@ -113,7 +113,7 @@ def test_the_draft_endpoint_returns_raw_channels_not_links():
     into a wa.me/mailto URL is the browser's job, one tap from the human."""
     from api import people
 
-    source = (REPO_ROOT / "api" / "people.py").read_text()
+    source = (REPO_ROOT / "api" / "people.py").read_text(encoding="utf-8")
     assert "wa.me" not in source and "mailto:" not in source
     assert '"channels": person.channels' in source, (
         "draft() must return the raw channel values so the link is built client-side")

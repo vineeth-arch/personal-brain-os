@@ -107,8 +107,8 @@ def _dex_person(tmp_path: Path, dex_id="dex-1"):
     folder = tmp_path / "07-People"
     folder.mkdir(parents=True, exist_ok=True)
     path = _person(folder, "Priya Raman", "20260701090000")
-    text = path.read_text().replace("warmth_stage:", f"dex_id: {dex_id}\nwarmth_stage:")
-    path.write_text(text)
+    text = path.read_text(encoding="utf-8").replace("warmth_stage:", f"dex_id: {dex_id}\nwarmth_stage:")
+    path.write_text(text, encoding="utf-8")
     return relationships.find_person(tmp_path, "20260701090000")
 
 
@@ -292,8 +292,8 @@ def vault_env(env):
     folder = vault / "07-People"
     folder.mkdir()
     path = _person(folder, "Priya Raman", "20260701090000")
-    path.write_text(path.read_text().replace(
-        "warmth_stage:", "dex_id: dex-1\nwarmth_stage:"))
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        "warmth_stage:", "dex_id: dex-1\nwarmth_stage:"), encoding="utf-8")
     return root, vault, folder
 
 
@@ -367,8 +367,8 @@ def test_a_pushed_person_leaves_the_queue_until_they_move_on(vault_env, monkeypa
 
     # now log a contact — there IS something new to say about them
     path = next(folder.glob("*.md"))
-    path.write_text(path.read_text().replace(
-        "last_contact: 2026-06-01", f"last_contact: {date.today().isoformat()}"))
+    path.write_text(path.read_text(encoding="utf-8").replace(
+        "last_contact: 2026-06-01", f"last_contact: {date.today().isoformat()}"), encoding="utf-8")
     with Server(root) as s:
         assert [i["name"] for i in s.req("GET", "/api/push/queue")[1]["items"]] \
             == ["Priya Raman"]

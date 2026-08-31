@@ -82,7 +82,7 @@ def test_probe_duration_reads_real_audio(tmp_path):
 
 def test_probe_duration_is_none_for_a_non_audio_file(tmp_path):
     junk = tmp_path / "notes.txt"
-    junk.write_text("not audio")
+    junk.write_text("not audio", encoding="utf-8")
     assert tr.probe_duration_seconds(junk) is None
 
 

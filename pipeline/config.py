@@ -33,7 +33,7 @@ class Config:
 
 
 def load(path: str | Path = "config.json") -> Config:
-    data = json.loads(Path(path).read_text())
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
     t = data.get("transcription", {})
     w = t.get("whispercpp", {})
     n = data.get("ntfy", {})

@@ -66,7 +66,7 @@ def test_date_resolution_tomorrow_friday_none(vault):
     assert "2026-07-03" in by_due                # Friday after Wednesday capture
     assert None in by_due                        # "sometime" → never guessed
     # written lines: markers only when known, block ids present
-    text = (vault / "vault" / "06-Todos" / "2026-07-01.md").read_text()
+    text = (vault / "vault" / "06-Todos" / "2026-07-01.md").read_text(encoding="utf-8")
     assert "📅 2026-07-02 ⏰ 14:00" in text
     assert "📅 2026-07-03" in text and "⏰" not in text.split("📅 2026-07-03")[1].splitlines()[0]
     assert "^20260701143000-1" in text
@@ -93,10 +93,10 @@ def test_toggle_round_trip(vault):
     [todo] = [t for t in todos.scan(config.vault_path) if t.block_id]
     assert not todo.done
     assert todos.toggle(config.vault_path, todo.block_id) is True
-    line = (todo.file).read_text().splitlines()[todo.line_no]
+    line = (todo.file).read_text(encoding="utf-8").splitlines()[todo.line_no]
     assert line.startswith("- [x]") and f"^{todo.block_id}" in line  # edited in place
     assert todos.toggle(config.vault_path, todo.block_id) is False   # round-trip back
-    assert "- [ ]" in todo.file.read_text()
+    assert "- [ ]" in todo.file.read_text(encoding="utf-8")
     with pytest.raises(LookupError):
         todos.toggle(config.vault_path, "nope")
 
@@ -204,7 +204,7 @@ def _person(vault_path, name, person_id, last_contact, cadence="7"):
         f"---\nid: {person_id}\ntype: person\ncreated: 2026-07-01\nsource: manual\n"
         f"origin: human\nchannels: {{whatsapp: +971}}\ncadence_days: {cadence}\n"
         f"last_contact: {last_contact}\nwarmth_stage: engaging\nstatus: active\n---\n\n"
-        f"# {name}\n\n## Interaction log\n\n- {last_contact} — spoke\n")
+        f"# {name}\n\n## Interaction log\n\n- {last_contact} — spoke\n", encoding="utf-8")
 
 
 def test_people_ride_the_unified_digest_and_never_a_second_push(vault, tmp_path, monkeypatch):
@@ -214,7 +214,7 @@ def test_people_ride_the_unified_digest_and_never_a_second_push(vault, tmp_path,
     _person(config.vault_path, "Priya Raman", "20260701090000", "2026-06-01")
     todos_file = config.vault_path / "06-Todos" / "2026-07-01.md"
     todos_file.parent.mkdir(parents=True, exist_ok=True)
-    todos_file.write_text("# Todos — 2026-07-01\n\n- [ ] send the deck 📅 2026-07-01 ^a-1\n")
+    todos_file.write_text("# Todos — 2026-07-01\n\n- [ ] send the deck 📅 2026-07-01 ^a-1\n", encoding="utf-8")
 
     pushes = []
     monkeypatch.setattr(todos.errors, "ntfy",

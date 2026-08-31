@@ -127,7 +127,7 @@ def seed(vault: Path, today: date | None = None) -> list[Path]:
         if path.exists():
             continue
         path.write_text(_note(name, relationship, company, stage, cadence, days_ago,
-                              action, today, i))
+                              action, today, i), encoding="utf-8")
         written.append(path)
     if written:
         _commit(vault, f"seed: {len(written)} sample people")
@@ -138,7 +138,7 @@ def purge(vault: Path) -> list[Path]:
     folder = vault / "07-People"
     removed = []
     for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
-        if "\nsample: true\n" in path.read_text():
+        if "\nsample: true\n" in path.read_text(encoding="utf-8"):
             path.unlink()
             removed.append(path)
     if removed:
@@ -147,7 +147,7 @@ def purge(vault: Path) -> list[Path]:
 
 
 def _vault_from_config(config_path: Path) -> Path:
-    return Path(json.loads(config_path.read_text())["vault_path"]).expanduser()
+    return Path(json.loads(config_path.read_text(encoding="utf-8"))["vault_path"]).expanduser()
 
 
 def main() -> int:

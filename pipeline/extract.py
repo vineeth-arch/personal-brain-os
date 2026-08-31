@@ -112,7 +112,7 @@ def extract(transcript: str, note_id: str, captured, config, llm_fn=None) -> lis
     todos_dir = Path(config.vault_path) / todos.TODOS_FOLDER
     todos_dir.mkdir(parents=True, exist_ok=True)
     todo_file = todos_dir / f"{day}.md"
-    with todo_file.open("a") as f:
+    with todo_file.open("a", encoding="utf-8") as f:
         if todo_file.stat().st_size == 0:
             f.write(f"# Todos — {day}\n\n")
         for i, item in enumerate(items, start=1):
