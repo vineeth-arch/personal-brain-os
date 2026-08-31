@@ -441,8 +441,10 @@ def test_todos_ranges_and_toggle(env):
 
 def test_build_probes_and_providers(env):
     root, vault, _, _ = env
-    import shutil
-    shutil.copy(Path(__file__).resolve().parents[2] / "checks.json", root / "checks.json")
+    # checks.json is deliberately NOT copied into the state root: it ships with
+    # the code, so the probes must find it via the app root. Copying it here is
+    # what used to hide the container bug where the two roots differ.
+    assert not (root / "checks.json").exists()
     _seed_events(root / "events.db", [
         {"timestamp": "2026-07-01T09:00:00", "file": "/in/a.m4a", "stage": "llm", "status": "failed",
          "message": "provider=gemini-flash outcome=invalid-json"},

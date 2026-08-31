@@ -12,6 +12,8 @@ logs a plain-English event, pushes one ntfy, and the loop moves on.
 from __future__ import annotations
 
 import argparse
+import logging
+import os
 import subprocess
 import time
 from dataclasses import dataclass
@@ -23,10 +25,32 @@ from .events import EventLog
 from . import transcribe as transcribe_mod
 from .transcribe import Transcriber, build_transcriber
 
+log = logging.getLogger("pipeline")
+
 POLL_SECONDS = 5 * 60
 BATCH_SIZE = 25
-DB_PATH = Path("events.db")
-HEARTBEAT_PATH = Path(".watcher-heartbeat")
+
+# Where the pipeline's own state lives. This MUST resolve to the same directory
+# the API uses (api/main.py's state root), or the API reads one events.db while
+# the watcher writes another — which is precisely what the container did:
+# BRAIN_COCKPIT_ROOT=/data for the API, WORKDIR=/app for the watcher, so the
+# cockpit showed "the pipeline has never checked in" forever and the ingest
+# de-dupe table was thrown away on every restart.
+#
+# Unset (the launchd path), both fall back to the CWD — the plists set
+# WorkingDirectory to the repo for the API and the watcher alike, so they have
+# always agreed there.
+DB_NAME = "events.db"
+HEARTBEAT_NAME = ".watcher-heartbeat"
+
+
+def state_root() -> Path:
+    return Path(os.environ.get("BRAIN_COCKPIT_ROOT") or ".")
+
+
+DB_PATH = state_root() / DB_NAME
+HEARTBEAT_PATH = state_root() / HEARTBEAT_NAME
+
 RETRY_ATTEMPTS = 3          # total tries for a transient failure before quarantine
 RETRY_BASE_SECONDS = 2      # backoff: 2s, then 4s, between tries
 

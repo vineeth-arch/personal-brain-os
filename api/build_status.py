@@ -27,22 +27,26 @@ def _dotted(raw: dict, field: str):
     return node
 
 
-def _resolve(root: Path, item: dict, relative: str, config) -> Path:
+def _resolve(app_root: Path, item: dict, relative: str, config) -> Path:
     """Repo-relative by default; `"in": "vault"` anchors to the vault instead,
     so a milestone about a NOTE (my-voice.md) can be probed the same way as one
-    about a source file."""
+    about a source file.
+
+    `app_root` is where the CODE is, never the state mount: these probes ask
+    "did Pass 6 ship?", which is a question about api/, pipeline/ and web/dist —
+    all of which live in the image, not on /data."""
     if item.get("in") == "vault":
         if config is None:
             raise FileNotFoundError("config.json doesn't exist yet")
         return Path(config.vault_path) / relative
-    return root / relative
+    return app_root / relative
 
 
-def _probe_file_exists(root: Path, item: dict, config, _db):
+def _probe_file_exists(app_root: Path, item: dict, config, _db):
     # one "path", or "paths" when a milestone needs several files to be real
     wanted = item.get("paths") or [item["path"]]
     try:
-        missing = [p for p in wanted if not _resolve(root, item, p, config).exists()]
+        missing = [p for p in wanted if not _resolve(app_root, item, p, config).exists()]
     except FileNotFoundError:
         return False, "config.json doesn't exist yet."
     if missing:
@@ -52,11 +56,11 @@ def _probe_file_exists(root: Path, item: dict, config, _db):
     return True, f"{', '.join(wanted)} {verb}."
 
 
-def _probe_file_contains(root: Path, item: dict, config, _db):
+def _probe_file_contains(app_root: Path, item: dict, config, _db):
     """A file existing doesn't prove a feature shipped when the feature was
     added to a file that already existed. This looks for the thing itself."""
     try:
-        path = _resolve(root, item, item["path"], config)
+        path = _resolve(app_root, item, item["path"], config)
     except FileNotFoundError:
         return False, "config.json doesn't exist yet."
     if not path.is_file():
@@ -69,7 +73,7 @@ def _probe_file_contains(root: Path, item: dict, config, _db):
                    else f"{item['path']} exists but doesn't have it yet.")
 
 
-def _probe_config_field_contains(root: Path, item: dict, config, _db):
+def _probe_config_field_contains(app_root: Path, item: dict, config, _db):
     if config is None:
         return False, "config.json doesn't exist yet."
     value = _dotted(config.raw, item["field"])
@@ -78,12 +82,12 @@ def _probe_config_field_contains(root: Path, item: dict, config, _db):
                    else f"{item['field']} doesn't include it yet.")
 
 
-def _probe_endpoint_ok(root: Path, item: dict, *_):
+def _probe_endpoint_ok(app_root: Path, item: dict, *_):
     # this code runs inside the API — answering at all IS the probe
     return True, "You're reading this through the running API."
 
 
-def _probe_config_field_set(root: Path, item: dict, config, _db):
+def _probe_config_field_set(app_root: Path, item: dict, config, _db):
     if config is None:
         return False, "config.json doesn't exist yet."
     value = _dotted(config.raw, item["field"])
@@ -91,7 +95,7 @@ def _probe_config_field_set(root: Path, item: dict, config, _db):
     return ok, (f"{item['field']} is set." if ok else f"{item['field']} is empty in config.json.")
 
 
-def _probe_binary_runs(root: Path, item: dict, config, _db):
+def _probe_binary_runs(app_root: Path, item: dict, config, _db):
     # two shapes: {"config_field": "..."} runs the binary configured in
     # config.json; {"binary": "launchctl", "args": [...]} runs a literal
     # binary — used by the deployment milestones, degrading gracefully on
@@ -116,14 +120,14 @@ def _probe_binary_runs(root: Path, item: dict, config, _db):
         return False, "The binary couldn't be run — see the server log for detail."
 
 
-def _probe_env_var_set(root: Path, item: dict, *_):
+def _probe_env_var_set(app_root: Path, item: dict, *_):
     names = item.get("any_of") or [item["name"]]
     set_names = [n for n in names if os.environ.get(n)]
     ok = bool(set_names)
     return ok, (f"{', '.join(set_names)} set." if ok else "None of the keys are in the environment.")
 
 
-def _probe_git_log_contains(root: Path, item: dict, config, _db):
+def _probe_git_log_contains(app_root: Path, item: dict, config, _db):
     if config is None:
         return False, "config.json doesn't exist yet."
     try:
@@ -137,7 +141,7 @@ def _probe_git_log_contains(root: Path, item: dict, config, _db):
         return False, "The vault's git history couldn't be read."
 
 
-def _probe_vault_query(root: Path, item: dict, config, db_path: Path):
+def _probe_vault_query(app_root: Path, item: dict, config, db_path: Path):
     if config is None:
         return False, "config.json doesn't exist yet."
     query = item["query"]
@@ -164,7 +168,7 @@ def _probe_vault_query(root: Path, item: dict, config, db_path: Path):
         ok = n >= item.get("min", 1)
         return ok, (f"{n} capture(s) fully processed." if n else "No capture has been processed yet.")
     if query == "clock_started":
-        inbox_ok, _ = _probe_vault_query(root, {"query": "capture_inbox_empty"}, config, db_path)
+        inbox_ok, _ = _probe_vault_query(app_root, {"query": "capture_inbox_empty"}, config, db_path)
         processed = _processed_count(db_path)
         ok = inbox_ok and processed >= 1
         return ok, ("The 30-day clock is running." if ok
@@ -202,8 +206,28 @@ _PROBES = {
 }
 
 
-def run_probes(root: Path, config, db_path: Path) -> list[dict]:
-    manifest = json.loads((root / "checks.json").read_text())
+class ManifestError(Exception):
+    """checks.json is missing or unreadable — carries the three plain-English
+    parts (CLAUDE.md §5) so the route never leaks a bare traceback."""
+
+    def __init__(self, cause: str):
+        self.envelope = {
+            "what": "The build tracker's checklist couldn't be read.",
+            "cause": cause,
+            "todo": "Restore checks.json from git at the repo root, then reload "
+                    "this screen.",
+        }
+        super().__init__(cause)
+
+
+def run_probes(app_root: Path, config, db_path: Path) -> list[dict]:
+    manifest_path = app_root / "checks.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except OSError:
+        raise ManifestError(f"{manifest_path} isn't there.")
+    except json.JSONDecodeError:
+        raise ManifestError(f"{manifest_path} exists but isn't valid JSON.")
     results = []
     for item in manifest["items"]:
         probe = _PROBES.get(item["type"])
@@ -211,7 +235,7 @@ def run_probes(root: Path, config, db_path: Path) -> list[dict]:
             done, detail = False, f"Unknown probe type '{item['type']}'."
         else:
             try:
-                done, detail = probe(root, item, config, db_path)
+                done, detail = probe(app_root, item, config, db_path)
             except Exception:
                 log.exception("probe %s failed", item["id"])
                 done, detail = False, "The check itself failed — see the server log."

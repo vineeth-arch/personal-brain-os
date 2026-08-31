@@ -37,8 +37,18 @@ from . import (build_status, google, integrations, notes, people as people_mod,
 log = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
 
-# repo root by default; BRAIN_COCKPIT_ROOT overrides it (deploy/test knob)
+# Two different roots, deliberately. In a dev checkout they are the same
+# directory, which is why they were conflated; in the container they are not.
+#
+#   STATE root — config.json, events.db, the heartbeat, backups/. Mutable,
+#     persisted, mounted (/data). BRAIN_COCKPIT_ROOT points here, and the
+#     watcher anchors to the same env var (pipeline/watcher.py) so both
+#     processes read and write ONE database.
+#   APP root — web/dist, checks.json, and the source files the build probes
+#     inspect. Read-only, shipped inside the image (/app), and always found
+#     relative to this file rather than to a mount or the CWD.
 DEFAULT_ROOT = Path(os.environ.get("BRAIN_COCKPIT_ROOT") or Path(__file__).resolve().parents[1])
+APP_ROOT = Path(__file__).resolve().parents[1]
 
 
 class Envelope(Exception):
@@ -166,8 +176,9 @@ class NewPersonBody(BaseModel):
     channel: ChannelBody
 
 
-def create_app(root: Path | None = None) -> FastAPI:
-    root = Path(root or DEFAULT_ROOT)
+def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAPI:
+    root = Path(root or DEFAULT_ROOT)          # state: config, db, heartbeat, backups
+    app_root = Path(app_root or APP_ROOT)      # code: web/dist, checks.json, probes
 
     # Startup self-check (Pass 5): refuse to boot on structural problems and
     # print exactly what to fix. Softer conditions (no whisper binary, no ntfy)
@@ -180,6 +191,7 @@ def create_app(root: Path | None = None) -> FastAPI:
 
     app = FastAPI(title="Brain Cockpit API", docs_url=None, redoc_url=None, openapi_url=None)
     app.state.root = root
+    app.state.app_root = app_root
     app.state.run_proc = None
     app.state.run_lock = threading.Lock()
     app.state.integrations_cache = {}
@@ -189,8 +201,11 @@ def create_app(root: Path | None = None) -> FastAPI:
     app.state.build_cache = {}
 
     config_path = root / "config.json"
-    db_path = root / watcher.DB_PATH
-    heartbeat_path = root / watcher.HEARTBEAT_PATH
+    # by NAME, not by the watcher's resolved path — the watcher anchors those to
+    # BRAIN_COCKPIT_ROOT, and joining an already-absolute path onto `root` here
+    # would silently ignore an explicit create_app(root=...) in a test
+    db_path = root / watcher.DB_NAME
+    heartbeat_path = root / watcher.HEARTBEAT_NAME
 
     def load_config():
         try:
@@ -348,7 +363,10 @@ def create_app(root: Path | None = None) -> FastAPI:
         now = time.monotonic()
         if not fresh and cache.get("payload") and now - cache.get("ts", 0) < 60:
             return cache["payload"]
-        items = build_status.run_probes(root, config, db_path)
+        try:
+            items = build_status.run_probes(app_root, config, db_path)
+        except build_status.ManifestError as e:
+            raise Envelope(500, **e.envelope)
         unfinished = next((i for i in items if not i["done"]), None)
         payload = {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -376,8 +394,12 @@ def create_app(root: Path | None = None) -> FastAPI:
             outcome = fields.get("outcome", "")
             if outcome == "served":
                 st["served"] += 1
-                if "confidence" in fields:
+                # the message is parsed log text, not a schema — a malformed
+                # token must not 500 the whole stats page
+                try:
                     st["confidences"].append(float(fields["confidence"]))
+                except (KeyError, ValueError):
+                    pass
             elif outcome in ("invalid-json", "schema"):
                 st["invalid_json"] += 1
                 st["fell_through"] += 1
@@ -675,8 +697,17 @@ def create_app(root: Path | None = None) -> FastAPI:
             # ponytail: a --loop watcher may poll the same inbox concurrently;
             # sqlite's busy timeout covers the db, double-processing is a
             # pre-existing pipeline property, not an API concern.
+            #
+            # cwd is the APP root: `-m pipeline` has to import the package, and
+            # in the container the state root (/data) holds no code, so running
+            # from there died with ModuleNotFoundError into a DEVNULL'd stderr —
+            # "Run now" silently did nothing. The state root travels in the
+            # environment and in --config instead, so this run writes the same
+            # events.db the loop and the API use.
+            env = {**os.environ, "BRAIN_COCKPIT_ROOT": str(root)}
             app.state.run_proc = subprocess.Popen(
-                [sys.executable, "-m", "pipeline"], cwd=root,
+                [sys.executable, "-m", "pipeline", "--config", str(config_path)],
+                cwd=app_root, env=env,
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         return {"started": True}
 
@@ -960,7 +991,7 @@ def create_app(root: Path | None = None) -> FastAPI:
 
     # ---- static app shell (mounted last so /api/* wins) ------------------------------
 
-    dist = root / "web" / "dist"
+    dist = app_root / "web" / "dist"
     if dist.is_dir():
         app.mount("/", StaticFiles(directory=dist, html=True), name="app")
     else:
