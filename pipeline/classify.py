@@ -41,9 +41,14 @@ class Classification:
     tags: list[str] = field(default_factory=list)
     confidence: float = 1.0
     needs_review: bool = False
-    routed_by: str = "tag"          # "tag" | "llm"
+    routed_by: str = "tag"          # "tag" | "llm" | "plaud"
     provider: str = ""              # which model served the classification
     attempts: list = field(default_factory=list)  # llm.Attempt rows for stats
+    # raw speaker labels exactly as the device wrote them — only ever set on the
+    # deterministic "plaud" route (SCHEMA-REFERENCE.md §7 Conversation); every
+    # other route leaves this empty, including a single-speaker Plaud memo,
+    # which classifies normally and carries no speaker frontmatter at all.
+    speakers: list[str] = field(default_factory=list)
 
 
 def _spoken_tag(transcript: str) -> str | None:

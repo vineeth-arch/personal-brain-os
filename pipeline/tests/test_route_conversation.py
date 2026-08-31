@@ -28,6 +28,7 @@ class _Cls:
     categories: list = []
     subjects: list = []
     tags: list = []
+    speakers: list = []
     confidence = 1.0
 
 

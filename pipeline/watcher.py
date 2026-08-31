@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import (archive, classify as classify_mod, config as config_mod, enrich, errors,
-               extract, ingest, intake, route, todos, transliterate)
+               extract, ingest, intake, plaud, relationships, route, todos, transliterate)
 from .events import EventLog
 from . import transcribe as transcribe_mod
 from .transcribe import Transcriber, build_transcriber
@@ -117,10 +117,24 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
     res = Result(name=item.path.name)
     try:
         # Stage 2 — transcribe (text skips inside _transcribe); transient
-        # failures are retried with backoff before they can reach quarantine
+        # failures are retried with backoff before they can reach quarantine.
+        #
+        # A Plaud sidecar transcript (ingest.sweep deposits it beside the
+        # audio) short-circuits the engine entirely — no whisper, no OpenAI
+        # call, no chunking. It carries speaker labels a re-transcription
+        # would throw away, so it also decides Stage 3 below. No sidecar, or
+        # an empty one, falls straight through to the ordinary path: a
+        # recording still processing on Plaud's side still yields a note.
         t0 = time.monotonic()
-        transcript = _transcribe_with_retry(item, deps, events)
-        events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000))
+        plaud_transcript = (plaud.read_inbox_sidecars(item.path)[0]
+                            if item.kind == "audio" else None)
+        if plaud_transcript is not None and plaud_transcript.body:
+            transcript = plaud_transcript.body
+            events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000),
+                       message="source=plaud speakers=" + ",".join(plaud_transcript.speakers))
+        else:
+            transcript = _transcribe_with_retry(item, deps, events)
+            events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000))
 
         # Stage 2b — transliterate. Hindi speech comes back in Devanagari; the
         # note leads with Roman Hindi/Hinglish and keeps the original below it.
@@ -165,9 +179,29 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
                                               confidence=1.0, needs_review=False, routed_by="link")
             status = "ok"
         else:
-            # Stage 3 — classify
+            # Stage 3 — classify. A Plaud transcript carrying two or more
+            # speakers IS a conversation — deterministic, no model call spent
+            # deciding it. Attendees are only SUGGESTED here (matched against
+            # 07-People) and logged to events.db, never written to
+            # frontmatter: confirming them is a human act in triage, which is
+            # what actually appends the interaction-log line (CLAUDE.md §3 —
+            # no AI bulk-write reaches a person note unreviewed). The note
+            # still parks in 00-Inbox at needs-review — not because the TYPE
+            # is in doubt, but because the attendee suggestions are.
             t0 = time.monotonic()
-            cls = classify_mod.classify(item, transcript, config, deps.classifier_fn)
+            is_conversation = plaud_transcript is not None and plaud_transcript.is_conversation
+            if is_conversation:
+                people = relationships.load_people(config.vault_path)
+                suggested = plaud.match_people(plaud_transcript.speakers, people)
+                cls = classify_mod.Classification(
+                    type="conversation", title=item.name, confidence=1.0,
+                    needs_review=True, routed_by="plaud", speakers=plaud_transcript.speakers)
+                if suggested:
+                    events.log(fkey, "attendees", "ok",
+                              message="suggested=" + ",".join(
+                                  f"{label}:{pid}" for label, pid in suggested.items()))
+            else:
+                cls = classify_mod.classify(item, transcript, config, deps.classifier_fn)
             status = "needs_review" if cls.needs_review else "ok"
             provider_note = f" provider={cls.provider}" if cls.provider else ""
             events.log(fkey, "classify", status, int((time.monotonic() - t0) * 1000),
@@ -180,7 +214,8 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
 
             # Stage 4 — route
             t0 = time.monotonic()
-            paths = route.route(item, cls, body, config.vault_path, duration_min)
+            paths = route.route(item, cls, body, config.vault_path, duration_min,
+                                transcript_source="plaud" if is_conversation else None)
             events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
                        message=f"wrote {', '.join(p.name for p in paths)}")
 

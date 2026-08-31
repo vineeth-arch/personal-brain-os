@@ -108,9 +108,19 @@ def _yaml_list(values: list[str]) -> str:
     return "\n" + "\n".join(f"  - {v}" for v in items)
 
 
-def build_frontmatter(item, cls, duration_min: int | None = None) -> str:
+def build_frontmatter(item, cls, duration_min: int | None = None,
+                      transcript_source: str | None = None) -> str:
     """cls is a classify.Classification. Body transcript is human-origin; AI-added
-    metadata is flagged via meta_origin (SCHEMA §1 provenance firewall)."""
+    metadata is flagged via meta_origin (SCHEMA §1 provenance firewall).
+
+    `transcript_source` ("plaud" | "whisper") and cls.speakers are Conversation-
+    only extras (SCHEMA-REFERENCE.md §7) — a single-speaker Plaud memo classifies
+    normally and carries neither; the universal `source: plaud` field already
+    says everything worth knowing about where an ordinary capture came from.
+    `attendees` is written here as an always-EMPTY list: it is the one field
+    the pipeline may suggest (via events.db, never frontmatter) but must never
+    write — filling it is a human confirming the suggestion in triage, which is
+    also what appends the interaction-log line (CLAUDE.md §3)."""
     note_id = item.captured.strftime("%Y%m%d%H%M%S")
     created = item.captured.strftime("%Y-%m-%d")
     if cls.needs_review:
@@ -131,6 +141,10 @@ def build_frontmatter(item, cls, duration_min: int | None = None) -> str:
         f"subjects: {_yaml_links(cls.subjects)}",
         f"tags: {_yaml_list(cls.tags)}",
     ]
+    if cls.type == "conversation":
+        lines.append("attendees: []")
+        lines.append(f"speakers: {_yaml_list(cls.speakers)}")
+        lines.append(f"transcript_source: {_scalar(transcript_source or '')}")
     if duration_min is not None:
         # how long the recording ran — the one audio fact worth keeping in
         # frontmatter, so a 2-hour meeting reads differently from a 40-second memo
@@ -140,13 +154,13 @@ def build_frontmatter(item, cls, duration_min: int | None = None) -> str:
 
 
 def route(item, cls, transcript: str, vault_path: Path,
-          duration_min: int | None = None) -> list[Path]:
+          duration_min: int | None = None, transcript_source: str | None = None) -> list[Path]:
     """Write the note(s) and return the paths written."""
     folder = INBOX_FOLDER if cls.needs_review else TYPE_FOLDER.get(cls.type, INBOX_FOLDER)
     dest_dir = Path(vault_path) / folder
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    frontmatter = build_frontmatter(item, cls, duration_min)
+    frontmatter = build_frontmatter(item, cls, duration_min, transcript_source)
     created = item.captured.strftime("%Y-%m-%d")
     base = f"{created}-{_kebab(cls.title)}"
     path = dest_dir / f"{base}.md"
