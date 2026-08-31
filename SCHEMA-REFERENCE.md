@@ -1,6 +1,6 @@
 # **SCHEMA-REFERENCE — the canonical schema (lock before note \#1)**
 
-**This is the single source of truth for structure.** Every note, every script, every AI routing pass reads from here. These conventions are **migrations if changed late** — they're locked at Phase 0.4, before note \#1. Features can change; this should not. Version: 1.1 · 2026-08-31
+**This is the single source of truth for structure.** Every note, every script, every AI routing pass reads from here. These conventions are **migrations if changed late** — they're locked at Phase 0.4, before note \#1. Features can change; this should not. Version: 1.2 · 2026-08-31
 
 ---
 
@@ -53,6 +53,7 @@ Use these relation types in `wiki/` notes; each edge points to a fixed `id`: `su
 | project | `active → slipping → done | dropped` |
 | person | `active → cold → dormant` |
 | musing/learning/insight | `active → archived` |
+| company | `active → archived` |
 
 ## **7\. PER-DOMAIN SCHEMAS (extra frontmatter on top of universal)**
 
@@ -117,6 +118,16 @@ status: active            \# active | cold | dormant
 
 Body: `## Context` · `## Needs` · `## Interaction log` (append-only, dated) · `## Next action`.
 
+### **Company (`11-Companies`) — written and updated by handshake**
+
+yaml  
+type: company  
+name:  
+domain:  
+status: active            \# active | archived
+
+Body: `## About` · `## People` (one line per person, `- [[person-slug]] — role (from date)`) · `## Facts` (append-only, dated) · `## Projects`. Person notes back-link via frontmatter `company: "[[company-slug]]"` (already `PATCHABLE` on the person side).
+
 ## **8\. CAPTURE / PROCESSING RULES**
 
 * **One recording \= one note, kept at FULL LENGTH. NO splitting into atomic notes.** The watcher keeps the transcript whole in the body; it only *additionally* extracts action items to `06-Todos/<date>.md`.  
@@ -147,6 +158,7 @@ Body: `## Context` · `## Needs` · `## Interaction log` (append-only, dated) ·
 | decision | `09-Decisions` |
 | principle | `10-Principles` |
 | insight | `wiki/` |
+| company | `11-Companies` |
 
 `raw/` is user-managed and outside this table — the pipeline never writes there.
 
