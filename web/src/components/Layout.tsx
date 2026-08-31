@@ -32,6 +32,20 @@ export function Layout({ route, children }: Props) {
         <div className="mt-1 flex gap-2">
           <ThemeToggle />
           <a
+            href="#/search"
+            aria-label="Search"
+            aria-current={route === "search" ? "page" : undefined}
+            className={`hover:border-emphasis flex h-11 w-11 items-center justify-center rounded-full border ${
+              route === "search" ? "border-emphasis text-emphasis" : "border-subtle text-subtle"
+            }`}
+          >
+            {/* magnifier, drawn inline — no icon lib */}
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <circle cx="10.5" cy="10.5" r="6.5" stroke="currentColor" strokeWidth="1.8" />
+              <path d="m20 20-4.6-4.6" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
+            </svg>
+          </a>
+          <a
             href="#/integrations"
             aria-label="Integrations"
             aria-current={route === "integrations" ? "page" : undefined}

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import sys
+from urllib.parse import unquote
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -286,6 +287,23 @@ TODO_ITEMS = [] if MODE_EMPTY else [
     {"id": "20260703140000-1", "task": "call the dentist", "due": date.today().isoformat(),
      "time": "14:00", "done": False, "overdue": False,
      "file": f"06-Todos/{date.today().isoformat()}.md"},
+]
+
+# Search fixtures (Pass Q) — a static set standing in for a real whole-vault
+# scan; each entry names which field the fixture's own `q` matched, since the
+# mock has no real vault to search.
+SEARCH_ITEMS = [] if MODE_EMPTY else [
+    {"id": "20260703140000", "type": "resource", "title": "Weeknight dal",
+     "file": "04-Resources/2026-07-03-weeknight-dal.md", "folder": "04-Resources",
+     "excerpt": "Weeknight dal", "matched_in": "title"},
+    {"id": "20260701090000", "type": "person", "title": "Priya Raman",
+     "file": "07-People/2026-07-01-priya-raman.md", "folder": "07-People",
+     "excerpt": "- 2026-06-01 — coffee at Alserkal, talked about the studio residency",
+     "matched_in": "body"},
+    {"id": "20260620090000", "type": "learning", "title": "Spaced repetition retrieval",
+     "file": "03-Learnings/2026-06-20-spaced-repetition.md", "folder": "03-Learnings",
+     "excerpt": "…the trellis pattern maps neatly onto retrieval practice…",
+     "matched_in": "body"},
 ]
 
 # Resource OS fixtures (Pass 6, mocked in Pass H) — the six /api/resources*
@@ -649,6 +667,21 @@ class Handler(BaseHTTPRequestHandler):
                 })
             if path == "/api/todos":
                 return self._send(200, {"items": TODO_ITEMS})
+            if path == "/api/search":
+                q = self.path.split("?")[1] if "?" in self.path else ""
+                params = dict(p.split("=", 1) for p in q.split("&") if "=" in p)
+                needle = unquote(params.get("q", "")).strip()
+                if len(needle) < 2:
+                    return self._send(400, {"error": {
+                        "what": "That search is too short to be useful.",
+                        "cause": "Search needs at least 2 characters.",
+                        "todo": "Type a bit more, then search again."}})
+                needle_lower = needle.lower()
+                hits = [item for item in SEARCH_ITEMS
+                       if needle_lower in item["title"].lower()
+                       or needle_lower in item["excerpt"].lower()]
+                limit = int(params.get("limit", 50) or 50)
+                return self._send(200, {"items": hits[:limit]})
             if path == "/api/resources":
                 q = self.path.split("?")[1] if "?" in self.path else ""
                 params = dict(p.split("=", 1) for p in q.split("&") if "=" in p)

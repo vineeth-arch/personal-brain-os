@@ -582,6 +582,46 @@ try {
   assert.match(photoText, new RegExp(`!\\[\\[attachments/${attachment}\\]\\]`));
   console.log("✓ Photo capture: browser downscale → attachments/ → honest undescribed resource note");
 
+  // ---- 12. Whole-vault search (Pass Q) -------------------------------------------
+  const searchWord = "trellisworthy";
+  const searchCaptureRes = await fetch(`${BASE}/api/capture`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ text: `a ${searchWord} garden structure idea`, tag: "idea" }),
+  });
+  assert.equal(searchCaptureRes.status, 201, "seed capture for search did not land");
+  const searchRunRes = await fetch(`${BASE}/api/run`, {
+    method: "POST", headers: { Authorization: `Bearer ${TOKEN}` },
+  });
+  assert.equal(searchRunRes.status, 202, "pipeline run did not start for the search fixture");
+
+  // idea → musing (classify.TAG_TO_TYPE)
+  const musingsDir = path.join(root, "vault", "02-Musings");
+  let searchNoteFound = false;
+  for (let i = 0; i < 100; i++) {
+    if (fs.existsSync(musingsDir) &&
+        fs.readdirSync(musingsDir).some((f) =>
+          fs.readFileSync(path.join(musingsDir, f), "utf8").includes(searchWord))) {
+      searchNoteFound = true;
+      break;
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(searchNoteFound, "the search fixture note never landed in 02-Musings");
+
+  await page.goto(`${BASE}/#/search`);
+  await page.getByLabel("Search everything in the vault").fill(searchWord);
+  await page.getByText(new RegExp(`${searchWord}`, "i")).first().waitFor();
+  await page.getByText(/^1 result$/).waitFor();
+  const obsidianHref = await page.getByRole("link", { name: "Open in Obsidian" }).first().getAttribute("href");
+  assert.ok(obsidianHref && obsidianHref.startsWith("obsidian://open?vault="),
+    `search result's Obsidian link was ${obsidianHref}`);
+
+  // a too-short query shows the "keep typing" hint, not a request at all
+  await page.getByLabel("Search everything in the vault").fill("a");
+  await page.getByText(`Keep typing — at least 2 characters.`).waitFor();
+  console.log("✓ Whole-vault search finds a seeded note and links back to Obsidian");
+
   console.log("\nE2E: all checks passed.");
 } catch (err) {
   failed = true;

@@ -467,3 +467,17 @@ export interface PushQueueItem extends Person {
   targets: PushTarget[];
   last_pushed: string | null;
 }
+
+// ---- Search (Pass Q) --------------------------------------------------------
+
+export type SearchMatchedIn = "title" | "frontmatter" | "body";
+
+export interface SearchHit {
+  id: string;
+  type: NoteType | "";
+  title: string;
+  file: string;   // vault-relative, for the obsidian:// deep link
+  folder: string; // top-level vault folder — e.g. "04-Resources"
+  excerpt: string;
+  matched_in: SearchMatchedIn;
+}

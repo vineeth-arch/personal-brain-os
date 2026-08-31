@@ -997,3 +997,36 @@ away, then commits again after if anything was removed.
   "message": "Removed 4 sample notes older than a week. Your real notes were "
              "never touched, and the vault was git-committed first." }
 ```
+
+## Search (Pass Q)
+
+### `GET /api/search?q=&limit=`
+
+Whole-vault search: a live filesystem scan on every request — no index, no
+note content in SQLite (CLAUDE.md §1). At personal-vault scale (well under
+5,000 notes) this is comfortably under 100ms.
+
+Every `*.md` under the vault is scanned except `raw/` (source recordings; the
+pipeline never reads it either) and `_System/` (logs, not knowledge) — the
+same boundary the pipeline itself respects. A file without frontmatter isn't
+a note the pipeline wrote and is skipped rather than guessed at.
+
+`q` is matched case-insensitively as a substring against the title
+(frontmatter `title:`, falling back to the filename), every frontmatter value
+except `id`, and the full body — in that priority order. Results are ranked
+title-match, then frontmatter-match, then body-match; within a rank, by file
+path (a stable order, not a relevance score). `limit` caps at 100, defaults
+to 50.
+
+```json
+{ "items": [ {
+  "id": "20260703140000", "type": "resource", "title": "Weeknight dal",
+  "file": "04-Resources/2026-07-03-weeknight-dal.md", "folder": "04-Resources",
+  "excerpt": "Weeknight dal", "matched_in": "title"
+} ] }
+```
+
+`excerpt` is the matched line (frontmatter: `key: value`; body: the matched
+line trimmed to roughly 160 characters centered on the match), never the
+whole note. `matched_in` is one of `title | frontmatter | body`. `q` under 2
+characters → 400 envelope ("too short to be useful").

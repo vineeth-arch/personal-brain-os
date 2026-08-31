@@ -782,3 +782,85 @@ def sample_titles(paths: list[Path]) -> list[str]:
         fm, _ = parse_frontmatter(read_note(path) or "")
         titles.append(_note_title(path, fm))
     return titles
+
+
+# ---- whole-vault search (Pass Q) --------------------------------------------
+# A filesystem scan, not an index — no note content ever touches SQLite
+# (CLAUDE.md §1). At personal-vault scale (a few thousand notes) this is well
+# under 100ms; there is nothing here worth caching.
+
+# raw/ (source recordings — the pipeline never reads it, SCHEMA-REFERENCE.md
+# §1) and _System/ (logs, not knowledge) are excluded — the same boundary the
+# pipeline itself respects.
+SEARCH_EXCLUDED_FOLDERS = {"raw", "_System"}
+SEARCH_MIN_QUERY_LEN = 2
+SEARCH_DEFAULT_LIMIT = 50
+SEARCH_MAX_LIMIT = 100
+SEARCH_EXCERPT_RADIUS = 80
+
+
+def _search_excerpt(text: str, q_lower: str) -> str:
+    """The matched line, trimmed to ~160 chars centered on the match — never
+    the whole body. Falls back to the start of the text if, somehow, the
+    match isn't found on any single line (shouldn't happen: body_match is
+    only set when `q_lower in body.lower()`, but a line-by-line re-scan is
+    cheap insurance against a body containing a comparison client wouldn't
+    naturally split on lines)."""
+    for line in text.splitlines():
+        idx = line.lower().find(q_lower)
+        if idx == -1:
+            continue
+        start = max(0, idx - SEARCH_EXCERPT_RADIUS)
+        end = min(len(line), idx + len(q_lower) + SEARCH_EXCERPT_RADIUS)
+        prefix = "…" if start > 0 else ""
+        suffix = "…" if end < len(line) else ""
+        return f"{prefix}{line[start:end].strip()}{suffix}"
+    return text.strip()[: SEARCH_EXCERPT_RADIUS * 2]
+
+
+def search_vault(vault: Path, q: str, limit: int = SEARCH_DEFAULT_LIMIT) -> list[dict]:
+    """Every note whose title, frontmatter values, or body contains `q`
+    (case-insensitive substring), ranked title-match > frontmatter-match >
+    body-match, then by file path for a stable order. `limit` is capped by
+    the caller at SEARCH_MAX_LIMIT; the `q` length floor is enforced by the
+    caller too (SEARCH_MIN_QUERY_LEN) — this function trusts its input.
+    """
+    q_lower = q.lower()
+    hits: list[tuple[int, str, dict]] = []
+    for path in sorted(vault.rglob("*.md")):
+        rel_parts = path.relative_to(vault).parts
+        if not rel_parts or rel_parts[0] in SEARCH_EXCLUDED_FOLDERS:
+            continue
+        if any(part.startswith(".") for part in rel_parts):
+            continue
+        text = read_note(path)
+        if text is None:
+            continue
+        fm, body = parse_frontmatter(text)
+        if not fm:
+            continue   # not a note the pipeline wrote — nothing reliable to search
+        title = _note_title(path, fm)
+
+        if q_lower in title.lower():
+            matched_in, rank, excerpt = "title", 0, title
+        else:
+            fm_hit = next((f"{k}: {v}" for k, v in fm.items()
+                          if k != "id" and q_lower in str(v).lower()), None)
+            if fm_hit is not None:
+                matched_in, rank, excerpt = "frontmatter", 1, fm_hit
+            elif q_lower in body.lower():
+                matched_in, rank, excerpt = "body", 2, _search_excerpt(body, q_lower)
+            else:
+                continue
+
+        hits.append((rank, str(path), {
+            "id": fm.get("id", ""),
+            "type": fm.get("type", ""),
+            "title": title,
+            "file": "/".join(rel_parts),
+            "folder": rel_parts[0],
+            "excerpt": excerpt,
+            "matched_in": matched_in,
+        }))
+    hits.sort(key=lambda h: (h[0], h[1]))
+    return [h[2] for h in hits[:limit]]

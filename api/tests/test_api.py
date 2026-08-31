@@ -351,6 +351,24 @@ def test_capture_audio_same_minute_collision(env):
     assert all(i.tag == "todo" for i in intake.poll(inbox))
 
 
+def test_search_endpoint(env):
+    root, vault, _, _ = env
+    (vault / "02-Musings" / "a.md").write_text(
+        "---\nid: 20260701090000\ntype: musing\ntitle: garden trellis idea\n"
+        "---\n\nsome body text\n", encoding="utf-8")
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/search?q=trellis")
+        assert code == 200
+        assert len(body["items"]) == 1
+        assert body["items"][0]["id"] == "20260701090000"
+        assert body["items"][0]["matched_in"] == "title"
+        # short query → 400 envelope
+        code, body = s.req("GET", "/api/search?q=a")
+        assert code == 400 and set(body["error"]) == {"what", "cause", "todo"}
+        # no query at all → also too short
+        assert s.req("GET", "/api/search")[0] == 400
+
+
 def test_failed_and_retry(env):
     root, vault, inbox, failed = env
     (failed / "memo.m4a").write_text("audio", encoding="utf-8")

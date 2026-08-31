@@ -38,6 +38,7 @@ import type {
   SampleCount,
   SampleScope,
   SamplePurgeResult,
+  SearchHit,
   Status,
   Streak,
   VoiceStatus,
@@ -165,6 +166,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
+  // Pass Q: whole-vault search — a filesystem scan server-side, never a
+  // SQLite index of note content.
+  search: (q: string, limit = 50) =>
+    request<{ items: SearchHit[] }>(
+      `/api/search?q=${encodeURIComponent(q)}&limit=${limit}`,
+    ),
   health: (base: string) => fetch(`${base.replace(/\/+$/, "")}/api/health`, { cache: "no-store" }),
   status: () => request<Status>("/api/status"),
   review: () => request<{ items: ReviewItem[] }>("/api/review"),
