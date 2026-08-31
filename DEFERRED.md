@@ -55,3 +55,6 @@
 - Pass V4: EXIF capture date in frontmatter — photo notes use the upload timestamp; the original shot date (if any) isn't read out of the file.
 - Pass V4: multi-image batch share (several photos in one Shortcut/PWA action) — today's photo button and Shortcut step both handle exactly one image per share.
 - Pass H1: vault-sync via Syncthing for non-Railway (VPS/Docker) deploys — GO-LIVE.md's §5 already covers this via folder-level sync; a git-based VAULT_GIT_REMOTE is the Railway-specific fix for a mounted volume no Obsidian ever opens directly.
+- Pass Q: semantic/embedding search — the search is a literal case-insensitive substring scan (title/frontmatter/body); "gift ideas" won't find a note about "presents". A real semantic layer needs an embedding store, which is a new kind of persisted state this pass deliberately didn't add.
+- Pass Q: search result relevance ranking beyond title > frontmatter > body — within one rank, results sort by file path, not by how well they match (word proximity, match count, recency).
+- Pass Q: search doesn't cover `06-Todos/` daily files (those are checkbox lines, not frontmatter notes) or the `_System/my-voice.md` writing sample — both are intentionally out of scope, not an oversight, but worth a line if that ever surprises someone.
