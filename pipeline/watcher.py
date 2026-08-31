@@ -12,6 +12,7 @@ logs a plain-English event, pushes one ntfy, and the loop moves on.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import subprocess
@@ -197,9 +198,11 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
                     type="conversation", title=item.name, confidence=1.0,
                     needs_review=True, routed_by="plaud", speakers=plaud_transcript.speakers)
                 if suggested:
+                    # JSON, not a hand-rolled "label:id,label:id" line — a
+                    # speaker's name is untrusted, spoken-transcript text and
+                    # can legitimately contain a comma or colon of its own.
                     events.log(fkey, "attendees", "ok",
-                              message="suggested=" + ",".join(
-                                  f"{label}:{pid}" for label, pid in suggested.items()))
+                              message=json.dumps({"suggested": suggested}))
             else:
                 cls = classify_mod.classify(item, transcript, config, deps.classifier_fn)
             status = "needs_review" if cls.needs_review else "ok"

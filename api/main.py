@@ -108,6 +108,12 @@ def _generic_envelope(status: int) -> dict:
 
 class ApproveBody(BaseModel):
     type: str
+    # confirmed 07-People ids — the pipeline only ever SUGGESTS attendees
+    # (via events.db, GET /api/review); a human confirming here is what
+    # actually writes them (CLAUDE.md §3). Ignored for anything but a
+    # conversation note — omitting it behaves exactly as before this field
+    # existed.
+    attendees: list[str] = []
 
 
 class CaptureBody(BaseModel):
@@ -423,7 +429,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 f"'{body.type}' isn't one of the 11 types in SCHEMA-REFERENCE.md.",
                 "Pick one of the type chips and try again.")
         try:
-            moved_to = notes.approve(config.vault_path, note_id, body.type)
+            moved_to = notes.approve(config.vault_path, note_id, body.type, body.attendees)
         except LookupError:
             raise Envelope(
                 404, "That note isn't waiting for review anymore.",

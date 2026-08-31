@@ -61,6 +61,15 @@ export interface Status {
   counts: StatusCounts;
 }
 
+// A speaker the pipeline matched against 07-People (pipeline/plaud.match_people)
+// — a SUGGESTION only. It is never written to the note or to the person
+// until a human confirms it via approve()'s attendees list (CLAUDE.md §3).
+export interface SuggestedAttendee {
+  id: string;
+  label: string;   // the raw speaker label as the device wrote it
+  name: string;     // the matched person's name, or `label` when unmatched
+}
+
 export interface ReviewItem {
   id: string;
   file: string;
@@ -69,6 +78,9 @@ export interface ReviewItem {
   suggested_type: NoteType;
   confidence: number;
   created: string;
+  // always present ([] when there is nothing to suggest — never only on
+  // type: conversation), so the client never has to special-case a missing key
+  suggested_attendees: SuggestedAttendee[];
 }
 
 export interface FailedItem {

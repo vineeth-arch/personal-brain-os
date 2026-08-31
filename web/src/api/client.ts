@@ -168,10 +168,13 @@ export const api = {
   health: (base: string) => fetch(`${base.replace(/\/+$/, "")}/api/health`, { cache: "no-store" }),
   status: () => request<Status>("/api/status"),
   review: () => request<{ items: ReviewItem[] }>("/api/review"),
-  approve: (id: string, type: NoteType) =>
+  // attendees: confirmed 07-People ids from the triage screen's chips — the
+  // pipeline only ever SUGGESTS them; this is what actually writes them
+  // (CLAUDE.md §3). Ignored server-side for anything but type: conversation.
+  approve: (id: string, type: NoteType, attendees: string[] = []) =>
     request<{ ok: boolean; moved_to: string }>(`/api/review/${id}/approve`, {
       method: "POST",
-      body: JSON.stringify({ type }),
+      body: JSON.stringify({ type, attendees }),
     }),
   capture: (text: string, tag: CaptureTag | null) =>
     request<{ id: string; status: string }>("/api/capture", {

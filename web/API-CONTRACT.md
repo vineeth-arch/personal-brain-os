@@ -73,19 +73,38 @@ apart from "bad token".
   "excerpt": "first ~300 chars of the note body",
   "suggested_type": "learning",
   "confidence": 0.7,
-  "created": "2026-07-03"
+  "created": "2026-07-03",
+  "suggested_attendees": []
 } ] }
 ```
 
-Notes whose classification fell below the confidence threshold. `id` is the
-immutable frontmatter id; `confidence` is 0..1.
+Notes whose classification fell below the confidence threshold, PLUS every
+`type: conversation` note (its type isn't in doubt — two-or-more speakers in
+a Plaud transcript decide that deterministically — but it still parks here so
+attendees can be confirmed). `id` is the immutable frontmatter id; `confidence`
+is 0..1 (always `1.0` for a conversation).
+
+`suggested_attendees` is always present, `[]` when there is nothing to
+suggest. For a conversation, each entry is
+`{"id": "<07-People id>", "label": "<raw speaker label>", "name": "<matched person, or label>"}`
+— a SUGGESTION only (`pipeline.plaud.match_people`, conservative: it never
+guesses between two people sharing a name). Nothing is written to the note or
+to a person until confirmed via approve's `attendees` list below.
 
 ### `POST /api/review/{id}/approve`
 
-Request `{"type": "learning"}` — one of the 11 note types. Covers both UI
-affordances: [Approve] echoes `suggested_type` back; a chip tap sends the
-chosen type. The API rewrites the note's `type`/`status` frontmatter and moves
-the file per `route.TYPE_FOLDER`.
+Request `{"type": "learning", "attendees": []}` — `type` is one of the 13 note
+types; `attendees` is optional (defaults to `[]`) and only means anything when
+`type` is `"conversation"`. Covers both UI affordances: [Approve] echoes
+`suggested_type` back; a chip tap sends the chosen type. The API rewrites the
+note's `type`/`status` frontmatter and moves the file per `route.TYPE_FOLDER`.
+
+For a conversation, `attendees` is the confirmed subset of
+`suggested_attendees[].id` (a stale/unknown id is skipped, not an error). Each
+confirmed person gets `attendees:` filled in on the moved note (as
+`[[person-id]]` links) and a dated line appended to their own
+`## Interaction log` — the pipeline never writes either; this is the one place
+a human confirmation does (CLAUDE.md §3).
 
 `200 {"ok": true, "moved_to": "03-Learnings/2026-07-03-note-title.md"}`
 

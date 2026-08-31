@@ -92,6 +92,36 @@ def stamp_field(fm_block: str, key: str, value: str) -> str:
     return "\n".join(out)
 
 
+def stamp_list_field(fm_block: str, key: str, values: list[str]) -> str:
+    """Set a [[wikilink]] list frontmatter field — the shape _yaml_links
+    produces — replacing whatever was there before (scalar "[]" or the
+    multi-line list form, and its old indented continuation lines).
+
+    Used exactly once today: api/notes.approve() confirming `attendees` on a
+    conversation note. The pipeline always writes that field empty
+    (SCHEMA-REFERENCE.md §7) — this is the one place it is ever filled in,
+    and only after a human has confirmed the suggestion (CLAUDE.md §3)."""
+    value_block = _yaml_links(values)
+    lines = fm_block.splitlines()
+    out: list[str] = []
+    i = 0
+    replaced = False
+    while i < len(lines):
+        line = lines[i]
+        if line.startswith(f"{key}:"):
+            out.append(f"{key}: {value_block}")
+            replaced = True
+            i += 1
+            while i < len(lines) and lines[i].startswith("  "):
+                i += 1              # drop the old list's continuation lines
+            continue
+        out.append(line)
+        i += 1
+    if not replaced:
+        out.append(f"{key}: {value_block}")
+    return "\n".join(out)
+
+
 def _yaml_links(values: list[str]) -> str:
     links = [_wikilink(v) for v in (values or [])]
     links = [v for v in links if v]

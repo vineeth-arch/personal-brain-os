@@ -135,11 +135,13 @@ def test_matched_speakers_are_suggested_but_never_written_to_the_person_note(env
 
     # but the match WAS made and surfaced, the same way classify confidence is
     # surfaced — through the event log, for the API/triage screen to read
+    import json
     rows = events.conn.execute(
         "SELECT message FROM events WHERE stage='attendees'").fetchall()
     assert len(rows) == 1
-    assert "Ana Silva:20260101000000" in rows[0][0]
-    assert "Unknown Guest" not in rows[0][0]        # unmatched speakers aren't suggested
+    suggested = json.loads(rows[0][0])["suggested"]
+    assert suggested == {"Ana Silva": "20260101000000"}
+    assert "Unknown Guest" not in suggested        # unmatched speakers aren't suggested
 
 
 def test_a_single_speaker_plaud_memo_classifies_normally(env):
