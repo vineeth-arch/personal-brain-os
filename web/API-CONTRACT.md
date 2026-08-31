@@ -274,15 +274,25 @@ lettermark), `status` (`"ok"` | `"warn"` | `"problem"` | `"unknown"`), `badge`
 optional `url` (link cards only), optional `meta` (presentational
 `{[k]: string|number|boolean}` — model name, ages, flags).
 
-**Health cards (7)** — server checks, all cached 60s:
+**Health cards (8)** — server checks, all cached 60s:
 - `transcription-whispercpp` — binary + model paths exist & executable
   (`transcribe.py`); `meta.model` = model filename; `meta.engine_active`.
 - `transcription-openai` — `OPENAI_API_KEY` present (boolean) + cached test-call
   result; `meta.engine_active`. (The engine toggle lives on this card.)
 - `claude` — `ANTHROPIC_API_KEY` present + cached test call.
 - `ntfy` — configured topic; `unknown` until a test push is sent.
-- `vault-sync` — `inbox_path` & `vault_path` reachable + `meta.minutes_since_activity`.
+- `vault-sync` — `inbox_path` & `vault_path` reachable + `meta.minutes_since_activity`
+  (this is LOCAL reachability, not the remote below — same short name, a different
+  concern; the frontend tells them apart by `id`, not `name`).
 - `git` — vault repo clean/dirty + commit age; **`warn` if uncommitted > 24h**.
+- `vault-git-sync` — Pass H1: whether the vault's git history reaches a REMOTE
+  (`VAULT_GIT_REMOTE`/`VAULT_GIT_TOKEN` env, or `vault_sync.remote` in
+  config.json for a Mac/compose deploy — see `POST /api/vault/sync` below).
+  `unknown`/"Not configured" is the default, normal state on a single-machine
+  setup; `meta: {branch, ahead, behind}` once configured (`ahead`/`behind` are
+  local git commit counts, no network call). `warn`/"Sync failed" surfaces the
+  last sync's plain-English failure (a real content conflict, or the remote
+  unreachable) — the vault itself is never left half-migrated by a failed sync.
 - `watcher` — heartbeat file age; `problem` if missing or > 20 min.
 
 **Link cards** — no health check, no badge, just `url` from the config
@@ -321,6 +331,34 @@ message (a truthful send receipt — still not proof the phone displayed it);
 the send failing (network down/blocked, wrong url) → `502` + envelope, and the
 ntfy card reports the failed test until a later one succeeds; unconfigured →
 `400` + envelope.
+
+### `POST /api/vault/sync`
+
+Pass H1 — the "Sync now" button on the `vault-git-sync` card. No body. One
+fetch → rebase local onto the remote → push, against whatever
+`VAULT_GIT_REMOTE`/`vault_sync.remote` names (`pipeline/vaultsync.py::sync`);
+never force-pushes.
+
+```json
+{ "ok": true, "status": "ok", "detail": "Vault synced.", "ahead": 0, "behind": 0 }
+```
+
+`status` is one of `ok | conflict | unrelated-histories | not-a-repo | error`
+(`ok` ⇒ `ok: true`, everything else ⇒ `ok: false` with `200` still — this is a
+sync *outcome*, not an HTTP failure). `conflict`: the vault and the remote
+both changed the same note; the rebase was aborted and the vault is
+byte-for-byte untouched — resolve by hand, then sync again.
+`unrelated-histories`: the vault's git history and the remote's don't share a
+common start (a fresh empty repo pointed at an already-populated vault, or
+vice versa) — `detail` says which side to push first. Every outcome is logged
+to events.db (`stage=vault_sync`) and busts the Integrations cache, so the
+card reflects the result immediately. `400` + envelope only when sync isn't
+configured at all (no `VAULT_GIT_REMOTE`/`vault_sync.remote`) — nothing to
+attempt.
+
+The same sync also runs automatically: once per watcher `--loop` tick (after
+processing that tick's captures) and once after each `--backlog` batch. A
+quiet no-op when unconfigured — most single-machine setups never touch this.
 
 ## Google — read + draft (Pass 12)
 

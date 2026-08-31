@@ -49,3 +49,9 @@
 - Pass MW: a People sample-purge endpoint in the API — scripts/seed_people.py --purge covers it for now.
 - Pass MW: PDL credits counter is read from the response header per call; no running total is stored between calls.
 - NOT DEFERRED — PERMANENTLY OUT (CLAUDE.md §4): sending email or any message from the app. Drafts are written to Gmail and sent by the human, in Gmail. api/tests/test_google.py fails the build if a send path ever appears.
+- Pass V2/V3: carousel-image OCR / multi-frame description for Instagram carousels — vision.py describes one photo at a time; a carousel share still goes through Pass L's Apify enrichment, not vision.
+- Pass V2/V4: Android PWA `share_target` — iOS Safari ignores it, so the Shortcut is the only cross-platform share-sheet path this round; an Android-only share target is a separate, smaller add later.
+- Pass V3: download a resource's cover image into `attachments/` instead of hot-linking it — matches how a photo capture's own attachment already works, but link covers (YouTube thumbnails, IG display URLs) still point at the source.
+- Pass V4: EXIF capture date in frontmatter — photo notes use the upload timestamp; the original shot date (if any) isn't read out of the file.
+- Pass V4: multi-image batch share (several photos in one Shortcut/PWA action) — today's photo button and Shortcut step both handle exactly one image per share.
+- Pass H1: vault-sync via Syncthing for non-Railway (VPS/Docker) deploys — GO-LIVE.md's §5 already covers this via folder-level sync; a git-based VAULT_GIT_REMOTE is the Railway-specific fix for a mounted volume no Obsidian ever opens directly.

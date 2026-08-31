@@ -395,7 +395,7 @@ def test_integrations_shape_and_engine_guard(env):
         assert code == 200 and body["engine"] == "whispercpp"
         health = [c for c in body["cards"] if c["group"] == "health"]
         links = [c for c in body["cards"] if c["group"] == "link"]
-        assert len(health) == 9
+        assert len(health) == 10
         # Hindi → Hinglish is honest about being unset rather than absent
         transliteration = next(c for c in health if c["id"] == "transliteration")
         assert transliteration["badge"] == "Not configured"

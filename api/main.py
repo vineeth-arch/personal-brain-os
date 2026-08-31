@@ -986,11 +986,37 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
             last_commit = head.stdout.strip()
         return {"last_backup": last_backup, "last_vault_commit": last_commit}
 
+    # ---- vault git-sync (Pass H1 — the island fix) ---------------------------------
+
+    @app.post("/api/vault/sync")
+    def vault_sync_route(config=Depends(require_token)):
+        from pipeline import vaultsync
+        from pipeline.events import EventLog
+
+        if vaultsync.remote_config(config) is None:
+            raise Envelope(
+                400, "Vault sync isn't configured.",
+                "Neither VAULT_GIT_REMOTE nor vault_sync.remote in config.json is set.",
+                "Set VAULT_GIT_REMOTE (and VAULT_GIT_TOKEN) as service variables, or "
+                "vault_sync.remote in config.json, then try again.")
+        result = vaultsync.sync(Path(config.vault_path), config)
+        events = EventLog(db_path, Path(config.vault_path))
+        try:
+            events.log(str(config.vault_path), "vault_sync",
+                      "ok" if result.status == "ok" else "failed",
+                      message=f"status={result.status} ahead={result.ahead} behind={result.behind}"
+                              + (f" — {result.detail}" if result.detail else ""))
+        finally:
+            events.close()
+        integrations.bust_cache(app.state)
+        return {"ok": result.status == "ok", "status": result.status, "detail": result.detail,
+                "ahead": result.ahead, "behind": result.behind}
+
     # ---- integrations ----------------------------------------------------------------
 
     @app.get("/api/integrations")
     def get_integrations(fresh: int = 0, config=Depends(require_token)):
-        return integrations.get_integrations(app.state, config, heartbeat_path, bool(fresh))
+        return integrations.get_integrations(app.state, config, heartbeat_path, bool(fresh), db_path)
 
     @app.post("/api/integrations/engine")
     def set_engine(body: EngineBody, config=Depends(require_token)):

@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import (archive, classify as classify_mod, config as config_mod, enrich, errors,
-               extract, ingest, intake, route, todos, transliterate, vision as vision_mod)
+               extract, ingest, intake, route, todos, transliterate, vaultsync, vision as vision_mod)
 from .events import EventLog
 from . import transcribe as transcribe_mod
 from .transcribe import Transcriber, build_transcriber
@@ -331,6 +331,20 @@ def _print_summary(results: list[Result]) -> None:
     print()
 
 
+def sync_vault(config, events: EventLog) -> None:
+    """Push/pull the vault's own git history to its configured remote (Pass
+    H1 — the island fix, F1). A quiet no-op when VAULT_GIT_REMOTE isn't set
+    (most local/dev deploys); never raises — vaultsync.sync's own contract,
+    same "a tick may fail, the loop may not" rule as everything else here."""
+    if vaultsync.remote_config(config) is None:
+        return
+    result = vaultsync.sync(Path(config.vault_path), config)
+    events.log(str(config.vault_path), "vault_sync",
+              "ok" if result.status == "ok" else "failed",
+              message=f"status={result.status} ahead={result.ahead} behind={result.behind}"
+                      + (f" — {result.detail}" if result.detail else ""))
+
+
 def run_once(config, events: EventLog, deps: Deps) -> list[Result]:
     events.heartbeat(HEARTBEAT_PATH)
     items = intake.poll(config.inbox_path)
@@ -358,6 +372,7 @@ def run_loop(config, events, deps) -> None:
             todos.tick(config, events)              # reminders + optional digest
             enrich.retry_pending(config, events)    # one re-attempt for stale enriched:false notes
             intake.sweep_orphaned_sidecars(config.inbox_path)  # abandoned photo-insight dotfiles
+            sync_vault(config, events)               # push/pull the vault's own git history
         except KeyboardInterrupt:
             raise
         except Exception:
@@ -395,6 +410,7 @@ def run_backlog(config, events: EventLog, deps: Deps) -> None:
         results = [process_file(it, config, events, deps) for it in batch]
         events.write_status(pending=len(intake.poll(config.inbox_path)))
         _print_summary(results)
+        sync_vault(config, events)   # push this batch out before the review pause
         if n < len(batches):
             input("Review the batch above, then press Enter to continue to the next batch... ")
 

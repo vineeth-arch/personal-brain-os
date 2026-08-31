@@ -283,6 +283,11 @@ export const api = {
       body: JSON.stringify({ engine }),
     }),
   ntfyTest: () => request<{ ok: boolean }>("/api/integrations/ntfy/test", { method: "POST" }),
+  // Pass H1: push/pull the vault's own git history to its configured remote.
+  vaultSync: () =>
+    request<{ ok: boolean; status: string; detail: string; ahead: number; behind: number }>(
+      "/api/vault/sync", { method: "POST" },
+    ),
   // Google (Pass 12): read + draft only. There is deliberately no send call
   // here and no send route on the server — CLAUDE.md §4.
   googleConnect: (redirectUri: string) =>

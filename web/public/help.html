@@ -99,6 +99,11 @@
         <p class="fine"><b>Already at the cockpit?</b> The mic button beside the capture box records straight into the pipeline — tap to start, tap to stop, same tag chips. It needs the HTTPS tunnel address (browsers block the mic on a plain <code>http://</code> one), and it can't record with the screen locked — that's still the Action Button's job.</p>
         <p class="fine"><b>Plaud:</b> export from the Plaud app and share into <code>CaptureInbox/plaud/</code> — that works day one. Once you've checked the real path in Plaud Desktop → Preferences, put it in <code>watch_folders</code> and new recordings copy themselves in, originals untouched.</p>
       </div>
+      <div class="tick you">
+        <div class="who">You · any reel, article, or photo, anywhere</div>
+        <div class="when">Share anything</div>
+        <p>See a reel, a tutorial, an article — or take a photo of something worth keeping? Share sheet → <kbd>→ Brain Cloud</kbd> (§08d) → optional quick thought → "✅ Saved to Brain". It lands as a resource note with a description and your thought attached; a photo gets vision-described the same way. Sharing the same link twice merges into one note instead of duplicating it (Pass S3).</p>
+      </div>
       <div class="tick">
         <div class="who">System · when you speak Hindi</div>
         <div class="when">Hindi → Hinglish</div>
@@ -273,6 +278,10 @@
       <tr><td>The "→ Brain Cloud" Shortcut says unauthorized / 401</td><td><code>api.auth_token</code> was rotated since the Shortcut was built</td><td>Open the Shortcut, update the token in both <code>Get Contents of URL</code> steps (§08d)</td></tr>
       <tr><td>Shared link saved but never got a title or cover</td><td>Enrichment failed (dead link, Instagram scraper down) — by design, not lost</td><td>The note is there with your insight; open it and use <b>Re-enrich</b>, or check Integrations for the reason</td></tr>
       <tr><td>Sharing the same reel twice made one note, not two</td><td>Working as intended (Pass S3)</td><td>Not a bug — open the note, both thoughts are under <code>## Insight</code></td></tr>
+      <tr><td>A shared photo saved but never got a description</td><td>Vision failed or <code>ANTHROPIC_API_KEY</code> isn't set — by design, not lost</td><td>The note and the photo are both there; open it and use <b>Re-enrich</b> once a key is set, or check Integrations for the reason</td></tr>
+      <tr><td>Voice memo failed on the cloud (Railway) cockpit</td><td>Bootstrap pointed whisper.cpp at a model that was never downloaded to the volume</td><td>Set <code>OPENAI_API_KEY</code> as a Railway service variable (cloud transcription), or download the whisper.cpp small.en model onto the volume — Build tracker's <code>wire-whisper-model</code> item confirms either fix</td></tr>
+      <tr><td>Railway service shows crashed / keeps restarting</td><td>A poison file crash-looped the container before Pass H's hardening — now a garbage upload is always quarantined to <code>failed/</code> with an event, never a crash</td><td>Check Railway's deploy logs for the actual exception; if it's a genuinely new failure mode, the pipeline's own <code>failed/</code> folder + Pipeline screen name the file and the reason</td></tr>
+      <tr><td>Need to rotate the API access token</td><td>A device was lost, or the token leaked</td><td>Set a new random string as <code>api.auth_token</code> in the volume's config.json (no redeploy needed — the API re-reads it per request), then update Settings → Connection on every device, the "→ Brain Cloud" Shortcut (§08d), and the Claude Desktop MCP env (§08c)</td></tr>
     </table>
   </section>
 
@@ -478,6 +487,31 @@
       </ul></div>
     </div>
     <p class="note">Nothing here is a send. The Shortcut talks to your own cockpit and nowhere else — same rule as everything on this page (§02).</p>
+  </section>
+
+  <!-- ============ 08e VAULT GIT-SYNC ============ -->
+  <section>
+    <div class="eyebrow">08e · Vault sync · Pass H1</div>
+    <h2>One vault, every machine</h2>
+    <p class="sub">A cockpit hosted on Railway captures into a vault on a mounted volume — no Obsidian ever opens that folder on its own. This closes the gap: the vault's own git history syncs to a private repo, so the same notes exist on your Mac too.</p>
+    <div class="grid">
+      <div class="card"><div class="tool-eyebrow">Set up once</div><h3>Three steps</h3><ul>
+        <li>Create a new <b>private</b> GitHub repo named <code>vault</code> — leave it empty, no README (an empty remote is what the first sync expects)</li>
+        <li>Generate a fine-grained Personal Access Token scoped to only that one repo, with <b>Contents: Read and write</b></li>
+        <li>On Railway → the <code>app</code> service → Variables, add <code>VAULT_GIT_REMOTE</code> (the repo's HTTPS URL) and <code>VAULT_GIT_TOKEN</code> (the PAT) — no redeploy needed, the watcher and the Sync now button both pick it up on their next run</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">Then on the Mac</div><h3>Clone it, point Obsidian at it</h3><ul>
+        <li><code>git clone https://github.com/&lt;you&gt;/vault.git</code> — this is the copy Obsidian opens</li>
+        <li>Open that folder as an Obsidian vault (or point your existing one at it, if the Mac was the vault's original home — see the refusal note below)</li>
+        <li>Either install the Obsidian Git community plugin (auto-pull on a schedule) or make pulling a habit before you check the vault — the cockpit only pushes; nothing pulls into your Mac for you</li>
+      </ul></div>
+      <div class="card"><div class="tool-eyebrow">How it behaves</div><h3>Safe by construction</h3><ul>
+        <li>Every watcher tick (and after each Backlog batch) fetches, rebases the vault's local commits onto the remote, then pushes — never a force-push</li>
+        <li>A real conflict (the same note changed on both sides) aborts the rebase and leaves the vault <b>exactly as it was</b> — Integrations → Vault git-sync names it; resolve by hand (pull normally, fix it in Obsidian or git), then Sync now again</li>
+        <li>Optional on a single-machine setup — Vault git-sync reads "Not configured" and nothing else changes. Set it up the moment a second machine needs the same notes</li>
+      </ul></div>
+    </div>
+    <p class="note">If the vault already had notes in it BEFORE you created the remote (a Mac-first setup, not Railway-first), the first sync refuses with "unrelated histories" — push that existing vault to the empty remote first, then clone it everywhere else. Don't try to merge two independently-started histories together.</p>
   </section>
 
   <!-- ============ 09 THE ROAD AFTER ============ -->

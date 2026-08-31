@@ -34,6 +34,9 @@ MODE_INT_EMPTY = "--integrations-empty" in sys.argv
 # --google-connected = live cards; --google-unconfigured = plain link tiles.
 MODE_GOOGLE_CONNECTED = "--google-connected" in sys.argv
 MODE_GOOGLE_UNCONFIGURED = "--google-unconfigured" in sys.argv
+# Pass H1: default = not configured (the common case); --vault-sync-configured
+# renders the "Up to date" state instead.
+MODE_VAULT_SYNC_CONFIGURED = "--vault-sync-configured" in sys.argv
 
 TOKEN = "mock-token"
 
@@ -237,6 +240,7 @@ TYPE_FOLDER = {
 # ---- Integrations (Pass 4) --------------------------------------------------
 ENGINE = "whispercpp"  # module-level so the engine toggle is observable across requests
 NTFY_TESTED = None      # None -> "ok" after a test push succeeds, "failed" after one fails
+VAULT_SYNCED = MODE_VAULT_SYNC_CONFIGURED   # flips true after a successful mock sync
 
 # The editable safe-config subset (GET/PUT /api/config). Module-level so a PUT
 # from Settings is observable on the next GET, like the real API.
@@ -420,6 +424,27 @@ def _integration_cards():
                    detail="Vault committed 2 hours ago. Nothing uncommitted.",
                    meta={"dirty": False, "commit_age_hours": 2})
 
+    vault_git_sync = {
+        "id": "vault-git-sync", "group": "health", "name": "Vault git-sync", "icon": "cloud-sync",
+        "description": "Pushes/pulls the vault's git history to a private repo, so every "
+                       "machine that opens it has the same notes.",
+    }
+    if VAULT_SYNCED:
+        vault_git_sync.update(status="ok", badge="Up to date",
+                              detail="Last synced 2 minutes ago. Nothing pending.",
+                              meta={"branch": "main", "ahead": 0, "behind": 0})
+    else:
+        vault_git_sync.update(
+            status="unknown", badge="Not configured",
+            detail="No remote is set — fine on a single machine, essential once more than "
+                   "one opens this vault.",
+            error={
+                "what": "This vault only lives on this machine.",
+                "cause": "Neither VAULT_GIT_REMOTE (env) nor vault_sync.remote (config.json) is set.",
+                "todo": "Create a private GitHub repo, set VAULT_GIT_REMOTE + VAULT_GIT_TOKEN "
+                        "(or vault_sync.remote in config.json), then press Sync now.",
+            })
+
     watcher = {
         "id": "watcher", "group": "health", "name": "Watcher", "icon": "pulse",
         "description": "The background process that picks up new captures.",
@@ -437,7 +462,7 @@ def _integration_cards():
                        detail="The watcher checked in 2 minutes ago.",
                        meta={"heartbeat_age_min": 2})
 
-    health = [whisper, openai, claude, ntfy, vault, git, watcher]
+    health = [whisper, openai, claude, ntfy, vault, git, vault_git_sync, watcher]
     links = [] if MODE_INT_EMPTY else LINK_CARDS
     return health + _google_cards() + links
 
@@ -504,7 +529,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _route(self, method: str):
         path = self.path.split("?")[0]
-        global ENGINE, NTFY_TESTED
+        global ENGINE, NTFY_TESTED, VAULT_SYNCED
         if path == "/api/health":
             return self._send(200, {"ok": True})
         if not self._authed():
@@ -886,6 +911,17 @@ class Handler(BaseHTTPRequestHandler):
                         "todo": "Check ntfy.url and this machine's connection, then try again."}})
                 NTFY_TESTED = "ok"
                 return self._send(200, {"ok": True})
+            if path == "/api/vault/sync":
+                print("VAULT SYNC")
+                if not MODE_VAULT_SYNC_CONFIGURED:
+                    return self._send(400, {"error": {
+                        "what": "Vault sync isn't configured.",
+                        "cause": "Neither VAULT_GIT_REMOTE nor vault_sync.remote in config.json is set.",
+                        "todo": "Set VAULT_GIT_REMOTE (and VAULT_GIT_TOKEN) as service variables, or "
+                                "vault_sync.remote in config.json, then try again."}})
+                VAULT_SYNCED = True
+                return self._send(200, {"ok": True, "status": "ok", "detail": "Vault synced.",
+                                        "ahead": 0, "behind": 0})
             if path == "/api/run":
                 print("RUN NOW")
                 return self._send(202, {"started": True})
