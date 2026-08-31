@@ -7,6 +7,7 @@
 #   docker compose --profile sync up -d      # + syncthing sharing the vault
 #   docker compose --profile tunnel up -d    # + cloudflared (TUNNEL_TOKEN in .env)
 #   docker compose --profile proxy up -d     # + caddy HTTPS on your domain (DOMAIN in .env)
+#   docker compose --profile applaud up -d   # + applaud, local-syncing a Plaud Note Pro
 services:
   app:
     build: .
@@ -62,3 +63,20 @@ services:
     command: tunnel run
     environment:
       - TUNNEL_TOKEN=${TUNNEL_TOKEN}
+
+  # optional: applaud locally syncs a Plaud Note Pro over the same LAN (no
+  # cloud round-trip) and writes each recording as a bundle folder — audio +
+  # transcript.txt/.json + summary.md — that pipeline/plaud.py already
+  # recognises. Point PLAUD_RECORDINGS_DIR at a folder also listed in
+  # config.json's watch_folders so ingest.sweep picks up what applaud writes.
+  # First run: visit http://<host>:44471/setup and paste the device's pairing
+  # token by hand (no browser-based device detection inside a container).
+  applaud:
+    image: ghcr.io/rsteckler/applaud:latest
+    profiles: ["applaud"]
+    restart: unless-stopped
+    ports:
+      - "44471:44471"
+    volumes:
+      - ./data/applaud:/data/config
+      - ${PLAUD_RECORDINGS_DIR:-./data/plaud-recordings}:/data/recordings

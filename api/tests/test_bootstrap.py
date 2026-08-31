@@ -84,6 +84,31 @@ def test_engine_follows_the_openai_key(tmp_path, key, expected):
     assert config["transcription"]["whispercpp"]["model_path"].endswith(".bin")
 
 
+def _run_interactive(root: Path, env_extra: dict | None = None) -> subprocess.CompletedProcess:
+    """bootstrap_interactive, accepting every default (vault, inbox, archive,
+    failed, whisper binary — five prompts, five blank answers)."""
+    env = {"PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(root)}
+    env.update(env_extra or {})
+    return subprocess.run(
+        [sys.executable, str(BOOTSTRAP), "--root", str(root)],
+        input="\n\n\n\n\n", capture_output=True, text=True, env=env, cwd=str(REPO_ROOT))
+
+
+@pytest.mark.parametrize("key, expected", [("sk-test-key", "openai"), ("", "whispercpp")])
+def test_interactive_engine_also_follows_the_openai_key(tmp_path, key, expected):
+    """D18: bootstrap_interactive used to leave `engine` at whatever
+    config.example.json ships with (openai) no matter what the user just
+    typed for a whisper.cpp binary — every capture would quarantine on a
+    fresh non-Docker install unless OPENAI_API_KEY happened to be set too."""
+    proc = _run_interactive(tmp_path, {"OPENAI_API_KEY": key} if key else {})
+    assert proc.returncode == 0, proc.stderr
+    config = json.loads((tmp_path / "config.json").read_text())
+    assert config["transcription"]["engine"] == expected
+    # the chosen engine must be visible in the summary, not just on disk —
+    # bootstrap_docker already prints it, interactive silently didn't
+    assert f"Transcription engine: {expected}" in proc.stdout
+
+
 def test_generated_config_passes_the_boot_selfcheck(tmp_path):
     """The real gate: selfcheck.run() is what refuses the boot, so a
     freshly-bootstrapped root must satisfy it with no human edits at all."""

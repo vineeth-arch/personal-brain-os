@@ -10,13 +10,18 @@ from dataclasses import dataclass, field
 from . import llm
 from .errors import StageError
 
-# The 12 note TYPES (SCHEMA-REFERENCE.md §2) — a distinct vocabulary from tags.
+# The 13 note TYPES (SCHEMA-REFERENCE.md §2) — a distinct vocabulary from tags.
 # "company" is never voice-captured or classified by the LLM router — it only
 # ever arrives from handshake or manual creation — but it has to be in this
 # list or validate_classification() and route() would both reject it.
+# "conversation" IS reachable by the router (an undiarized meeting recording is
+# a fair guess for it), but the usual path is deterministic: a Plaud bundle
+# whose transcript carries two or more speakers is a conversation without
+# spending a model call. Like company, it has no capture tag — §4 caps those
+# at eight and a conversation is recognised by its speakers, not by a hashtag.
 NOTE_TYPES = ["musing", "learning", "todo", "journal", "project", "person",
               "resource", "decision", "principle", "insight", "reflection",
-              "company"]
+              "company", "conversation"]
 
 # The 8 capture/routing TAGS (SCHEMA-REFERENCE.md §4) → the note type they route to.
 TAG_TO_TYPE = {
@@ -36,9 +41,14 @@ class Classification:
     tags: list[str] = field(default_factory=list)
     confidence: float = 1.0
     needs_review: bool = False
-    routed_by: str = "tag"          # "tag" | "llm"
+    routed_by: str = "tag"          # "tag" | "llm" | "plaud"
     provider: str = ""              # which model served the classification
     attempts: list = field(default_factory=list)  # llm.Attempt rows for stats
+    # raw speaker labels exactly as the device wrote them — only ever set on the
+    # deterministic "plaud" route (SCHEMA-REFERENCE.md §7 Conversation); every
+    # other route leaves this empty, including a single-speaker Plaud memo,
+    # which classifies normally and carries no speaker frontmatter at all.
+    speakers: list[str] = field(default_factory=list)
 
 
 def _spoken_tag(transcript: str) -> str | None:
@@ -50,12 +60,22 @@ def _spoken_tag(transcript: str) -> str | None:
     return None
 
 
-def classify(item, transcript: str, config, llm_fn=None) -> Classification:
-    # 1. Free route: capture tag from filename, else spoken in first 5 words.
+def free_route_tag(item, transcript: str) -> str | None:
+    """The capture tag that decides free-routing — filename tag if it's one of
+    the 8, else spoken in the first 5 words. None when neither names a real
+    tag. Exposed so a caller other than classify() (watcher.process_file's
+    tag-wins-over-link-detection check, D13) can ask the same question without
+    running a full classification."""
     tag = (item.tag or "").lower() if item.tag else None
     if tag not in TAG_TO_TYPE:
         tag = _spoken_tag(transcript)
-    if tag in TAG_TO_TYPE:
+    return tag if tag in TAG_TO_TYPE else None
+
+
+def classify(item, transcript: str, config, llm_fn=None) -> Classification:
+    # 1. Free route: capture tag from filename, else spoken in first 5 words.
+    tag = free_route_tag(item, transcript)
+    if tag:
         return Classification(
             type=TAG_TO_TYPE[tag], title=item.name, tags=[tag],
             confidence=1.0, needs_review=False, routed_by="tag")

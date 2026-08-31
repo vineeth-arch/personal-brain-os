@@ -73,19 +73,38 @@ apart from "bad token".
   "excerpt": "first ~300 chars of the note body",
   "suggested_type": "learning",
   "confidence": 0.7,
-  "created": "2026-07-03"
+  "created": "2026-07-03",
+  "suggested_attendees": []
 } ] }
 ```
 
-Notes whose classification fell below the confidence threshold. `id` is the
-immutable frontmatter id; `confidence` is 0..1.
+Notes whose classification fell below the confidence threshold, PLUS every
+`type: conversation` note (its type isn't in doubt — two-or-more speakers in
+a Plaud transcript decide that deterministically — but it still parks here so
+attendees can be confirmed). `id` is the immutable frontmatter id; `confidence`
+is 0..1 (always `1.0` for a conversation).
+
+`suggested_attendees` is always present, `[]` when there is nothing to
+suggest. For a conversation, each entry is
+`{"id": "<07-People id>", "label": "<raw speaker label>", "name": "<matched person, or label>"}`
+— a SUGGESTION only (`pipeline.plaud.match_people`, conservative: it never
+guesses between two people sharing a name). Nothing is written to the note or
+to a person until confirmed via approve's `attendees` list below.
 
 ### `POST /api/review/{id}/approve`
 
-Request `{"type": "learning"}` — one of the 11 note types. Covers both UI
-affordances: [Approve] echoes `suggested_type` back; a chip tap sends the
-chosen type. The API rewrites the note's `type`/`status` frontmatter and moves
-the file per `route.TYPE_FOLDER`.
+Request `{"type": "learning", "attendees": []}` — `type` is one of the 13 note
+types; `attendees` is optional (defaults to `[]`) and only means anything when
+`type` is `"conversation"`. Covers both UI affordances: [Approve] echoes
+`suggested_type` back; a chip tap sends the chosen type. The API rewrites the
+note's `type`/`status` frontmatter and moves the file per `route.TYPE_FOLDER`.
+
+For a conversation, `attendees` is the confirmed subset of
+`suggested_attendees[].id` (a stale/unknown id is skipped, not an error). Each
+confirmed person gets `attendees:` filled in on the moved note (as
+`[[person-id]]` links) and a dated line appended to their own
+`## Interaction log` — the pipeline never writes either; this is the one place
+a human confirmation does (CLAUDE.md §3).
 
 `200 {"ok": true, "moved_to": "03-Learnings/2026-07-03-note-title.md"}`
 
@@ -443,21 +462,24 @@ threshold, ntfy url/topic); everything else stays documentation.
 ### `GET /api/config`
 
 ```json
-{ "engine": "whispercpp", "confidence_threshold": 0.7,
+{ "engine": "whispercpp", "language": "hi", "confidence_threshold": 0.7,
   "ntfy_url": "https://ntfy.sh", "ntfy_topic": "brain-cockpit",
   "providers": ["gemini-flash", "groq-llama-3.3-70b", "openrouter-free", "claude-haiku"],
-  "keys": { "anthropic": true, "openai": false } }
+  "keys": { "anthropic": true, "openai": false },
+  "transliteration": {
+    "engine": "ollama", "ollama_url": "http://localhost:11434",
+    "ollama_model": "qwen2.5", "openrouter_model": "", "openrouter_key_present": false
+  } }
 ```
 
 `keys` are presence booleans. `providers` is the classification fallback chain
 in order (read-only here — reordering lives in config.json).
-`api.auth_token` is never included.
+`language` is the whisper language hint (`""` = auto-detect).
+`api.auth_token` is never included, and `transliteration.*_model`/`*_url` are
+the model/URL strings themselves (not secrets — `OPENROUTER_API_KEY` is a
+presence boolean, same as `keys`).
 
-### Capture-pipeline config keys (Pass P)
-
-`config.json` gained three keys the pipeline reads directly (they are not
-settable through `PUT /api/config` yet — the Settings surface for them lands
-with the People pass):
+### Capture-pipeline config keys (Pass P, Settings surface added in Pass H)
 
 ```json
 "transcription": { "engine": "openai", "language": "hi" },
@@ -469,20 +491,24 @@ with the People pass):
 "watch_folders": [ { "path": "~/…/Plaud", "source": "plaud" } ]
 ```
 
-`transcription.language` is the whisper language hint (`""` = auto-detect).
 `transliteration` rewrites Devanagari transcripts in Roman Hindi; unset or
 unreachable is a normal state — the note is written in Devanagari instead, and
 `GET /api/integrations` carries a `transliteration` health card saying so.
 `watch_folders` are app-owned folders the watcher copies new recordings *out
-of* (never modifying them); `source: plaud` lands them in `inbox/plaud/`.
+of* (never modifying them); `source: plaud` lands them in `inbox/plaud/` —
+this list is still config.json-hand-edit only (no Settings UI for it).
 
 ### `PUT /api/config`
 
-Body may set any of `engine`, `confidence_threshold` (0..1), `ntfy_topic`,
-`ntfy_url` (omitted fields unchanged). Writes `config.json` atomically,
-preserving unknown keys (`links`, paths, `api`). Rejects `engine: "openai"`
-when `OPENAI_API_KEY` is missing (400 + envelope). Returns the same shape as
-`GET`. `POST /api/integrations/engine` shares this validated writer.
+Body may set any of `engine`, `language`, `confidence_threshold` (0..1),
+`ntfy_topic`, `ntfy_url`, `transliteration_engine` (`""` | `"ollama"` |
+`"openrouter"`), `transliteration_ollama_url`, `transliteration_ollama_model`,
+`transliteration_openrouter_model` (omitted fields unchanged). Writes
+`config.json` atomically, preserving unknown keys (`links`, paths, `api`,
+`watch_folders`). Rejects `engine: "openai"` when `OPENAI_API_KEY` is missing,
+and `transliteration_engine: "openrouter"` when `OPENROUTER_API_KEY` is missing
+(both 400 + envelope, same shape). Returns the same shape as `GET`.
+`POST /api/integrations/engine` shares this validated writer.
 
 ## People — Relationship OS (Pass MW)
 
@@ -779,16 +805,29 @@ rate-limit fall through; keyless providers are skipped silently; claude-haiku
 is the floor and stays last; all-fail → needs-review, never a guess. Keys are
 env-only: GEMINI_API_KEY, GROQ_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY.
 
-## Link capture + enrichment (Pass L)
+## Link capture + enrichment (Pass L, hardened in Pass C)
 
 A text capture containing a URL is detected as `kind=link` at intake and routed
 to `04-Resources` as a resource note — no classify LLM, no review gate (a link
-IS a resource). **The note is written unconditionally; enrichment is best-effort
-decoration.** Failure sets `enriched: false` + one quiet `enrich` event (status
-`ok`, never `failed`) — no quarantine, no ntfy alarm. YouTube uses public oEmbed
-(keyless); Instagram uses an Apify actor (`APIFY_TOKEN` env + `apify.actor_id`
-in config.json — expected to break periodically, degrades gracefully); other
-URLs use `<title>` + `og:image`.
+IS a resource) — **unless a capture tag (filename or spoken/typed `#tag`) names
+something other than `resource`** (Pass C, D13): a tagged capture flows through
+the normal classify/route path instead, with the URL left intact in the body,
+so `#journal ... here's an article https://…` is a journal note, not a resource.
+**The note is written unconditionally; enrichment is best-effort decoration.**
+Failure sets `enriched: false` + one quiet `enrich` event (status `ok`, never
+`failed`) — no quarantine, no ntfy alarm. YouTube uses public oEmbed (keyless)
+for title/author/cover and the same public innertube endpoint the YouTube apps
+themselves call for a transcript (also keyless — the old `timedtext` endpoint
+this replaced had gone dead); Instagram uses an Apify actor (`APIFY_TOKEN` env
++ `apify.actor_id` in config.json, default `apify~instagram-scraper` —
+expected to break periodically, degrades gracefully; a note that failed only
+for lack of configuration gets extra auto-retries, capped at 4 attempts total,
+once Apify is configured); other URLs use `<title>` + `og:image`.
+
+The `## Insight` body section is the user's own words **minus the URL itself**
+(Pass C, D14) — the URL already lives in `source_url`, so gluing it into the
+insight text too was pure duplication. A capture that was only a bare URL with
+no other words gets no `## Insight` section at all.
 
 Resource note frontmatter (SCHEMA §7 + Pass-L/6 fields; the Pass 6 gallery
 consumes these unchanged):
@@ -798,7 +837,12 @@ instagram|web|photo), enriched (bool), enrich_attempts, enrich_last` — plus th
 universal block (`id, created, source, origin: human, meta_origin: ai`). Body:
 `## Insight` (the user's own words, verbatim, URLs stripped out — Pass S2),
 `## Ingredients`/`## Steps` for recipes, `## Transcript` or `## Caption` for
-enriched media.
+enriched media, and `## Slides` for an Instagram carousel — a numbered list of
+`image_url — caption` (Pass C); a single post/reel has no `## Slides` section.
+Every field and section above is what enrichment owns; re-enrichment (below)
+merges these back in and leaves everything else on the note — `status`,
+`rating`, `sample`, the user's own `## Insight` edits, any hand-added
+section — untouched.
 
 `source_url` is stored **normalized** (`pipeline/enrich.py::normalize_url`) —
 lowercased host, no fragment, no trailing slash, tracking params (`igsh`,
@@ -885,3 +929,71 @@ way to deliver a message and none may be added (CLAUDE.md §4, pinned by
 Non-2xx responses keep their `{what,cause,todo}` envelope, re-rendered as the
 tool's error text ("What happened: … / Likely cause: … / What to do: …"), so a
 model holding these tools tells the owner the same thing the cockpit would.
+
+## Resource OS (Pass 6, documented in Pass H)
+
+The Resources screen's full surface — six routes that existed since Pass 6 but
+were missing from this contract (and from web/mock-api.py) until now. Every
+mutation git-commits the vault; every read walks `04-Resources` live (no
+server-side cache, no note content in SQLite — CLAUDE.md §1).
+
+### `GET /api/resources?category=&status=&q=&has_insight=&sort=`
+
+```json
+{ "items": [ {
+  "id": "20260703140000", "title": "Weeknight dal", "category": "recipe",
+  "status": "to-consume", "cover": "https://picsum.photos/seed/dal/400/560",
+  "url": "https://example.com/dal", "created": "2026-07-03",
+  "sample": false, "file": "04-Resources/2026-07-03-weeknight-dal.md",
+  "has_insight": true, "insight": "Halve the chili next time."
+} ] }
+```
+
+All filters are optional and combine with AND. `q` matches the **title only**,
+case-insensitive substring (not description/insight/body — that's whole-vault
+search, Pass Q). `sort` is one of `created` (default, newest first), `oldest`,
+`title`; anything else → 400 envelope. `cover`/`url`/`insight` are `null` when
+absent, never an empty string.
+
+### `GET /api/resources/{id}`
+
+The same object plus `description`, `rating`, the nine type-extra fields
+(`author, where_to_watch, runtime, ingredients, steps, tools_mentioned,
+transcript, map_url, best_time` — `null` when not applicable to that
+`resource_type`), and `sections`: `[{heading, text}]` for every body `## `
+section in order (heading `""` holds any text before the first H2). 404
+envelope for an unknown id.
+
+### `POST /api/resources/{id}/status`
+
+Body `{"status": "to-consume"}` — one of the SCHEMA §6 lifecycle values
+(`inbox → to-consume → consumed → referenced → archived`); anything else → 400
+envelope. Reaching `consumed` stamps a `consumed: <today>` frontmatter date.
+Returns the refreshed summary object (the same shape as one `GET
+/api/resources` item). 404 for an unknown id.
+
+### `POST /api/resources/{id}/insight`
+
+Body `{"text": "…"}`. Writes (or replaces, or — for empty text — removes) the
+`## Insight` body section, always with `origin: human` (an insight is never AI
+prose, even when the rest of the note is `origin: ai`). Returns the refreshed
+summary object. 404 for an unknown id.
+
+### `GET /api/resources/sample/count?older_than=1d|1w|1m|all`
+
+`200 {"count": 4, "scope": "1w"}` — how many `sample: true` notes match the
+age scope; `count` never includes a real (non-sample) note. Unknown scope →
+400 envelope.
+
+### `DELETE /api/resources/sample?older_than=1d|1w|1m|all`
+
+Removes only `sample: true` notes matching the scope — real notes are never a
+candidate, regardless of scope. Git-commits the vault **before** deleting
+(`pre-purge: N sample notes, scope=…`) so the whole purge is one `git revert`
+away, then commits again after if anything was removed.
+
+```json
+{ "removed": 4, "titles": ["Weeknight dal", "…"], "scope": "1w",
+  "message": "Removed 4 sample notes older than a week. Your real notes were "
+             "never touched, and the vault was git-committed first." }
+```

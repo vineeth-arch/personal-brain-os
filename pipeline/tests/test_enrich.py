@@ -65,6 +65,85 @@ def test_youtube_oembed_parse(vault):
     assert enr.cover.endswith("hqdefault.jpg")
 
 
+def test_youtube_transcript_via_innertube_json3(vault):
+    def fetch(url, data=None, timeout=10, headers=None):
+        if "oembed" in url:
+            return YT_OEMBED
+        if url == enrich._INNERTUBE_URL:
+            payload = json.loads(data)
+            assert payload["videoId"] == "abc12345678"
+            return json.dumps({
+                "captions": {"playerCaptionsTracklistRenderer": {"captionTracks": [
+                    {"languageCode": "en", "baseUrl": "https://yt.example/caption"},
+                ]}},
+            }).encode()
+        if url == "https://yt.example/caption&fmt=json3":
+            return json.dumps({"events": [
+                {"segs": [{"utf8": "Hello "}, {"utf8": "world."}]},
+                {"segs": [{"utf8": " Rice is done."}]},
+            ]}).encode()
+        raise AssertionError(f"unexpected fetch: {url}")
+    enr = enrich.enrich_url("https://youtu.be/abc12345678", config(vault), fetch=fetch)
+    assert enr.transcript == "Hello world. Rice is done."
+
+
+def test_youtube_transcript_prefers_english_or_hindi_track(vault):
+    def fetch(url, data=None, timeout=10, headers=None):
+        if "oembed" in url:
+            return YT_OEMBED
+        if url == enrich._INNERTUBE_URL:
+            return json.dumps({
+                "captions": {"playerCaptionsTracklistRenderer": {"captionTracks": [
+                    {"languageCode": "fr", "baseUrl": "https://yt.example/fr"},
+                    {"languageCode": "hi", "baseUrl": "https://yt.example/hi"},
+                ]}},
+            }).encode()
+        if url == "https://yt.example/hi&fmt=json3":
+            return json.dumps({"events": [{"segs": [{"utf8": "नमस्ते"}]}]}).encode()
+        raise AssertionError(f"unexpected fetch: {url}")
+    enr = enrich.enrich_url("https://youtu.be/abc12345678", config(vault), fetch=fetch)
+    assert enr.transcript == "नमस्ते"
+
+
+def test_youtube_transcript_falls_back_to_xml_shape(vault):
+    def fetch(url, data=None, timeout=10, headers=None):
+        if "oembed" in url:
+            return YT_OEMBED
+        if url == enrich._INNERTUBE_URL:
+            return json.dumps({
+                "captions": {"playerCaptionsTracklistRenderer": {"captionTracks": [
+                    {"languageCode": "en", "baseUrl": "https://yt.example/caption"},
+                ]}},
+            }).encode()
+        if url == "https://yt.example/caption&fmt=json3":
+            return b'<transcript><text start="0">Hello world</text></transcript>'
+        raise AssertionError(f"unexpected fetch: {url}")
+    enr = enrich.enrich_url("https://youtu.be/abc12345678", config(vault), fetch=fetch)
+    assert enr.transcript == "Hello world"
+
+
+def test_youtube_with_no_captions_at_all_has_empty_transcript_not_a_failure(vault):
+    def fetch(url, data=None, timeout=10, headers=None):
+        if "oembed" in url:
+            return YT_OEMBED
+        if url == enrich._INNERTUBE_URL:
+            return json.dumps({"captions": {}}).encode()
+        raise AssertionError(f"unexpected fetch: {url}")
+    enr = enrich.enrich_url("https://youtu.be/abc12345678", config(vault), fetch=fetch)
+    assert enr.enriched is True     # a missing transcript never fails the note
+    assert enr.transcript == ""
+
+
+def test_youtube_transcript_fetch_erroring_is_swallowed(vault):
+    def fetch(url, data=None, timeout=10, headers=None):
+        if "oembed" in url:
+            return YT_OEMBED
+        raise ConnectionError("network down")
+    enr = enrich.enrich_url("https://youtu.be/abc12345678", config(vault), fetch=fetch)
+    assert enr.enriched is True
+    assert enr.transcript == ""
+
+
 def test_recipe_detection_writes_sections(vault):
     def fetch(url, data=None, timeout=10, headers=None):
         return YT_OEMBED if "oembed" in url else b""
@@ -174,6 +253,30 @@ def test_append_insight_with_blank_addition_is_a_noop(vault):
     assert note.read_text(encoding="utf-8") == original
 
 
+def test_build_resource_note_insight_has_no_url_glued_in(vault):
+    def fetch(url, data=None, timeout=10, headers=None):
+        return YT_OEMBED if "oembed" in url else b""
+    enr = enrich.enrich_url("https://youtu.be/abc12345678", config(vault), fetch=fetch)
+    text = "great grid tutorial https://youtu.be/abc12345678 try for studio"
+    structured = enrich.structure(text, enr, config(vault), router=no_router)
+    path = enrich.route_link(item(), text, enr, structured, vault / "vault")
+    note = path.read_text(encoding="utf-8")
+    assert "## Insight" in note
+    assert "great grid tutorial try for studio" in note
+    assert "youtu.be/abc12345678" not in note.split("## Insight")[1].split("##")[0]
+    # the URL isn't lost — it's in source_url, just not duplicated in the insight
+    assert "source_url:" in note and "youtu.be/abc12345678" in note
+
+
+def test_a_capture_with_only_a_url_and_no_other_words_has_no_insight_section(vault):
+    def fetch(url, data=None, timeout=10, headers=None):
+        return YT_OEMBED if "oembed" in url else b""
+    enr = enrich.enrich_url("https://youtu.be/abc12345678", config(vault), fetch=fetch)
+    structured = enrich.structure("https://youtu.be/abc12345678", enr, config(vault), router=no_router)
+    path = enrich.route_link(item(), "https://youtu.be/abc12345678", enr, structured, vault / "vault")
+    assert "## Insight" not in path.read_text(encoding="utf-8")
+
+
 def test_instagram_failure_saves_note_unenriched(vault):
     def failing_fetch(url, data=None, timeout=10, headers=None):
         raise ConnectionError("apify down")
@@ -193,6 +296,114 @@ def test_instagram_failure_saves_note_unenriched(vault):
     assert "enriched: false" in text
     assert "## Insight" in text and "saw this reel" in text
     assert "## Enrichment" in text  # the quiet reason, in the note not an alarm
+
+
+def _apify_env(monkeypatch):
+    import os
+    monkeypatch.setenv("APIFY_TOKEN", "fake")
+
+
+def test_instagram_carousel_childposts_shape(vault, monkeypatch):
+    _apify_env(monkeypatch)
+    cfg = config(vault, apify={"actor_id": "apify~instagram-scraper"})
+
+    def fetch(url, data=None, timeout=10, headers=None):
+        return json.dumps([{
+            "caption": "day at the studio",
+            "displayUrl": "https://ig.example/cover.jpg",
+            "ownerUsername": "artist",
+            "childPosts": [
+                {"displayUrl": "https://ig.example/1.jpg", "caption": "first piece"},
+                {"displayUrl": "https://ig.example/2.jpg"},
+            ],
+        }]).encode()
+
+    enr = enrich.enrich_url("https://instagram.com/p/ABC/", cfg, fetch=fetch)
+    assert enr.enriched and len(enr.slides) == 2
+    assert enr.slides[0] == {"image_url": "https://ig.example/1.jpg", "caption": "first piece"}
+    assert enr.slides[1] == {"image_url": "https://ig.example/2.jpg", "caption": ""}
+    structured = enrich.structure("saw this", enr, cfg, router=no_router)
+    path = enrich.route_link(item(), "saw this", enr, structured, vault / "vault")
+    text = path.read_text(encoding="utf-8")
+    assert "## Slides" in text
+    assert "1. https://ig.example/1.jpg — first piece" in text
+    assert "2. https://ig.example/2.jpg" in text
+
+
+def test_instagram_carousel_images_shape(vault, monkeypatch):
+    _apify_env(monkeypatch)
+    cfg = config(vault, apify={"actor_id": "apify~instagram-scraper"})
+
+    def fetch(url, data=None, timeout=10, headers=None):
+        return json.dumps([{
+            "caption": "trip photos",
+            "displayUrl": "https://ig.example/cover.jpg",
+            "images": ["https://ig.example/a.jpg", "https://ig.example/b.jpg"],
+        }]).encode()
+
+    enr = enrich.enrich_url("https://instagram.com/p/XYZ/", cfg, fetch=fetch)
+    assert enr.enriched and len(enr.slides) == 2
+    assert enr.slides[0]["image_url"] == "https://ig.example/a.jpg"
+
+
+def test_instagram_single_post_has_no_slides(vault, monkeypatch):
+    _apify_env(monkeypatch)
+    cfg = config(vault, apify={"actor_id": "apify~instagram-scraper"})
+
+    def fetch(url, data=None, timeout=10, headers=None):
+        return json.dumps([{"caption": "one photo", "displayUrl": "https://ig.example/x.jpg"}]).encode()
+
+    enr = enrich.enrich_url("https://instagram.com/p/ONE/", cfg, fetch=fetch)
+    assert enr.slides == []
+    structured = enrich.structure("nice", enr, cfg, router=no_router)
+    path = enrich.route_link(item(), "nice", enr, structured, vault / "vault")
+    assert "## Slides" not in path.read_text(encoding="utf-8")
+
+
+def test_instagram_carousel_slides_capped_at_20(vault, monkeypatch):
+    _apify_env(monkeypatch)
+    cfg = config(vault, apify={"actor_id": "apify~instagram-scraper"})
+
+    def fetch(url, data=None, timeout=10, headers=None):
+        return json.dumps([{
+            "caption": "big carousel",
+            "childPosts": [{"displayUrl": f"https://ig.example/{i}.jpg"} for i in range(30)],
+        }]).encode()
+
+    enr = enrich.enrich_url("https://instagram.com/p/BIG/", cfg, fetch=fetch)
+    assert len(enr.slides) == 20
+
+
+def test_retry_pending_retries_instagram_beyond_attempt_2_once_apify_configured(vault, monkeypatch):
+    folder = vault / "vault" / "04-Resources"
+    folder.mkdir(parents=True)
+    note = folder / "2026-07-01-a-reel.md"
+    note.write_text(
+        "---\nid: 20260701090000\ntype: resource\nresource_type: article\n"
+        "source_url: https://instagram.com/p/ABC/\nplatform: instagram\n"
+        "enriched: false\nenrich_attempts: 2\n"
+        f"enrich_last: {(datetime(2026, 6, 28)).isoformat(timespec='seconds')}\n---\n\n"
+        "## Insight\n\nsaw this\n", encoding="utf-8")
+
+    def no_apify_fetch(url, data=None, timeout=10, headers=None):
+        raise AssertionError("should not be called before Apify is configured")
+
+    events = EventLog(vault / "events.db", vault / "vault")
+    # not configured yet — the note must be left alone (past its 1 guaranteed retry)
+    enrich.retry_pending(config(vault), events, now=datetime(2026, 7, 3), fetch=no_apify_fetch)
+    fm_after, _ = enrich._parse_note(note.read_text(encoding="utf-8"))
+    assert fm_after["enrich_attempts"] == "2"
+
+    _apify_env(monkeypatch)
+    cfg = config(vault, apify={"actor_id": "apify~instagram-scraper"})
+
+    def fetch(url, data=None, timeout=10, headers=None):
+        return json.dumps([{"caption": "now enriched", "displayUrl": "https://ig.example/x.jpg"}]).encode()
+
+    enrich.retry_pending(cfg, events, now=datetime(2026, 7, 3), fetch=fetch)
+    fm_after, _ = enrich._parse_note(note.read_text(encoding="utf-8"))
+    assert fm_after["enrich_attempts"] == "3"
+    assert fm_after["enriched"] == "true"
 
 
 def test_instagram_unconfigured_is_graceful(vault):

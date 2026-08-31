@@ -12,6 +12,7 @@ logs a plain-English event, pushes one ntfy, and the loop moves on.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import subprocess
@@ -20,7 +21,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import (archive, classify as classify_mod, config as config_mod, enrich, errors,
-               extract, ingest, intake, route, todos, transliterate, vaultsync, vision as vision_mod)
+               extract, ingest, intake, plaud, relationships, route, todos, transliterate,
+               vaultsync, vision as vision_mod)
 from .events import EventLog
 from . import transcribe as transcribe_mod
 from .transcribe import Transcriber, build_transcriber
@@ -78,16 +80,18 @@ class Result:
     error: str = ""
 
 
-def _transcribe(item, deps: Deps, events: EventLog | None = None) -> str:
+def _transcribe(item, deps: Deps, events: EventLog | None = None,
+                duration: float | None = None) -> str:
     """Text passes through; an image has no transcript at all — the watcher
     reads it directly via vision, never as text (Pass V2/V3); audio goes to
     the engine — whole for a normal recording, in stitched 10-minute segments
-    once it is long enough that one request would be refused or crawl (Pass P)."""
+    once it is long enough that one request would be refused or crawl (Pass P).
+    `duration` is probed once by the caller and threaded through (a retry
+    re-enters this function without re-probing)."""
     if item.kind == "image":
         return ""
     if item.kind in ("text", "link"):
         return item.path.read_text(encoding="utf-8")
-    duration = transcribe_mod.probe_duration_seconds(item.path)
     if transcribe_mod.is_long(item.path, duration):
         def on_event(message, ok):
             if events:
@@ -98,7 +102,8 @@ def _transcribe(item, deps: Deps, events: EventLog | None = None) -> str:
     return deps.transcriber.transcribe(item.path)
 
 
-def _transcribe_with_retry(item, deps: Deps, events: EventLog | None = None) -> str:
+def _transcribe_with_retry(item, deps: Deps, events: EventLog | None = None,
+                           duration: float | None = None) -> str:
     """Retry policy: transient failures (network, 5xx, rate limits) get
     RETRY_ATTEMPTS tries with exponential backoff BEFORE quarantine; permanent
     ones (bad audio, missing binary, bad key) escape on the first try.
@@ -107,7 +112,7 @@ def _transcribe_with_retry(item, deps: Deps, events: EventLog | None = None) -> 
     file."""
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
-            return _transcribe(item, deps, events)
+            return _transcribe(item, deps, events, duration)
         except errors.StageError as e:
             e.attempts = attempt
             if not e.transient or attempt == RETRY_ATTEMPTS:
@@ -120,21 +125,37 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
     fkey = str(item.path)
     res = Result(name=item.path.name)
     try:
+        # Probed once up front (chunk routing AND duration_min both need it —
+        # one ffprobe subprocess per file, not two).
+        duration = (transcribe_mod.probe_duration_seconds(item.path)
+                   if item.kind == "audio" else None)
+
         # Stage 2 — transcribe (text skips inside _transcribe); transient
-        # failures are retried with backoff before they can reach quarantine
+        # failures are retried with backoff before they can reach quarantine.
+        #
+        # A Plaud sidecar transcript (ingest.sweep deposits it beside the
+        # audio) short-circuits the engine entirely — no whisper, no OpenAI
+        # call, no chunking. It carries speaker labels a re-transcription
+        # would throw away, so it also decides Stage 3 below. No sidecar, or
+        # an empty one, falls straight through to the ordinary path: a
+        # recording still processing on Plaud's side still yields a note.
         t0 = time.monotonic()
-        transcript = _transcribe_with_retry(item, deps, events)
-        events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000))
+        plaud_transcript = (plaud.read_inbox_sidecars(item.path)[0]
+                            if item.kind == "audio" else None)
+        if plaud_transcript is not None and plaud_transcript.body:
+            transcript = plaud_transcript.body
+            events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000),
+                       message="source=plaud speakers=" + ",".join(plaud_transcript.speakers))
+        else:
+            transcript = _transcribe_with_retry(item, deps, events, duration)
+            events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000))
 
         # Stage 2b — transliterate. Hindi speech comes back in Devanagari; the
         # note leads with Roman Hindi/Hinglish and keeps the original below it.
         # Everything downstream (classify, todos) reads the Hinglish text.
-        duration_min = None
+        duration_min = max(1, round(duration / 60)) if duration else None
         body = transcript
         if item.kind == "audio":
-            seconds = transcribe_mod.probe_duration_seconds(item.path)
-            if seconds:
-                duration_min = max(1, round(seconds / 60))
             if transliterate.has_devanagari(transcript):
                 t0 = time.monotonic()
                 hinglish = transliterate.to_hinglish(transcript, config,
@@ -152,7 +173,15 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
                                message="no transliteration engine answered — "
                                        "note kept in Devanagari")
 
-        if item.kind == "link":
+        # D13: a capture tag wins over automatic link-detection. Without this,
+        # "#journal ... here's the article https://..." was silently pulled
+        # off the journal and filed as an untitled resource — the tag the
+        # user spoke or typed was thrown away. Only an ABSENT tag, or an
+        # explicit #resource, lets a URL fall through to the link branch; any
+        # other tag flows through the normal classify/route path below with
+        # the URL left intact in the body.
+        free_tag = classify_mod.free_route_tag(item, transcript)
+        if item.kind == "link" and (free_tag is None or free_tag == "resource"):
             # A link IS a resource — no classify LLM, no review gate. Enrich
             # (best-effort) then route to 04-Resources. Enrichment never fails
             # the note (Pass L principle).
@@ -220,9 +249,31 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
                        message=f"wrote {paths[0].name}")
             status = "ok"
         else:
-            # Stage 3 — classify
+            # Stage 3 — classify. A Plaud transcript carrying two or more
+            # speakers IS a conversation — deterministic, no model call spent
+            # deciding it. Attendees are only SUGGESTED here (matched against
+            # 07-People) and logged to events.db, never written to
+            # frontmatter: confirming them is a human act in triage, which is
+            # what actually appends the interaction-log line (CLAUDE.md §3 —
+            # no AI bulk-write reaches a person note unreviewed). The note
+            # still parks in 00-Inbox at needs-review — not because the TYPE
+            # is in doubt, but because the attendee suggestions are.
             t0 = time.monotonic()
-            cls = classify_mod.classify(item, transcript, config, deps.classifier_fn)
+            is_conversation = plaud_transcript is not None and plaud_transcript.is_conversation
+            if is_conversation:
+                people = relationships.load_people(config.vault_path)
+                suggested = plaud.match_people(plaud_transcript.speakers, people)
+                cls = classify_mod.Classification(
+                    type="conversation", title=item.name, confidence=1.0,
+                    needs_review=True, routed_by="plaud", speakers=plaud_transcript.speakers)
+                if suggested:
+                    # JSON, not a hand-rolled "label:id,label:id" line — a
+                    # speaker's name is untrusted, spoken-transcript text and
+                    # can legitimately contain a comma or colon of its own.
+                    events.log(fkey, "attendees", "ok",
+                              message=json.dumps({"suggested": suggested}))
+            else:
+                cls = classify_mod.classify(item, transcript, config, deps.classifier_fn)
             status = "needs_review" if cls.needs_review else "ok"
             provider_note = f" provider={cls.provider}" if cls.provider else ""
             events.log(fkey, "classify", status, int((time.monotonic() - t0) * 1000),
@@ -235,7 +286,8 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
 
             # Stage 4 — route
             t0 = time.monotonic()
-            paths = route.route(item, cls, body, config.vault_path, duration_min)
+            paths = route.route(item, cls, body, config.vault_path, duration_min,
+                                transcript_source="plaud" if is_conversation else None)
             events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
                        message=f"wrote {', '.join(p.name for p in paths)}")
 
@@ -347,6 +399,10 @@ def sync_vault(config, events: EventLog) -> None:
 
 def run_once(config, events: EventLog, deps: Deps) -> list[Result]:
     events.heartbeat(HEARTBEAT_PATH)
+    # pull anything new out of the app-owned folders (Plaud Desktop, Note Pro
+    # exports, Voice Memos) before polling the inbox — every entry point
+    # (one-shot run, --loop, --backlog, POST /api/run) drains watched folders
+    ingest.sweep(config, events)
     items = intake.poll(config.inbox_path)
     results = [process_file(it, config, events, deps) for it in items]
     events.write_status(pending=len(intake.poll(config.inbox_path)))
@@ -363,9 +419,8 @@ def run_loop(config, events, deps) -> None:
     print(f"Watching {config.inbox_path} — polling every {POLL_SECONDS // 60} min. Ctrl-C to stop.")
     while True:
         try:
-            # pull anything new out of the app-owned folders (Plaud Desktop,
-            # Note Pro exports, Voice Memos) before polling the inbox
-            ingest.sweep(config, events)
+            # ingest.sweep runs inside run_once now (D1) — every entry point
+            # drains watched folders, not just the loop.
             results = run_once(config, events, deps)
             if results:
                 print(f"Processed {len(results)} file(s).")
@@ -399,6 +454,7 @@ def _git_commit_vault(vault_path: Path, n: int) -> None:
 
 def run_backlog(config, events: EventLog, deps: Deps) -> None:
     events.heartbeat(HEARTBEAT_PATH)
+    ingest.sweep(config, events)  # same as run_once — every entry point drains watched folders
     items = intake.poll(config.inbox_path)  # already oldest-first
     if not items:
         print("Inbox empty — nothing to backlog.")

@@ -31,6 +31,7 @@ from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from pipeline import classify, config as config_mod, enrich, intake, route as proute, todos as ptodos, watcher
+from pipeline.events import EventLog
 
 from . import (build_status, google, integrations, notes, people as people_mod,
                push as push_mod, selfcheck, service, watchdog)
@@ -109,6 +110,12 @@ def _generic_envelope(status: int) -> dict:
 
 class ApproveBody(BaseModel):
     type: str
+    # confirmed 07-People ids — the pipeline only ever SUGGESTS attendees
+    # (via events.db, GET /api/review); a human confirming here is what
+    # actually writes them (CLAUDE.md §3). Ignored for anything but a
+    # conversation note — omitting it behaves exactly as before this field
+    # existed.
+    attendees: list[str] = []
 
 
 class CaptureBody(BaseModel):
@@ -124,9 +131,14 @@ class EngineBody(BaseModel):
 
 class ConfigBody(BaseModel):
     engine: str | None = None
+    language: str | None = None
     confidence_threshold: float | None = None
     ntfy_topic: str | None = None
     ntfy_url: str | None = None
+    transliteration_engine: str | None = None
+    transliteration_ollama_url: str | None = None
+    transliteration_ollama_model: str | None = None
+    transliteration_openrouter_model: str | None = None
 
 
 class StatusBody(BaseModel):
@@ -426,7 +438,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 f"'{body.type}' isn't one of the 11 types in SCHEMA-REFERENCE.md.",
                 "Pick one of the type chips and try again.")
         try:
-            moved_to = notes.approve(config.vault_path, note_id, body.type)
+            moved_to = notes.approve(config.vault_path, note_id, body.type, body.attendees)
         except LookupError:
             raise Envelope(
                 404, "That note isn't waiting for review anymore.",
@@ -509,6 +521,10 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         except BaseException:
             Path(tmp).unlink(missing_ok=True)
             raise
+        # a streamed .webm/.mp4 has no duration in its header — a best-effort
+        # stream-copy remux writes one, so duration_min isn't silently absent
+        # on every mic capture (D7); never blocks the response either way
+        notes.remux_for_duration(path)
         # the inbox is outside the vault — nothing to git-commit here
         return {"id": note_id, "status": "captured"}
 
@@ -623,14 +639,20 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
 
     @app.post("/api/people/{person_id}/draft")
     def person_draft(person_id: str, body: PersonDraftBody, config=Depends(require_token)):
+        # a short-lived connection just for this request — the watcher holds
+        # the long-lived one; both go through sqlite's default busy timeout
+        events = EventLog(db_path, Path(config.vault_path))
         try:
-            result = people_mod.draft(Path(config.vault_path), person_id, body.channel, config)
+            result = people_mod.draft(Path(config.vault_path), person_id, body.channel,
+                                      config, events=events)
         except LookupError:
             raise Envelope(
                 409, "Drafts need your own voice on file first.",
                 "_System/my-voice.md doesn't exist yet, and a draft written without "
                 "it would sound like a chatbot, not like you.",
                 "Paste 3–5 messages you've actually sent in Settings → My voice, then try again.")
+        finally:
+            events.close()
         if result is None:
             raise Envelope(
                 404, "That person isn't in the vault.",

@@ -7,6 +7,7 @@ commit with a descriptive message (CLAUDE.md §3 — revertible AI-era changes).
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random
@@ -18,7 +19,8 @@ import urllib.parse
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from pipeline import classify, route
+from pipeline import classify, relationships, route
+from pipeline.enrich import insight_text as _insight_text
 
 log = logging.getLogger("api")
 
@@ -147,11 +149,48 @@ def _confidence_map(db_path: Path) -> dict[str, float]:
     return out
 
 
+def _suggested_attendees_map(db_path: Path) -> dict[str, dict[str, str]]:
+    """note filename -> {speaker label: person id} — the same join
+    _confidence_map does, over the 'attendees' stage instead of 'classify'.
+    Never written to frontmatter (SCHEMA-REFERENCE.md §7); this is the only
+    way a suggestion ever reaches the API, exactly like classify confidence."""
+    if not db_path.exists():
+        return {}
+    out: dict[str, dict[str, str]] = {}
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT r.message,"
+                " (SELECT a.message FROM events a"
+                "  WHERE a.file = r.file AND a.stage = 'attendees' AND a.id < r.id"
+                "  ORDER BY a.id DESC LIMIT 1)"
+                " FROM events r WHERE r.stage = 'route' AND r.status = 'ok' ORDER BY r.id"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        log.exception("attendees join failed")
+        return {}
+    for route_msg, attendees_msg in rows:
+        if not route_msg or not attendees_msg:
+            continue
+        try:
+            suggested = json.loads(attendees_msg).get("suggested") or {}
+        except json.JSONDecodeError:
+            continue
+        for name in route_msg.removeprefix("wrote ").split(", "):
+            out[name.strip()] = suggested
+    return out
+
+
 def list_review(vault: Path, db_path: Path) -> list[dict]:
     inbox_dir = vault / route.INBOX_FOLDER
     if not inbox_dir.is_dir():
         return []
     confidences = _confidence_map(db_path)
+    suggestions = _suggested_attendees_map(db_path)
+    people_by_id = {p.id: p.name for p in relationships.load_people(vault)}
     items = []
     for path in sorted(inbox_dir.glob("*.md")):
         text = read_note(path)
@@ -160,14 +199,22 @@ def list_review(vault: Path, db_path: Path) -> list[dict]:
         fm, body = parse_frontmatter(text)
         if fm.get("status") != "needs-review":
             continue
+        note_type = fm.get("type", "musing")
+        # always present ([] when there is nothing to suggest) so the client
+        # never has to special-case a missing key
+        attendees = [
+            {"id": pid, "label": label, "name": people_by_id.get(pid, label)}
+            for label, pid in suggestions.get(path.name, {}).items()
+        ] if note_type == "conversation" else []
         items.append({
             "id": fm.get("id", ""),
             "file": f"{route.INBOX_FOLDER}/{path.name}",
             "title": _DATE_PREFIX_RE.sub("", path.stem),
             "excerpt": body.strip()[:EXCERPT_CHARS],
-            "suggested_type": fm.get("type", "musing"),
+            "suggested_type": note_type,
             "confidence": confidences.get(path.name, 0.5),
             "created": fm.get("created", ""),
+            "suggested_attendees": attendees,
         })
     return items
 
@@ -188,9 +235,19 @@ def count_review(vault: Path) -> int:
     return n
 
 
-def approve(vault: Path, note_id: str, new_type: str) -> str:
+def approve(vault: Path, note_id: str, new_type: str,
+           attendees: list[str] | None = None) -> str:
     """Restamp type/status and move the note to its folder. Returns the
-    vault-relative destination. Raises LookupError if the id isn't in review."""
+    vault-relative destination. Raises LookupError if the id isn't in review.
+
+    `attendees` — confirmed 07-People ids, ignored unless new_type is
+    "conversation" — is the ONLY way `attendees:` is ever filled in: the
+    pipeline always writes it empty (SCHEMA-REFERENCE.md §7). Confirming here
+    is what appends the dated interaction-log line to each person, via the
+    same relationships.log_contact the People screen uses (CLAUDE.md §3 — no
+    AI bulk-write reaches a person note unreviewed). An id that doesn't
+    resolve to a real person is skipped rather than failing the whole
+    approve — a stale suggestion should not block filing the note."""
     inbox_dir = vault / route.INBOX_FOLDER
     target: Path | None = None
     text = ""
@@ -234,7 +291,32 @@ def approve(vault: Path, note_id: str, new_type: str) -> str:
         dest.unlink(missing_ok=True)   # roll back rather than duplicate the id
         log.exception("could not remove the inbox copy of %s — approve rolled back", note_id)
         raise
-    git_commit_vault(vault, f"api: filed {note_id} as {new_type}")
+
+    # Confirming attendees happens only AFTER the note is safely filed — had
+    # the move above failed, no person note should have been touched at all.
+    confirmed_names: list[str] = []
+    if attendees and new_type == "conversation":
+        confirmed_ids: list[str] = []
+        title = _DATE_PREFIX_RE.sub("", dest.stem)
+        for person_id in attendees:
+            person = relationships.find_person(vault, person_id)
+            if person is None:
+                continue          # a stale/unknown suggestion — skip it
+            note_line = f"Conversation: {title} ([[{note_id}]])"
+            person.path.write_text(
+                relationships.log_contact(person, note_line, date.today()), encoding="utf-8")
+            confirmed_names.append(person.name)
+            confirmed_ids.append(person_id)
+        if confirmed_ids:
+            fm_block, sep, body = dest.read_text(encoding="utf-8").partition("\n---\n")
+            dest.write_text(
+                route.stamp_list_field(fm_block, "attendees", confirmed_ids) + sep + body,
+                encoding="utf-8")
+
+    commit_msg = f"api: filed {note_id} as {new_type}"
+    if confirmed_names:
+        commit_msg += f" · confirmed attendees: {', '.join(confirmed_names)}"
+    git_commit_vault(vault, commit_msg)
     return str(dest.relative_to(vault))
 
 
@@ -325,6 +407,28 @@ def audio_capture_path(inbox: Path, ext: str, name: str | None, tag: str | None,
         i += 1
         path = inbox / f"{stamp} {slug}-{i}{suffix}{ext}"
     return path, now.strftime("%Y%m%d%H%M") + "00"
+
+
+# A browser MediaRecorder's .webm/.mp4 is a streamed container with no overall
+# duration in its header — ffprobe's format=duration comes back N/A, which
+# means every mic capture would silently skip duration_min (D7/D4). A quick
+# stream-copy remux (no re-encode, no quality loss) writes that header field.
+REMUX_EXT = {".webm", ".mp4"}
+
+
+def remux_for_duration(path: Path) -> None:
+    """Best-effort in place; any failure (no ffmpeg, odd container) leaves the
+    original untouched — this is a metadata nicety, never load-bearing."""
+    if path.suffix.lower() not in REMUX_EXT:
+        return
+    tmp = path.with_name(f".remux-{path.name}")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(path), "-c", "copy", str(tmp)],
+            check=True, capture_output=True, timeout=60)
+        os.replace(tmp, path)
+    except (OSError, subprocess.SubprocessError):
+        Path(tmp).unlink(missing_ok=True)
 
 
 # ---- image capture (Pass V2) -------------------------------------------------
@@ -444,22 +548,6 @@ def _parse_date(value: str) -> date | None:
 def _note_title(path: Path, fm: dict[str, str]) -> str:
     """Frontmatter title wins; fall back to the human filename sans date prefix."""
     return fm.get("title") or _DATE_PREFIX_RE.sub("", path.stem)
-
-
-def _insight_text(body: str) -> str:
-    """Text under a '## Insight' H2, up to the next H2 or EOF. '' when absent/blank."""
-    out: list[str] = []
-    capturing = False
-    for line in body.splitlines():
-        stripped = line.strip()
-        if stripped.lower() == _INSIGHT_HEADING:
-            capturing = True
-            continue
-        if capturing and stripped.startswith("## "):
-            break
-        if capturing:
-            out.append(line)
-    return "\n".join(out).strip()
 
 
 def _sections(body: str) -> list[dict[str, str]]:

@@ -86,6 +86,22 @@ def test_probe_duration_is_none_for_a_non_audio_file(tmp_path):
     assert tr.probe_duration_seconds(junk) is None
 
 
+def test_probe_falls_back_to_stream_duration_when_format_duration_is_missing(tmp_path, monkeypatch):
+    """D7: a streamed MediaRecorder .webm has no container-level duration —
+    the stream-level one must be tried before giving up."""
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        entries = cmd[cmd.index("-show_entries") + 1]
+        calls.append(entries)
+        out = "N/A" if entries == "format=duration" else "42.5"
+        return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert tr.probe_duration_seconds(tmp_path / "clip.webm") == pytest.approx(42.5)
+    assert calls == ["format=duration", "stream=duration"]
+
+
 # ---- chunk + stitch -----------------------------------------------------------
 
 @needs_ffmpeg
@@ -133,6 +149,50 @@ def test_one_permanently_failed_chunk_still_yields_the_meeting(tmp_path):
     assert "chunk text 1" in out and "chunk text 3" in out
     assert "unintelligible — audio archived" in out
     assert any("chunk 2/3 failed permanently" in m for m, ok in events if not ok)
+
+
+@needs_ffmpeg
+def test_a_partial_failure_reports_failed_not_ok(tmp_path):
+    """D20: the summary event must be honest — a 2-hour recording with one
+    unintelligible segment is not a clean 'ok', or it never surfaces in
+    /api/failed / the Pipeline screen."""
+    audio = _wav(tmp_path / "long.wav", 12)
+    events = []
+    tr.transcribe_long(audio, FailingChunk(fail_on=2), sleep=lambda s: None,
+                       on_event=lambda m, ok: events.append((m, ok)), chunk_seconds=4)
+    summary = [(m, ok) for m, ok in events if m.startswith("stitched")]
+    assert len(summary) == 1
+    message, ok = summary[0]
+    assert ok is False
+    assert "1 failed" in message
+
+
+class AlwaysFailingChunk(Transcriber):
+    def transcribe(self, audio_path: Path) -> str:
+        raise StageError("Could not transcribe the recording.",
+                         "OpenAI rejected the segment.", "Check the key.")
+
+
+@needs_ffmpeg
+def test_every_chunk_failing_quarantines_instead_of_a_placeholder_only_note(tmp_path):
+    """D8: a note that is nothing but '[N minutes unintelligible]' placeholders
+    reads like a normal (if odd) memo — that's silent data loss for a whole
+    recording. It must quarantine like any other permanent failure."""
+    audio = _wav(tmp_path / "long.wav", 8)
+    with pytest.raises(StageError) as exc:
+        tr.transcribe_long(audio, AlwaysFailingChunk(), sleep=lambda s: None, chunk_seconds=4)
+    assert exc.value.transient is False
+    assert "any part" in exc.value.what
+
+
+@needs_ffmpeg
+def test_a_fully_successful_run_still_reports_ok(tmp_path):
+    audio = _wav(tmp_path / "long.wav", 8)
+    events = []
+    tr.transcribe_long(audio, CountingTranscriber(), sleep=lambda s: None,
+                       on_event=lambda m, ok: events.append((m, ok)), chunk_seconds=4)
+    summary = [(m, ok) for m, ok in events if m.startswith("stitched")]
+    assert summary == [("stitched 2 chunk(s)", True)]
 
 
 @needs_ffmpeg

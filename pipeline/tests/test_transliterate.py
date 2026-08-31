@@ -108,6 +108,27 @@ def test_markers_and_placeholders_survive_the_prompt_contract():
     assert "summarize" in tl.PROMPT
 
 
+def test_an_engine_that_echoes_devanagari_back_is_treated_as_a_failure():
+    """D9: some proxy or mis-instructed model just reflects the request back —
+    that must never be trusted as 'transliterated', or the note would carry
+    the same Devanagari text under both headings."""
+    out = tl.to_hinglish(HINDI, cfg(OLLAMA), caller=lambda text, block: text)
+    assert out == ""
+
+
+def test_an_engine_that_stays_mostly_devanagari_is_treated_as_a_failure():
+    """Not a byte-for-byte echo, but still mostly Devanagari — a bad or
+    confused reply, not a real transliteration."""
+    mostly_devanagari = HINDI + " ok"
+    out = tl.to_hinglish(HINDI, cfg(OLLAMA), caller=lambda text, block: mostly_devanagari)
+    assert out == ""
+
+
+def test_a_genuine_transliteration_still_passes():
+    out = tl.to_hinglish(HINDI, cfg(OLLAMA), caller=lambda text, block: ROMAN)
+    assert out == ROMAN
+
+
 def test_pieces_split_on_paragraph_boundaries():
     text = "\n\n".join(["para one", "para two", "para three"])
     assert tl._pieces(text, words_per_piece=100) == [text]      # small → one request

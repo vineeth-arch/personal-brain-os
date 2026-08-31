@@ -107,7 +107,7 @@ def test_reminder_fire_once(vault, tmp_path, monkeypatch):
                     CAPTURED, config, llm_fn=resolving_llm)
     events = EventLog(tmp_path / "events.db", config.vault_path)
     pushes = []
-    monkeypatch.setattr(todos.errors, "ntfy", lambda url, topic, msg, title="": pushes.append(msg))
+    monkeypatch.setattr(todos.errors, "ntfy", lambda url, topic, msg, title="", click="": pushes.append(msg))
 
     before_due = datetime(2026, 7, 2, 13, 0, tzinfo=todos.TZ)
     at_due = datetime(2026, 7, 2, 14, 1, tzinfo=todos.TZ)
@@ -150,7 +150,7 @@ def test_unified_digest_single_push_with_pipeline_summary(vault, tmp_path, monke
 
     pushes = []
     monkeypatch.setattr(todos.errors, "ntfy",
-                        lambda url, topic, msg, title="": pushes.append(msg))
+                        lambda url, topic, msg, title="", click="": pushes.append(msg))
     digest_morning = datetime(2026, 7, 2, 8, 5, tzinfo=todos.TZ)
     todos.tick(config, events, now=digest_morning)
     todos.tick(config, events, now=digest_morning + timedelta(hours=2))  # fire-once
@@ -172,7 +172,7 @@ def test_digest_pipeline_summary_only(vault, tmp_path, monkeypatch):
     events.conn.commit()
     pushes = []
     monkeypatch.setattr(todos.errors, "ntfy",
-                        lambda url, topic, msg, title="": pushes.append(msg))
+                        lambda url, topic, msg, title="", click="": pushes.append(msg))
     todos.tick(config, events, now=datetime(2026, 7, 2, 8, 5, tzinfo=todos.TZ))
     assert len(pushes) == 1
     assert "1 captured yesterday" in pushes[0]
@@ -187,7 +187,7 @@ def test_digest_silent_when_nothing_happened(vault, tmp_path, monkeypatch):
     events = EventLog(tmp_path / "events.db", config.vault_path)
     pushes = []
     monkeypatch.setattr(todos.errors, "ntfy",
-                        lambda url, topic, msg, title="": pushes.append(msg))
+                        lambda url, topic, msg, title="", click="": pushes.append(msg))
     now = datetime(2026, 7, 2, 8, 5, tzinfo=todos.TZ)
     todos.tick(config, events, now=now)
     assert pushes == []
@@ -218,7 +218,7 @@ def test_people_ride_the_unified_digest_and_never_a_second_push(vault, tmp_path,
 
     pushes = []
     monkeypatch.setattr(todos.errors, "ntfy",
-                        lambda url, topic, msg, title="": pushes.append((title, msg)))
+                        lambda url, topic, msg, title="", click="": pushes.append((title, msg)))
     events = EventLog(tmp_path / "events.db", config.vault_path)
     todos.tick(config, events, now=datetime(2026, 7, 1, 8, 30, tzinfo=todos.TZ))
 
@@ -242,7 +242,7 @@ def test_a_person_going_cold_is_reason_enough_to_push(vault, tmp_path, monkeypat
 
     pushes = []
     monkeypatch.setattr(todos.errors, "ntfy",
-                        lambda url, topic, msg, title="": pushes.append(msg))
+                        lambda url, topic, msg, title="", click="": pushes.append(msg))
     events = EventLog(tmp_path / "events.db", config.vault_path)
     todos.tick(config, events, now=datetime(2026, 7, 1, 8, 5, tzinfo=todos.TZ))
     assert len(pushes) == 1 and "Quiet Friend" in pushes[0]
@@ -256,8 +256,51 @@ def test_a_truly_quiet_day_stays_quiet(vault, tmp_path, monkeypatch):
 
     pushes = []
     monkeypatch.setattr(todos.errors, "ntfy",
-                        lambda url, topic, msg, title="": pushes.append(msg))
+                        lambda url, topic, msg, title="", click="": pushes.append(msg))
     events = EventLog(tmp_path / "events.db", config.vault_path)
     todos.tick(config, events, now=datetime(2026, 7, 1, 8, 5, tzinfo=todos.TZ))
     assert pushes == []
+    events.close()
+
+
+def test_digest_click_links_to_people_when_the_section_is_non_empty(vault, tmp_path, monkeypatch):
+    """D5: the digest was planned to deep-link into the People screen when it
+    has something to say there, so the push is one tap from the going-cold
+    list instead of a dead-end notification."""
+    config = make_config(vault, deploy={"public_url": "https://cockpit.example.com"})
+    _person(config.vault_path, "Quiet Friend", "20260701090001", "2026-05-01")
+
+    calls = []
+    monkeypatch.setattr(todos.errors, "ntfy",
+                        lambda url, topic, msg, title="", click="": calls.append(click))
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    todos.tick(config, events, now=datetime(2026, 7, 1, 8, 5, tzinfo=todos.TZ))
+    assert calls == ["https://cockpit.example.com/#people"]
+    events.close()
+
+
+def test_digest_click_is_the_plain_url_when_people_has_nothing_to_say(vault, tmp_path, monkeypatch):
+    config = make_config(vault, deploy={"public_url": "https://cockpit.example.com"})
+    extract.extract("I need to call the dentist tomorrow 2pm.", "20260701143000",
+                    CAPTURED, config, llm_fn=resolving_llm)
+
+    calls = []
+    monkeypatch.setattr(todos.errors, "ntfy",
+                        lambda url, topic, msg, title="", click="": calls.append(click))
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    todos.tick(config, events, now=datetime(2026, 7, 2, 8, 5, tzinfo=todos.TZ))
+    assert calls == ["https://cockpit.example.com"]
+    events.close()
+
+
+def test_digest_click_is_empty_without_a_configured_public_url(vault, tmp_path, monkeypatch):
+    config = make_config(vault)
+    _person(config.vault_path, "Quiet Friend", "20260701090001", "2026-05-01")
+
+    calls = []
+    monkeypatch.setattr(todos.errors, "ntfy",
+                        lambda url, topic, msg, title="", click="": calls.append(click))
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    todos.tick(config, events, now=datetime(2026, 7, 1, 8, 5, tzinfo=todos.TZ))
+    assert calls == [""]
     events.close()

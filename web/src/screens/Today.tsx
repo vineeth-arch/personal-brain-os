@@ -9,6 +9,22 @@ import { usePolling } from "../hooks/usePolling";
 
 const HEARTBEAT_LIMIT_MIN = 20;
 
+// Pass C share ergonomics: the PWA's manifest share_target (Android/desktop
+// Chrome) hands a share here as ?title=&text=&url= on plain GET — read once
+// at module load (not per-render, so React StrictMode's double-invoke can't
+// clear the query twice) and immediately clear the query string so a later
+// refresh of this same tab doesn't re-import the same share.
+const SHARED_CAPTURE_TEXT = (() => {
+  if (typeof window === "undefined") return "";
+  const params = new URLSearchParams(window.location.search);
+  const parts = [params.get("title"), params.get("text"), params.get("url")]
+    .map((s) => (s || "").trim())
+    .filter(Boolean);
+  if (!parts.length) return "";
+  window.history.replaceState(null, "", window.location.pathname + window.location.hash);
+  return parts.join(" ");
+})();
+
 type Health = "ok" | "attention" | "problem";
 
 function heartbeatAgeMin(status: Status): number | null {
@@ -299,13 +315,25 @@ function elapsedLabel(seconds: number): string {
   return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: () => void }) {
+function MicButton({
+  tag,
+  name,
+  onCaptured,
+}: {
+  tag: CaptureTag | null;
+  name: string;
+  onCaptured: () => void;
+}) {
   const [state, setState] = useState<MicState>({ kind: "idle" });
   const [seconds, setSeconds] = useState(0);
   const [level, setLevel] = useState(0);
   const recorder = useRef<MediaRecorder | null>(null);
   const stopAudio = useRef<(() => void) | null>(null);
   const stream = useRef<MediaStream | null>(null);
+  // read at the moment recording stops, not at the moment it started — the
+  // quick-capture box is still editable while a recording is in progress
+  const nameRef = useRef(name);
+  nameRef.current = name;
 
   // Navigating away mid-recording used to leave the MediaStream open, so the
   // browser's recording indicator stayed lit with nothing listening. Release
@@ -343,12 +371,12 @@ function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: ()
     setLevel(0);
   };
 
-  const upload = async (blob: Blob, sentTag: CaptureTag | null) => {
+  const upload = async (blob: Blob, sentTag: CaptureTag | null, sentName: string) => {
     // Optimistic, like the text capture: the trust signal comes first.
     setState({ kind: "idle" });
     toast("✅ Captured");
     try {
-      await api.captureAudio(blob, sentTag);
+      await api.captureAudio(blob, sentTag, sentName);
       onCaptured();
     } catch (err) {
       const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
@@ -394,7 +422,7 @@ function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: ()
       const blob = new Blob(parts, { type: rec.mimeType || mime || "audio/webm" });
       teardown();
       media.getTracks().forEach((t) => t.stop());
-      if (blob.size > 0) void upload(blob, tag);
+      if (blob.size > 0) void upload(blob, tag, nameRef.current);
       else setState({ kind: "idle" });
     };
 
@@ -481,7 +509,7 @@ function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: ()
         {state.kind === "pending" && (
           <button
             type="button"
-            onClick={() => void upload(state.blob, tag)}
+            onClick={() => void upload(state.blob, tag, nameRef.current)}
             className="border-emphasis text-emphasis min-h-11 rounded-xl border px-4 text-sm font-bold"
           >
             Retry upload
@@ -625,8 +653,13 @@ function PhotoButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: 
 }
 
 function QuickCapture() {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(SHARED_CAPTURE_TEXT);
   const [tag, setTag] = useState<CaptureTag | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (SHARED_CAPTURE_TEXT) inputRef.current?.focus();
+  }, []);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -658,6 +691,7 @@ function QuickCapture() {
       <form onSubmit={submit} className="mt-2">
         <div className="flex gap-2">
           <input
+            ref={inputRef}
             type="text"
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -673,7 +707,7 @@ function QuickCapture() {
           </button>
         </div>
         <div className="mt-3 flex items-start gap-3">
-          <MicButton tag={tag} onCaptured={() => setTag(null)} />
+          <MicButton tag={tag} name={text} onCaptured={() => setTag(null)} />
           <PhotoButton tag={tag} onCaptured={() => setTag(null)} />
         </div>
         <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Capture tag (optional)">

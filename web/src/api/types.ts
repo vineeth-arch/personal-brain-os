@@ -10,9 +10,11 @@ export interface ErrorEnvelope {
   todo: string;
 }
 
-// The 12 note TYPES — a distinct vocabulary from capture tags
+// The 13 note TYPES — a distinct vocabulary from capture tags
 // (pipeline/classify.py NOTE_TYPES, SCHEMA-REFERENCE.md §2). "company" is
 // never classified by the LLM router — only handshake or manual creation.
+// "conversation" is normally set deterministically by the pipeline when a
+// recording's transcript carries two or more speakers.
 export const NOTE_TYPES = [
   "musing",
   "learning",
@@ -26,6 +28,7 @@ export const NOTE_TYPES = [
   "insight",
   "reflection",
   "company",
+  "conversation",
 ] as const;
 export type NoteType = (typeof NOTE_TYPES)[number];
 
@@ -58,6 +61,15 @@ export interface Status {
   counts: StatusCounts;
 }
 
+// A speaker the pipeline matched against 07-People (pipeline/plaud.match_people)
+// — a SUGGESTION only. It is never written to the note or to the person
+// until a human confirms it via approve()'s attendees list (CLAUDE.md §3).
+export interface SuggestedAttendee {
+  id: string;
+  label: string;   // the raw speaker label as the device wrote it
+  name: string;     // the matched person's name, or `label` when unmatched
+}
+
 export interface ReviewItem {
   id: string;
   file: string;
@@ -66,6 +78,9 @@ export interface ReviewItem {
   suggested_type: NoteType;
   confidence: number;
   created: string;
+  // always present ([] when there is nothing to suggest — never only on
+  // type: conversation), so the client never has to special-case a missing key
+  suggested_attendees: SuggestedAttendee[];
 }
 
 export interface FailedItem {
@@ -206,8 +221,11 @@ export interface ProviderStat {
 }
 
 // Config (GET/PUT /api/config) — safe values only, never key values.
+export type TransliterationEngine = "" | "ollama" | "openrouter";
+
 export interface AppConfig {
   engine: EngineName;
+  language: string; // whisper language hint ("hi"); "" = auto-detect
   confidence_threshold: number;
   ntfy_url: string;
   ntfy_topic: string;
@@ -221,14 +239,26 @@ export interface AppConfig {
   };
   // Pass D — which push targets are wired up. Booleans only, never key values.
   push: PushAvailability;
+  transliteration: {
+    engine: TransliterationEngine;
+    ollama_url: string;
+    ollama_model: string;
+    openrouter_model: string;
+    openrouter_key_present: boolean;
+  };
 }
 
 // PUT /api/config body — only the fields being changed are sent.
 export interface ConfigWrite {
   engine?: EngineName;
+  language?: string;
   confidence_threshold?: number;
   ntfy_url?: string;
   ntfy_topic?: string;
+  transliteration_engine?: TransliterationEngine;
+  transliteration_ollama_url?: string;
+  transliteration_ollama_model?: string;
+  transliteration_openrouter_model?: string;
 }
 
 // Backup (Pass 5): git-commit the vault + copy events.db to backups/.

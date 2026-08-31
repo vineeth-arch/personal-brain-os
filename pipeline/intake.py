@@ -50,9 +50,13 @@ def _parse(path: Path, source_hint: str | None = None) -> Item | None:
         # enriched into a resource note instead of classified (Pass L)
         try:
             kind = "link" if enrich.is_link_text(path.read_text(encoding="utf-8")) else "text"
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             kind = "text"
-        source = "manual"
+        # The hint wins here too. This was hard-coded "manual", which silently
+        # discarded the caller's provenance: a transcript exported beside a
+        # Plaud recording landed as source: manual, so the note claimed a human
+        # typed what the device heard (SCHEMA-REFERENCE.md §2 provenance).
+        source = source_hint or "manual"
     elif ext in IMAGE_EXT:
         kind, source = "image", "manual"
     else:

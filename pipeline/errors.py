@@ -28,14 +28,20 @@ class StageError(Exception):
         return f"What happened: {self.what}\nLikely cause: {self.cause}\nWhat to do: {self.todo}"
 
 
-def ntfy(url: str, topic: str, message: str, title: str = "Brain Cockpit") -> None:
-    """Best-effort push. Never raises — a dead ntfy must not stop the pipeline."""
+def ntfy(url: str, topic: str, message: str, title: str = "Brain Cockpit", click: str = "") -> None:
+    """Best-effort push. Never raises — a dead ntfy must not stop the pipeline.
+
+    `click`, when set, becomes the notification's tap-through URL (ntfy's
+    `Click` header) — e.g. the digest linking straight to the People screen.
+    """
     if not url or not topic:
         return
     try:
+        headers = {"Title": title, "Priority": "high"}
+        if click:
+            headers["Click"] = click
         req = urllib.request.Request(
-            f"{url.rstrip('/')}/{topic}", data=message.encode("utf-8"),
-            headers={"Title": title, "Priority": "high"})
+            f"{url.rstrip('/')}/{topic}", data=message.encode("utf-8"), headers=headers)
         urllib.request.urlopen(req, timeout=10).close()
     except Exception:
         pass  # ponytail: swallow push failures; the event log is the durable record
