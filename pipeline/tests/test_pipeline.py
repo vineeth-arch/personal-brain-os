@@ -203,6 +203,82 @@ def test_mic_recording_runs_end_to_end(tmp_path, monkeypatch):
     assert len(list(archive.iterdir())) == 1
 
 
+def test_untagged_photo_becomes_a_described_resource_note(tmp_path, monkeypatch):
+    """Pass V3: a photo shared with no capture tag is a resource note by
+    default (D-PHOTO), with the sidecar insight preserved and the image moved
+    into the vault's own attachments/ store."""
+    from pipeline.events import EventLog
+
+    vault, inbox, archive, failed = (tmp_path / d for d in ("vault", "inbox", "archive", "failed"))
+    for d in (vault, inbox, archive, failed):
+        d.mkdir()
+    # exactly what api/notes.image_capture_path + image_insight_sidecar write
+    (inbox / ".2026-07-03-0900 sunset.insight").write_text("worth revisiting", encoding="utf-8")
+    (inbox / "2026-07-03-0900 sunset.jpg").write_bytes(b"jpeg-bytes")
+
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed)
+    events = EventLog(tmp_path / "events.db", vault)
+
+    def vision_caller(path, mime, key):
+        import json
+        return json.dumps({"description": "a sunset over the bay", "resource_type": "place",
+                           "extracted_text": ""})
+
+    deps = watcher.Deps(transcriber=None, vision_caller=vision_caller)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key-for-test")
+    results = watcher.run_once(config, events, deps)
+
+    assert len(results) == 1 and results[0].status != "failed", results[0].error
+    resources = _notes_of_type(vault, "04-Resources", "resource")
+    assert len(resources) == 1
+    text = resources[0].read_text(encoding="utf-8")
+    assert "platform: photo" in text and "resource_type: place" in text
+    assert "worth revisiting" in text
+    assert "![[attachments/" in text
+
+    # the photo landed in the vault's attachments/, sidecar consumed, inbox drained
+    attachments = list((vault / "attachments").glob("*.jpg"))
+    assert len(attachments) == 1
+    assert not any(inbox.iterdir())
+    events.close()
+
+
+def test_tagged_photo_routes_to_that_types_folder(tmp_path, monkeypatch):
+    """Pass V3: a photo shared WITH a capture tag files as that type's note
+    instead of a resource (D-PHOTO 'Both')."""
+    from pipeline.events import EventLog
+
+    vault, inbox, archive, failed = (tmp_path / d for d in ("vault", "inbox", "archive", "failed"))
+    for d in (vault, inbox, archive, failed):
+        d.mkdir()
+    (inbox / "2026-07-03-0900 whiteboard #idea.jpg").write_bytes(b"jpeg-bytes")
+
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed)
+    events = EventLog(tmp_path / "events.db", vault)
+
+    # a vision provider that comes back empty — exercises the "vision failed,
+    # note written anyway" path deterministically (no dependence on whether
+    # ANTHROPIC_API_KEY happens to be set in the environment running this test)
+    deps = watcher.Deps(transcriber=None, vision_caller=lambda path, mime, key: "not json")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key-for-test")
+    results = watcher.run_once(config, events, deps)
+
+    assert len(results) == 1 and results[0].status != "failed", results[0].error
+    musings = _notes_of_type(vault, "02-Musings", "musing")
+    assert len(musings) == 1
+    fm = _fm(musings[0])
+    assert fm["source"] == "share"
+    assert fm["origin"] == "human"
+    text = musings[0].read_text(encoding="utf-8")
+    assert "![[attachments/" in text
+    assert "## AI description" not in text  # vision had no key — honest, no invented description
+    events.close()
+
+
 class HindiTranscriber(Transcriber):
     """What whisper returns for Hindi speech: Devanagari, not Roman."""
 

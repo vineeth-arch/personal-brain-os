@@ -504,6 +504,126 @@ function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: ()
   );
 }
 
+// Pass V2/V4: a photo shared straight from the cockpit, not just the
+// Shortcut. The browser is the one that resizes+converts (D-RESIZE) — the
+// server never sees anything but a JPEG under the size cap.
+type PhotoState =
+  | { kind: "idle" }
+  | { kind: "pending"; blob: Blob; name: string }   // decoded, waiting for the upload to land
+  | { kind: "blocked"; what: string; cause: string; todo: string };
+
+const PHOTO_MAX_EDGE = 2048;
+const PHOTO_JPEG_QUALITY = 0.85;
+
+// createImageBitmap decodes HEIC on iOS Safari too, so this is the one place
+// that has to handle whatever format the photo library hands back.
+async function downscaleToJpeg(file: File): Promise<Blob> {
+  const bitmap = await createImageBitmap(file);
+  const scale = Math.min(1, PHOTO_MAX_EDGE / Math.max(bitmap.width, bitmap.height));
+  const width = Math.max(1, Math.round(bitmap.width * scale));
+  const height = Math.max(1, Math.round(bitmap.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("2d canvas context unavailable");
+  ctx.drawImage(bitmap, 0, 0, width, height);
+  bitmap.close?.();
+  return await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error("canvas.toBlob failed"))),
+      "image/jpeg",
+      PHOTO_JPEG_QUALITY,
+    );
+  });
+}
+
+function PhotoButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: () => void }) {
+  const [state, setState] = useState<PhotoState>({ kind: "idle" });
+  const input = useRef<HTMLInputElement | null>(null);
+
+  const upload = async (blob: Blob, name: string, sentTag: CaptureTag | null) => {
+    // Optimistic, like the mic and the text box: the trust signal comes first.
+    setState({ kind: "idle" });
+    toast("✅ Captured");
+    try {
+      await api.captureImage(blob, sentTag, name, "");
+      onCaptured();
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(
+        envelope ? `${envelope.what} ${envelope.todo}` : "The photo didn't reach the server.",
+        "error",
+      );
+      setState({ kind: "pending", blob, name }); // nothing is lost — one tap retries
+    }
+  };
+
+  const handleFile = async (file: File) => {
+    let blob: Blob;
+    try {
+      blob = await downscaleToJpeg(file);
+    } catch {
+      setState({
+        kind: "blocked",
+        what: "That image couldn't be read.",
+        cause: "This browser couldn't decode the photo you picked.",
+        todo: "Try sharing it via the “→ Brain Cloud” Shortcut instead, or pick a different photo.",
+      });
+      return;
+    }
+    void upload(blob, file.name.replace(/\.[^./]+$/, ""), tag);
+  };
+
+  return (
+    <div>
+      <input
+        ref={input}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        aria-label="Attach a photo"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          if (file) void handleFile(file);
+        }}
+      />
+      <button
+        type="button"
+        onClick={() => input.current?.click()}
+        aria-label="Attach a photo"
+        className="bg-subtle border-subtle text-default flex min-h-12 w-12 shrink-0 items-center justify-center rounded-full border"
+      >
+        <svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5" fill="none"
+             stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="3" y="5" width="18" height="14" rx="2" />
+          <circle cx="12" cy="12" r="3.5" />
+          <path d="M8 5l1.3-2h5.4L16 5" />
+        </svg>
+      </button>
+
+      {state.kind === "pending" && (
+        <button
+          type="button"
+          onClick={() => void upload(state.blob, state.name, tag)}
+          className="border-emphasis text-emphasis mt-2 min-h-11 rounded-xl border px-4 text-sm font-bold"
+        >
+          Retry upload
+        </button>
+      )}
+
+      {state.kind === "blocked" && (
+        <div className="border-subtle mt-3 rounded-xl border p-3">
+          <p className="text-emphasis text-sm font-bold">{state.what}</p>
+          <p className="text-subtle mt-1 text-sm">{state.cause}</p>
+          <p className="text-default mt-1 text-sm">{state.todo}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function QuickCapture() {
   const [text, setText] = useState("");
   const [tag, setTag] = useState<CaptureTag | null>(null);
@@ -552,8 +672,9 @@ function QuickCapture() {
             Capture
           </button>
         </div>
-        <div className="mt-3">
+        <div className="mt-3 flex items-start gap-3">
           <MicButton tag={tag} onCaptured={() => setTag(null)} />
+          <PhotoButton tag={tag} onCaptured={() => setTag(null)} />
         </div>
         <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Capture tag (optional)">
           {CAPTURE_TAGS.map((t) => {

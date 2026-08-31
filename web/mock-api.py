@@ -224,6 +224,9 @@ PUSHED: set[str] = set()      # who has been pushed this mock session
 AUDIO_MIME_TYPES = {"audio/webm", "audio/ogg", "audio/mp4", "audio/m4a",
                     "audio/x-m4a", "audio/mpeg", "audio/wav", "audio/x-wav"}
 
+# mirrors api/notes.py IMAGE_MIME_EXT — what the photo button/Shortcut may upload
+IMAGE_MIME_TYPES = {"image/jpeg", "image/png", "image/webp"}
+
 TYPE_FOLDER = {
     "journal": "01-Journal", "musing": "02-Musings", "learning": "03-Learnings",
     "insight": "wiki", "resource": "04-Resources", "project": "05-Projects",
@@ -813,6 +816,25 @@ class Handler(BaseHTTPRequestHandler):
                         "cause": "The recording arrived empty — the mic may have been "
                                  "blocked mid-recording.",
                         "todo": "Check the microphone permission, then record again."}})
+                return self._send(201, {"id": "20260703061500", "status": "captured"})
+            if path == "/api/capture/image":
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                ctype = (self.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                print("CAPTURE IMAGE", ctype, len(raw), "bytes")
+                if ctype not in IMAGE_MIME_TYPES:
+                    heic = "heic" in ctype or "heif" in ctype
+                    return self._send(400, {"error": {
+                        "what": "That photo isn't in a format the pipeline can read.",
+                        "cause": f"The upload's Content-Type was '{ctype or 'missing'}'."
+                                 + (" HEIC photos need converting first." if heic else ""),
+                        "todo": "Convert it to JPEG on the device — the Shortcut's Convert "
+                                "Image step (or the cockpit's own photo button) does this "
+                                "automatically." if heic else "Accepted formats are JPEG, PNG, and WebP."}})
+                if not raw:
+                    return self._send(400, {"error": {
+                        "what": "There was nothing to capture.",
+                        "cause": "The upload arrived empty.",
+                        "todo": "Try sharing the photo again."}})
                 return self._send(201, {"id": "20260703061500", "status": "captured"})
             if path.startswith("/api/review/") and path.endswith("/approve"):
                 note_id = path.split("/")[3]

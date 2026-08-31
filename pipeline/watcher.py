@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import (archive, classify as classify_mod, config as config_mod, enrich, errors,
-               extract, ingest, intake, route, todos, transliterate)
+               extract, ingest, intake, route, todos, transliterate, vision as vision_mod)
 from .events import EventLog
 from . import transcribe as transcribe_mod
 from .transcribe import Transcriber, build_transcriber
@@ -64,6 +64,7 @@ class Deps:
     enrich_fetch: object = None       # fetch(url, data=, timeout=) -> bytes; None = real HTTP
     enrich_router: object = None      # router(prompt, config, validate) -> (data, provider, attempts)
     transliterate_fn: object = None   # caller(text, block) -> str; None = the configured engine
+    vision_caller: object = None      # caller(image_path, mime, key) -> raw text; None = real Claude
     sleep: object = time.sleep        # retry backoff seam (tests inject a recorder)
 
 
@@ -78,9 +79,12 @@ class Result:
 
 
 def _transcribe(item, deps: Deps, events: EventLog | None = None) -> str:
-    """Text passes through; audio goes to the engine — whole for a normal
-    recording, in stitched 10-minute segments once it is long enough that one
-    request would be refused or crawl (Pass P)."""
+    """Text passes through; an image has no transcript at all — the watcher
+    reads it directly via vision, never as text (Pass V2/V3); audio goes to
+    the engine — whole for a normal recording, in stitched 10-minute segments
+    once it is long enough that one request would be refused or crawl (Pass P)."""
+    if item.kind == "image":
+        return ""
     if item.kind in ("text", "link"):
         return item.path.read_text(encoding="utf-8")
     duration = transcribe_mod.probe_duration_seconds(item.path)
@@ -177,6 +181,44 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
                 cls = classify_mod.Classification(type="resource", title=structured.get("title", item.name),
                                                   confidence=1.0, needs_review=False, routed_by="link")
             status = "ok"
+        elif item.kind == "image":
+            # A photo IS media, not something to classify — no LLM classify
+            # call, no review gate. Filed as a resource by default (D-PHOTO),
+            # or as the tagged type's note when a capture tag was attached at
+            # share time. Vision description is best-effort decoration on top,
+            # same principle as link enrichment (Pass L).
+            t0 = time.monotonic()
+            insight = enrich.take_image_insight(item.path)
+            attachment = enrich.move_image_to_vault(item, config.vault_path)
+            attachment_rel = str(attachment.relative_to(config.vault_path))
+            events.log(fkey, "archive", "ok", int((time.monotonic() - t0) * 1000),
+                       message=f"moved to {attachment_rel}")
+
+            t0 = time.monotonic()
+            vision_result = vision_mod.describe(attachment, config, caller=deps.vision_caller)
+            events.log(fkey, "vision", "ok" if vision_result else "failed",
+                       int((time.monotonic() - t0) * 1000),
+                       message="described" if vision_result else "no description — note saved anyway")
+
+            tag = (item.tag or "").lower() if item.tag else None
+            note_type = classify_mod.TAG_TO_TYPE.get(tag)
+            t0 = time.monotonic()
+            if note_type and note_type != "resource":
+                cls = classify_mod.Classification(
+                    type=note_type,
+                    title=(insight.splitlines()[0].strip() if insight else item.name) or "photo",
+                    tags=[tag], confidence=1.0, needs_review=False, routed_by="tag")
+                paths = [enrich.route_tagged_image(item, cls, vision_result, insight,
+                                                   attachment_rel, config.vault_path)]
+            else:
+                paths = [enrich.route_image(item, vision_result, insight, attachment_rel,
+                                            config.vault_path)]
+                cls = classify_mod.Classification(type="resource", title=paths[0].stem,
+                                                  confidence=1.0, needs_review=False,
+                                                  routed_by="tag" if tag else "vision")
+            events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
+                       message=f"wrote {paths[0].name}")
+            status = "ok"
         else:
             # Stage 3 — classify
             t0 = time.monotonic()
@@ -197,17 +239,21 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
             events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
                        message=f"wrote {', '.join(p.name for p in paths)}")
 
-        # Stage 5 — extract action items (append only)
-        t0 = time.monotonic()
-        note_id = item.captured.strftime("%Y%m%d%H%M%S")
-        n = extract.extract(transcript, note_id, item.captured, config, llm_fn=deps.extract_llm)
-        events.log(fkey, "extract", "ok", int((time.monotonic() - t0) * 1000),
-                   message=f"{len(n)} action item(s)")
+        if item.kind != "image":
+            # Stage 5 — extract action items (append only). Images have no
+            # transcript to extract from.
+            t0 = time.monotonic()
+            note_id = item.captured.strftime("%Y%m%d%H%M%S")
+            n = extract.extract(transcript, note_id, item.captured, config, llm_fn=deps.extract_llm)
+            events.log(fkey, "extract", "ok", int((time.monotonic() - t0) * 1000),
+                       message=f"{len(n)} action item(s)")
 
-        # Stage 6 — archive the source
-        t0 = time.monotonic()
-        archive.archive(item.path, config.archive_path)
-        events.log(fkey, "archive", "ok", int((time.monotonic() - t0) * 1000))
+            # Stage 6 — archive the source. An image was already moved into
+            # the vault's attachments/ above — that IS its permanent home, so
+            # there's no separate external archive step for it.
+            t0 = time.monotonic()
+            archive.archive(item.path, config.archive_path)
+            events.log(fkey, "archive", "ok", int((time.monotonic() - t0) * 1000))
 
         res.type = cls.type
         res.dest = paths[0].parent.name
@@ -311,6 +357,7 @@ def run_loop(config, events, deps) -> None:
                 print(f"Processed {len(results)} file(s).")
             todos.tick(config, events)              # reminders + optional digest
             enrich.retry_pending(config, events)    # one re-attempt for stale enriched:false notes
+            intake.sweep_orphaned_sidecars(config.inbox_path)  # abandoned photo-insight dotfiles
         except KeyboardInterrupt:
             raise
         except Exception:

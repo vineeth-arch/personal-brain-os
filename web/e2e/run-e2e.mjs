@@ -492,6 +492,68 @@ try {
     "search by insight text did not find the shared note");
   console.log("✓ Resource search matches on the saved insight, not just the title");
 
+  // ---- 11. Photo capture: the cockpit's own photo button (Pass V2/V3/V4) ------
+  // A real file through the real decode→downscale→JPEG pipeline in the
+  // browser, then the real API + one pipeline pass. ANTHROPIC_API_KEY is
+  // deliberately absent from this server's env (only OPENAI/GOOGLE/DEX keys
+  // are set above), so this also proves the "vision unavailable → honest,
+  // undescribed note" degradation path (Pass V3's D-VISION principle).
+  const tinyPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64");
+  const tinyPngPath = path.join(root, "tiny.png");
+  fs.writeFileSync(tinyPngPath, tinyPng);
+
+  await page.goto(`${BASE}/#/today`);
+  const photoInput = page.locator('input[type="file"][aria-label="Attach a photo"]');
+  await photoInput.waitFor({ state: "attached" });
+  await photoInput.setInputFiles(tinyPngPath);
+  await page.getByText("✅ Captured").waitFor();
+
+  // the toast fires optimistically, before the upload's own await settles
+  // (same pattern as the mic button) — poll the inbox for the upload to
+  // actually land before triggering a pipeline run, so /api/run doesn't
+  // race the in-flight request.
+  const photoInboxDir = path.join(root, "inbox");
+  let photoLanded = false;
+  for (let i = 0; i < 50; i++) {
+    if (fs.readdirSync(photoInboxDir).some((f) => !f.startsWith("."))) { photoLanded = true; break; }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(photoLanded, "the photo upload never landed in the inbox");
+
+  const photoRunRes = await fetch(`${BASE}/api/run`, {
+    method: "POST", headers: { Authorization: `Bearer ${TOKEN}` },
+  });
+  assert.equal(photoRunRes.status, 202, "pipeline run did not start for the photo capture");
+
+  const attachmentsDir = path.join(root, "vault", "attachments");
+  let attachment = null;
+  for (let i = 0; i < 100; i++) {
+    if (fs.existsSync(attachmentsDir)) {
+      const found = fs.readdirSync(attachmentsDir);
+      if (found.length) { attachment = found[0]; break; }
+    }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(attachment, "the photo never landed in vault/attachments");
+  assert.ok(fs.statSync(path.join(attachmentsDir, attachment)).size > 0, "the attachment landed empty");
+
+  let photoNote = null;
+  for (let i = 0; i < 50; i++) {
+    const found = fs.readdirSync(resourcesDir)
+      .map((f) => path.join(resourcesDir, f))
+      .find((p) => fs.readFileSync(p, "utf8").includes(`attachments/${attachment}`));
+    if (found) { photoNote = found; break; }
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(photoNote, "no resource note references the captured photo");
+  const photoText = fs.readFileSync(photoNote, "utf8");
+  assert.match(photoText, /platform: photo/);
+  assert.match(photoText, /enriched: false/);   // no ANTHROPIC_API_KEY in this server's env
+  assert.match(photoText, new RegExp(`!\\[\\[attachments/${attachment}\\]\\]`));
+  console.log("✓ Photo capture: browser downscale → attachments/ → honest undescribed resource note");
+
   console.log("\nE2E: all checks passed.");
 } catch (err) {
   failed = true;

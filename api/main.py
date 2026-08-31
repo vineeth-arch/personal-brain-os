@@ -512,6 +512,69 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         # the inbox is outside the vault — nothing to git-commit here
         return {"id": note_id, "status": "captured"}
 
+    @app.post("/api/capture/image", status_code=201)
+    async def capture_image(request: Request, config=Depends(require_token)):
+        """A photo from the "→ Brain Cloud" Shortcut or the cockpit's own photo
+        button (Pass V2). Same raw-body streaming as capture_audio. The client
+        is always the one that resizes and converts — HEIC/large originals
+        never reach this server, so there's nothing to decode here."""
+        ext = notes.image_extension(request.headers.get("content-type"))
+        if ext is None:
+            ctype = request.headers.get("content-type") or "missing"
+            heic = "heic" in ctype.lower() or "heif" in ctype.lower()
+            raise Envelope(
+                400, "That photo isn't in a format the pipeline can read.",
+                f"The upload's Content-Type was '{ctype}'."
+                + (" HEIC photos need converting first." if heic else ""),
+                "Convert it to JPEG on the device — the Shortcut's Convert Image "
+                "step (or the cockpit's own photo button) does this automatically."
+                if heic else
+                "Accepted formats are JPEG, PNG, and WebP.")
+        tag = request.query_params.get("tag") or None
+        if not notes.valid_tag(tag):
+            raise Envelope(
+                400, "That's not a capture tag the pipeline knows.",
+                f"'{tag}' isn't one of the 8 capture tags in SCHEMA-REFERENCE.md.",
+                "Pick one of the tag chips, or send no tag and let it become a resource.")
+
+        inbox = Path(config.inbox_path)
+        path, note_id = notes.image_capture_path(
+            inbox, ext, request.query_params.get("name"), tag)
+        fd, tmp = tempfile.mkstemp(dir=inbox, prefix=".capture-", suffix=".tmp")
+        written = 0
+        try:
+            with os.fdopen(fd, "wb") as f:
+                async for chunk in request.stream():
+                    written += len(chunk)
+                    if written > notes.MAX_IMAGE_BYTES:
+                        raise Envelope(
+                            413, "That photo is too large to upload.",
+                            f"The upload passed the {notes.MAX_IMAGE_BYTES // (1024 * 1024)} MB "
+                            "limit this server accepts.",
+                            "Resize on the device first — the Shortcut and the cockpit's photo "
+                            "button both do this automatically before sending.")
+                    f.write(chunk)
+            if written == 0:
+                raise Envelope(
+                    400, "There was nothing to capture.",
+                    "The upload arrived empty.",
+                    "Try sharing the photo again.")
+            # the insight sidecar (if any) is written BEFORE the image is
+            # renamed into place, so the watcher — which ignores dotfiles —
+            # never sees the image without it
+            insight = request.query_params.get("insight") or ""
+            if insight.strip():
+                notes.image_insight_sidecar(path).write_text(insight.strip(), encoding="utf-8")
+            os.replace(tmp, path)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            sidecar = notes.image_insight_sidecar(path)
+            if sidecar.exists():
+                sidecar.unlink(missing_ok=True)
+            raise
+        # the inbox is outside the vault — nothing to git-commit here
+        return {"id": note_id, "status": "captured"}
+
     # ---- people (Relationship OS) --------------------------------------------
 
     def _person_or_404(config, person_id: str):
@@ -732,18 +795,24 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
     def resource_enrich(note_id: str, config=Depends(require_token)):
         folder = Path(config.vault_path) / proute.TYPE_FOLDER["resource"]
         target = None
+        target_fm: dict = {}
         if folder.is_dir():
             for path in folder.glob("*.md"):
                 fm, _ = notes.parse_frontmatter(path.read_text(encoding="utf-8"))
                 if fm.get("id") == note_id and fm.get("type") == "resource":
-                    target = path
+                    target, target_fm = path, fm
                     break
         if target is None:
             raise Envelope(
                 404, "That resource isn't in the vault.",
                 "No resource note in 04-Resources has that id.",
                 "Refresh the resource list.")
-        enriched = enrich.reenrich_note(target, config)
+        # a photo resource has no source_url to re-fetch — it re-runs vision
+        # on its own attachment instead (Pass V3)
+        if target_fm.get("platform") == "photo":
+            enriched = enrich.reenrich_image_note(target, config)
+        else:
+            enriched = enrich.reenrich_note(target, config)
         notes.git_commit_vault(config.vault_path, f"api: enriched {note_id}")
         return {"ok": True, "enriched": enriched}
 

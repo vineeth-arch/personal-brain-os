@@ -327,6 +327,55 @@ def audio_capture_path(inbox: Path, ext: str, name: str | None, tag: str | None,
     return path, now.strftime("%Y%m%d%H%M") + "00"
 
 
+# ---- image capture (Pass V2) -------------------------------------------------
+# A photo shared from the "→ Brain Cloud" Shortcut or the cockpit's own photo
+# button. HEIC never reaches this server — resizing AND format conversion
+# happen on the device (the Shortcut's Resize/Convert steps, the PWA's canvas
+# downscale), so no new dependency is needed here (CLAUDE.md §7: no Pillow,
+# no server-side image decode).
+IMAGE_MIME_EXT = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+MAX_IMAGE_BYTES = 15 * 1024 * 1024
+INSIGHT_SIDECAR_SUFFIX = ".insight"
+
+
+def image_extension(content_type: str | None) -> str | None:
+    """Extension for a photo's Content-Type, or None if it isn't an image
+    this server accepts. HEIC/HEIF are deliberately absent — the caller's
+    envelope names the on-device conversion step instead of trying to decode
+    it here."""
+    base = (content_type or "").split(";")[0].strip().lower()
+    return IMAGE_MIME_EXT.get(base)
+
+
+def image_capture_path(inbox: Path, ext: str, name: str | None, tag: str | None,
+                       now: datetime | None = None) -> tuple[Path, str]:
+    """Reserve the inbox filename for a photo — same stamping and collision
+    rule as audio_capture_path."""
+    inbox.mkdir(parents=True, exist_ok=True)
+    now = now or datetime.now()
+    stamp = now.strftime("%Y-%m-%d-%H%M")
+    slug = _slug(name) if name and name.strip() else "photo"
+    suffix = f" #{tag}" if tag else ""
+    path = inbox / f"{stamp} {slug}{suffix}{ext}"
+    i = 1
+    while path.exists():
+        i += 1
+        path = inbox / f"{stamp} {slug}-{i}{suffix}{ext}"
+    return path, now.strftime("%Y%m%d%H%M") + "00"
+
+
+def image_insight_sidecar(image_path: Path) -> Path:
+    """The dotfile carrying a photo's quick thought. Dotfiles are invisible to
+    intake.poll (pipeline/intake.py), and this is written to disk BEFORE the
+    image itself, so the watcher can never see the image without its sidecar
+    already there — no race, no ordering dependency between the two writes."""
+    return image_path.with_name(f".{image_path.stem}{INSIGHT_SIDECAR_SUFFIX}")
+
+
 # ---- resurface ----------------------------------------------------------------
 
 def resurface(vault: Path) -> dict | None:

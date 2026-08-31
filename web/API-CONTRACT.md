@@ -138,6 +138,39 @@ a capture tag, or when the recording arrives empty. `413` when the upload
 passes the server's 100 MB limit — nothing partial is left in the inbox in any
 of those cases.
 
+### `POST /api/capture/image?tag=&name=&insight=`
+
+A photo from the "→ Brain Cloud" Shortcut or the cockpit's own photo button
+(Pass V1/V2/V4). Same raw-body transport as `/capture/audio` — the body is the
+**raw image bytes**, `Content-Type` decides the extension: `image/jpeg`,
+`image/png`, `image/webp`. **The client always resizes and converts before
+sending** (max edge 2048px, JPEG) — the server never decodes an image, so
+HEIC/HEIF are rejected outright, never accepted-then-converted (CLAUDE.md §7:
+no Pillow, no server-side image decode). All three query params are optional:
+`tag` is one of the 8 capture tags (no `#`), `name` becomes the filename's
+human hint (default `photo`), `insight` is the quick thought typed at share
+time — written to a `.{filename}.insight` sidecar dotfile in the inbox
+**before** the image itself, so the watcher never sees an image without any
+insight that was meant to go with it.
+
+`201 {"id": "20260703061500", "status": "captured"}` — same shape as every
+other capture.
+
+`400` when the Content-Type isn't `jpeg`/`png`/`webp` (the message names HEIC
+explicitly and points at the on-device conversion step when the upload looks
+like one), when the tag isn't a capture tag, or when the photo arrives empty.
+`413` when the upload passes the server's 15 MB limit — nothing partial (image
+or sidecar) is left in the inbox in any of those cases.
+
+**What the pipeline does with it** (Pass V3): the photo moves into the
+vault's own `attachments/` folder (its permanent home — unlike audio/text,
+an image IS vault content, embedded straight into its note). With no capture
+tag it becomes a **resource note** (`platform: photo`, same "written
+unconditionally" guarantee as a link — see below); with a tag it's filed as
+that tag's type instead (D-PHOTO "Both"). Either way, Claude vision
+(`pipeline/vision.py`) best-effort describes the photo and pulls out any
+visible text — never invented, never blocking the note from being written.
+
 ### `GET /api/failed`
 
 ```json
@@ -737,6 +770,27 @@ this normalized form and appends the new thought to the existing note's
 `## Insight` instead of creating a duplicate (Pass S3) — the pipeline logs
 `stage=enrich message="status=duplicate"` when this happens.
 
+## Photo capture + vision (Pass V2/V3)
+
+A photo lands via `POST /api/capture/image` (see above), moves into the
+vault's `attachments/` folder, and gets a best-effort description from Claude
+vision (`pipeline/vision.py` — same `claude-haiku-4-5` model as the text
+router, called directly via the `anthropic` SDK since Groq/OpenRouter-free
+aren't multimodal; `ANTHROPIC_API_KEY` env-only). **Same "written
+unconditionally, description is decoration" guarantee as link enrichment** —
+no key or any failure just means an undescribed note, `enriched: false`,
+retryable later; the model is explicitly told to describe only what's visible
+and never invent people/places/text it can't see.
+
+With **no capture tag** it becomes a resource note exactly like a link,
+`platform: photo`, `cover: attachments/<file>`, body `## Insight` (the user's
+sidecar thought) → the embed `![[attachments/<file>]]` → `## Extracted text`
+when vision found any. With a **capture tag** it's filed as that tag's type
+instead (universal frontmatter only, `source: share`) — the vision
+description lives under its own `## AI description` heading rather than
+folding into the user's own words, mirroring how `## Transcript`/`## Caption`
+stay apart from `## Insight` for links.
+
 ### `GET /api/resources?q=`
 
 `q` matches the title, the `description` frontmatter field, OR the
@@ -753,7 +807,9 @@ Re-runs enrichment, rewrites the note (bumps `enrich_attempts`, sets
 `enriched: true` on success), git-commits the vault (`api: enriched <id>`).
 `200 {"ok": true, "enriched": true}`; unknown id → 404 envelope. Notes with
 `enriched: false` also auto-retry once, 24h after the last attempt, on the
-watcher's `--loop` tick.
+watcher's `--loop` tick. A `platform: photo` note has no `source_url` to
+re-fetch, so this re-runs **vision** on its `cover` attachment instead
+(`pipeline/enrich.py::reenrich_image_note`) — same response shape either way.
 
 ### `GET /api/config` — enrichment block (extension)
 

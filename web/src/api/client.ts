@@ -201,6 +201,25 @@ export const api = {
       },
     );
   },
+  // Pass V2/V4: the photo button — the browser has already downscaled and
+  // converted the blob to JPEG (Today.tsx's canvas step), same raw-body
+  // transport as captureAudio. `insight` and `name` ride as query params,
+  // mirroring capture/audio's shape.
+  captureImage: (blob: Blob, tag: CaptureTag | null, name: string, insight: string) => {
+    const params = new URLSearchParams();
+    if (tag) params.set("tag", tag);
+    if (name) params.set("name", name);
+    if (insight) params.set("insight", insight);
+    const query = params.toString();
+    return request<{ id: string; status: string }>(
+      `/api/capture/image${query ? `?${query}` : ""}`,
+      {
+        method: "POST",
+        body: blob,
+        headers: { "Content-Type": blob.type || "image/jpeg" },
+      },
+    );
+  },
   people: () => request<{ items: Person[] }>("/api/people"),
   // Pass X: one name, one channel — feeding the warm-up engine without Obsidian
   addTarget: (name: string, kind: ChannelKind, value: string) =>

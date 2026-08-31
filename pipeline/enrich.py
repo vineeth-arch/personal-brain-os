@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -363,6 +364,210 @@ def route_link(item, user_text: str, enr: Enrichment, structured: dict,
     return path
 
 
+# ---- image capture (Pass V2/V3) ---------------------------------------------
+# A photo is media, not something to classify — no LLM classify call, no
+# review gate. It's either a resource note (default, D-PHOTO) or, when the
+# user attached a capture tag, that type's note instead. Vision description
+# is best-effort decoration on top, same as link enrichment (Pass L).
+
+IMAGE_INSIGHT_SUFFIX = ".insight"  # must match api/notes.INSIGHT_SIDECAR_SUFFIX
+
+
+def take_image_insight(image_path: Path) -> str:
+    """Read + delete the '.<stem>.insight' dotfile the capture endpoint
+    writes BEFORE the image itself lands (api/notes.image_insight_sidecar),
+    so by the time the watcher gets to the image any sidecar is already
+    here — no race, no ordering dependency. '' when the photo was shared
+    with no quick thought."""
+    sidecar = image_path.with_name(f".{image_path.stem}{IMAGE_INSIGHT_SUFFIX}")
+    if not sidecar.is_file():
+        return ""
+    try:
+        return sidecar.read_text(encoding="utf-8").strip()
+    finally:
+        sidecar.unlink(missing_ok=True)
+
+
+def move_image_to_vault(item, vault_path: Path) -> Path:
+    """Move a captured photo out of the inbox into the vault's own
+    attachments/ store — its permanent home, alongside raw/ and wiki/ outside
+    the numbered folders (SCHEMA §1). Unlike audio/text, an image IS vault
+    content once captured (it's embedded straight into its note), so this
+    replaces the generic Stage 6 archive step rather than running beside it."""
+    folder = Path(vault_path) / "attachments"
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = item.captured.strftime("%Y%m%d%H%M%S")
+    slug = route._kebab(item.name) if item.name else "photo"
+    dest = folder / f"{stamp}-{slug}{item.path.suffix.lower()}"
+    i = 1
+    while dest.exists():
+        i += 1
+        dest = folder / f"{stamp}-{slug}-{i}{item.path.suffix.lower()}"
+    shutil.move(str(item.path), str(dest))
+    return dest
+
+
+def build_image_note(item, vision: dict | None, insight: str, attachment_rel: str,
+                     note_id: str, created: str, now_iso: str, attempts: int) -> str:
+    """No capture tag: a resource note like any other share, platform: photo
+    instead of youtube/instagram/web (D-PHOTO default)."""
+    description = str((vision or {}).get("description") or "").strip()
+    rtype = str((vision or {}).get("resource_type") or "").lower()
+    if rtype not in RESOURCE_TYPES:
+        rtype = "article"
+    title = (insight.splitlines()[0].strip() if insight else "") or description or "photo"
+    extracted = str((vision or {}).get("extracted_text") or "").strip()
+    fm = [
+        "---",
+        f"id: {note_id}",
+        "type: resource",
+        f"resource_type: {rtype}",
+        f"created: {created}",
+        f"source: {item.source}",
+        "origin: human",
+        "meta_origin: ai",
+        f"title: {route._scalar(title)}",
+        f"cover: {route._scalar(attachment_rel)}",
+        "source_url: ",
+        f"description: {route._scalar(description)}",
+        "status: inbox",
+        "platform: photo",
+        f"enriched: {'true' if vision else 'false'}",
+        f"enrich_attempts: {attempts}",
+        f"enrich_last: {now_iso}",
+        "categories: []",
+        "subjects: []",
+        "tags: []",
+        "---",
+    ]
+    body = ["\n".join(fm), ""]
+    if insight:
+        # the user's own quick thought, verbatim — origin human, same
+        # guarantee as a link's ## Insight
+        body += ["## Insight", "", insight, ""]
+    body += [f"![[{attachment_rel}]]", ""]
+    if extracted:
+        body += ["## Extracted text", "", extracted, ""]
+    if not vision:
+        body += ["## Enrichment", "",
+                 "> The photo couldn't be described automatically (no vision "
+                 "provider configured, or the attempt failed). The note is "
+                 "saved; the photo is still here.", ""]
+    return "\n".join(body).rstrip() + "\n"
+
+
+def route_image(item, vision: dict | None, insight: str, attachment_rel: str,
+                vault_path: Path, attempts: int = 1) -> Path:
+    note_id = item.captured.strftime("%Y%m%d%H%M%S")
+    created = item.captured.strftime("%Y-%m-%d")
+    now_iso = datetime.now().isoformat(timespec="seconds")
+    title = (insight.splitlines()[0].strip() if insight else "") or \
+            str((vision or {}).get("description") or "").strip() or "photo"
+    dest_dir = Path(vault_path) / route.TYPE_FOLDER["resource"]
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    base = f"{created}-{route._kebab(title)}"
+    path = dest_dir / f"{base}.md"
+    i = 1
+    while path.exists():
+        i += 1
+        path = dest_dir / f"{base}-{i}.md"
+    path.write_text(build_image_note(item, vision, insight, attachment_rel,
+                                     note_id, created, now_iso, attempts), encoding="utf-8")
+    return path
+
+
+def build_tagged_image_note(item, cls, vision: dict | None, insight: str,
+                            attachment_rel: str, note_id: str, created: str) -> str:
+    """A photo captured WITH a capture tag: filed as that type's note instead
+    of a resource (D-PHOTO 'Both') — universal frontmatter only (SCHEMA §2),
+    same as every other tag-routed capture. The vision description is
+    AI-written, so it lives under its own heading rather than folding into
+    the human's own words — mirroring how enrichment-owned sections
+    (## Transcript, ## Caption) stay apart from ## Insight elsewhere here."""
+    fm = [
+        "---",
+        f"id: {note_id}",
+        f"type: {cls.type}",
+        f"created: {created}",
+        "source: share",
+        "origin: human",
+        "meta_origin: human",
+        f"status: {route.STATUS_INITIAL.get(cls.type, 'active')}",
+        f"categories: {route._yaml_links([])}",
+        f"subjects: {route._yaml_links([])}",
+        f"tags: {route._yaml_list(cls.tags)}",
+        "---",
+    ]
+    body = ["\n".join(fm), ""]
+    if insight:
+        body += [insight, ""]
+    body += [f"![[{attachment_rel}]]", ""]
+    description = (vision or {}).get("description")
+    if description:
+        body += ["## AI description", "", description, ""]
+    extracted = (vision or {}).get("extracted_text")
+    if extracted:
+        body += ["## Extracted text", "", extracted, ""]
+    return "\n".join(body).rstrip() + "\n"
+
+
+def route_tagged_image(item, cls, vision: dict | None, insight: str,
+                       attachment_rel: str, vault_path: Path) -> Path:
+    note_id = item.captured.strftime("%Y%m%d%H%M%S")
+    created = item.captured.strftime("%Y-%m-%d")
+    dest_dir = Path(vault_path) / route.TYPE_FOLDER[cls.type]
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    base = f"{created}-{route._kebab(cls.title)}"
+    path = dest_dir / f"{base}.md"
+    i = 1
+    while path.exists():
+        i += 1
+        path = dest_dir / f"{base}-{i}.md"
+    path.write_text(build_tagged_image_note(item, cls, vision, insight, attachment_rel,
+                                            note_id, created), encoding="utf-8")
+    return path
+
+
+def reenrich_image_note(path: Path, config, caller=None) -> bool:
+    """Re-attempt vision for one photo resource note (platform: photo),
+    merging the result in exactly like reenrich_note does for links — only
+    the vision-owned fields/sections are touched; status, rating,
+    categories/subjects/tags, and ## Insight are the user's and stay put.
+    False (no change) when the note has no cover to describe."""
+    from . import vision as vision_mod  # local import: vision imports nothing from enrich
+
+    text = path.read_text(encoding="utf-8")
+    fm, body = _parse_note(text)
+    cover = fm.get("cover", "")
+    if not cover:
+        return False
+    vault_path = path.parents[1]   # <vault>/04-Resources/<note>.md
+    attempts = int(fm.get("enrich_attempts", "1") or "1") + 1
+    result = vision_mod.describe(vault_path / cover, config, caller=caller)
+
+    fm_block = text.split("---\n", 2)[1]
+    updates = {
+        "description": (result or {}).get("description", "") or fm.get("description", ""),
+        "resource_type": (result or {}).get("resource_type", "") or fm.get("resource_type", "article"),
+        "enriched": "true" if result else "false",
+        "enrich_attempts": str(attempts),
+        "enrich_last": datetime.now().isoformat(timespec="seconds"),
+    }
+    for key in ("description", "resource_type", "enriched", "enrich_attempts", "enrich_last"):
+        fm_block = route.stamp_field(fm_block, key, route._scalar(updates[key]))
+
+    body = _replace_section(body, "Extracted text", (result or {}).get("extracted_text", ""))
+    body = _replace_section(
+        body, "Enrichment",
+        "" if result else "> The photo couldn't be described automatically (no vision "
+                          "provider configured, or the attempt failed). The note is "
+                          "saved; the photo is still here.")
+
+    path.write_text("---\n" + fm_block.rstrip("\n") + "\n---\n\n" + body.strip() + "\n",
+                    encoding="utf-8")
+    return bool(result)
+
+
 # ---- frontmatter round-trip for retry ---------------------------------------
 
 def _unquote(value: str) -> str:
@@ -468,17 +673,18 @@ def reenrich_note(path: Path, config, fetch=None, router=None) -> bool:
     return enr.enriched
 
 
-def retry_pending(config, events, now: datetime | None = None, fetch=None, router=None) -> None:
+def retry_pending(config, events, now: datetime | None = None, fetch=None, router=None,
+                  vision_caller=None) -> None:
     """--loop tick: one auto re-attempt for enriched:false notes older than 24h.
-    Never raises — enrichment is decoration."""
+    Never raises — enrichment (link or vision) is decoration."""
     try:
-        _retry_pending(config, events, now or datetime.now(), fetch, router)
+        _retry_pending(config, events, now or datetime.now(), fetch, router, vision_caller)
     except Exception:
         import logging
         logging.getLogger("pipeline").exception("enrich retry failed")
 
 
-def _retry_pending(config, events, now: datetime, fetch, router) -> None:
+def _retry_pending(config, events, now: datetime, fetch, router, vision_caller=None) -> None:
     folder = Path(config.vault_path) / route.TYPE_FOLDER["resource"]
     if not folder.is_dir():
         return
@@ -494,6 +700,9 @@ def _retry_pending(config, events, now: datetime, fetch, router) -> None:
             continue
         if (now - last).total_seconds() < 24 * 3600:
             continue
-        enriched = reenrich_note(path, config, fetch=fetch, router=router)
+        if fm.get("platform") == "photo":
+            enriched = reenrich_image_note(path, config, caller=vision_caller)
+        else:
+            enriched = reenrich_note(path, config, fetch=fetch, router=router)
         events.log(str(path), "enrich", "ok",
                    message=f"platform={fm.get('platform', '')} enriched={str(enriched).lower()} retry=auto")
