@@ -34,6 +34,7 @@ _iso = lambda dt: dt.isoformat(timespec="seconds")
 # gmail/gcal are handled by _google_cards below — they upgrade from bare links
 # to live cards once the server has a Google client and the user has connected.
 LINK_DEFS = [
+    ("handshake", "Handshake", "link", "Your relationship OS — people, companies, and the vault sync."),
     ("dex", "Dex", "link", "Your personal CRM for people and relationships."),
     ("caldiy", "cal.diy", "calendar", "Scheduling links."),
     ("n8n", "n8n", "server", "Your automation workflows."),

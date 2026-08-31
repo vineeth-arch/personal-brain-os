@@ -10,9 +10,13 @@ from dataclasses import dataclass, field
 from . import llm
 from .errors import StageError
 
-# The 11 note TYPES (SCHEMA-REFERENCE.md §2) — a distinct vocabulary from tags.
+# The 12 note TYPES (SCHEMA-REFERENCE.md §2) — a distinct vocabulary from tags.
+# "company" is never voice-captured or classified by the LLM router — it only
+# ever arrives from handshake or manual creation — but it has to be in this
+# list or validate_classification() and route() would both reject it.
 NOTE_TYPES = ["musing", "learning", "todo", "journal", "project", "person",
-              "resource", "decision", "principle", "insight", "reflection"]
+              "resource", "decision", "principle", "insight", "reflection",
+              "company"]
 
 # The 8 capture/routing TAGS (SCHEMA-REFERENCE.md §4) → the note type they route to.
 TAG_TO_TYPE = {

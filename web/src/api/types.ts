@@ -10,8 +10,9 @@ export interface ErrorEnvelope {
   todo: string;
 }
 
-// The 11 note TYPES — a distinct vocabulary from capture tags
-// (pipeline/classify.py NOTE_TYPES, SCHEMA-REFERENCE.md §2).
+// The 12 note TYPES — a distinct vocabulary from capture tags
+// (pipeline/classify.py NOTE_TYPES, SCHEMA-REFERENCE.md §2). "company" is
+// never classified by the LLM router — only handshake or manual creation.
 export const NOTE_TYPES = [
   "musing",
   "learning",
@@ -24,6 +25,7 @@ export const NOTE_TYPES = [
   "principle",
   "insight",
   "reflection",
+  "company",
 ] as const;
 export type NoteType = (typeof NOTE_TYPES)[number];
 

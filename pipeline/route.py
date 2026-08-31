@@ -24,6 +24,7 @@ TYPE_FOLDER = {
     "reflection": "08-Reflections",
     "decision": "09-Decisions",
     "principle": "10-Principles",
+    "company": "11-Companies",
 }
 INBOX_FOLDER = "00-Inbox"
 
@@ -32,6 +33,7 @@ STATUS_INITIAL = {
     "resource": "inbox", "decision": "open", "todo": "open", "project": "active",
     "person": "active", "musing": "active", "learning": "active", "insight": "active",
     "journal": "active", "reflection": "active", "principle": "active",
+    "company": "active",
 }
 
 # Only these types may split a genuinely multi-topic recording (SCHEMA §8).

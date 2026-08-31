@@ -1,6 +1,6 @@
 # **SCHEMA-REFERENCE — the canonical schema (lock before note \#1)**
 
-**This is the single source of truth for structure.** Every note, every script, every AI routing pass reads from here. These conventions are **migrations if changed late** — they're locked at Phase 0.4, before note \#1. Features can change; this should not. Version: 1.0 · 2026-06-05
+**This is the single source of truth for structure.** Every note, every script, every AI routing pass reads from here. These conventions are **migrations if changed late** — they're locked at Phase 0.4, before note \#1. Features can change; this should not. Version: 1.2 · 2026-08-31
 
 ---
 
@@ -17,7 +17,7 @@ yaml
 id: 20260605143000        \# immutable timestamp YYYYMMDDHHmmss — links point here  
 type: musing              \# see type list below  
 created: 2026-06-05  
-source: voice             \# voice | plaud | share | web-clipper | dex | manual | ai-compiled  
+source: voice             \# voice | plaud | share | web-clipper | dex | manual | ai-compiled | handshake  
 origin: human             \# human | ai  (provenance firewall)  
 status: active            \# lifecycle per type (section 6\)  
 categories: \[\]            \# what it IS    — as \[\[links\]\] (Kepano model), not flat tags  
@@ -53,6 +53,7 @@ Use these relation types in `wiki/` notes; each edge points to a fixed `id`: `su
 | project | `active → slipping → done | dropped` |
 | person | `active → cold → dormant` |
 | musing/learning/insight | `active → archived` |
+| company | `active → archived` |
 
 ## **7\. PER-DOMAIN SCHEMAS (extra frontmatter on top of universal)**
 
@@ -117,6 +118,16 @@ status: active            \# active | cold | dormant
 
 Body: `## Context` · `## Needs` · `## Interaction log` (append-only, dated) · `## Next action`.
 
+### **Company (`11-Companies`) — written and updated by handshake**
+
+yaml  
+type: company  
+name:  
+domain:  
+status: active            \# active | archived
+
+Body: `## About` · `## People` (one line per person, `- [[person-slug]] — role (from date)`) · `## Facts` (append-only, dated) · `## Projects`. Person notes back-link via frontmatter `company: "[[company-slug]]"` (already `PATCHABLE` on the person side).
+
 ## **8\. CAPTURE / PROCESSING RULES**
 
 * **One recording \= one note, kept at FULL LENGTH. NO splitting into atomic notes.** The watcher keeps the transcript whole in the body; it only *additionally* extracts action items to `06-Todos/<date>.md`.  
@@ -129,6 +140,7 @@ Body: `## Context` · `## Needs` · `## Interaction log` (append-only, dated) ·
 
 * Note files: `YYYY-MM-DD-kebab-title.md` (the `id` in frontmatter is the durable handle; the filename is for humans).  
 * Daily notes: `01-Journal/YYYY-MM-DD.md`. Todos: `06-Todos/YYYY-MM-DD.md`. Reflections: `08-Reflections/YYYY-MM-DD-weekly-reflection.md`.
+* **Exception:** `07-People/` and `11-Companies/` notes written by **handshake** use a stable entity slug (`kebab-name.md`, no date prefix) instead — handshake's own sync stores the resolved path once and reuses it, and a predictable slug is the fallback if that ever has to be recomputed. This is a handshake-side convention, not a requirement on the folder itself: the cockpit's own person-note writer (`pipeline/relationships.py new_person_note`) still uses the standard `YYYY-MM-DD-kebab-name.md` form, and resolves people by frontmatter `id`, never by filename — so both conventions can coexist in `07-People/` without conflict. Expect the folder to hold both filename shapes.
 
 **Type → folder** (mirrors `pipeline/route.py` `TYPE_FOLDER` exactly — **keep the two in sync**; any change here or there must change both in the same commit):
 
@@ -146,6 +158,7 @@ Body: `## Context` · `## Needs` · `## Interaction log` (append-only, dated) ·
 | decision | `09-Decisions` |
 | principle | `10-Principles` |
 | insight | `wiki/` |
+| company | `11-Companies` |
 
 `raw/` is user-managed and outside this table — the pipeline never writes there.
 
