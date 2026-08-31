@@ -152,3 +152,88 @@ def test_router_fallback_is_plain_resource(vault):
     structured = enrich.structure("interesting", enr, config(vault), router=no_router)
     assert structured["resource_type"] == "article" and structured["title"] == "Some Page"
     assert structured["is_recipe"] is False
+
+
+# ---- Pass 13 additions: these two behaviors already existed from Pass L —
+# these tests verify/lock them in with fixtures, rather than re-implementing
+# what enrich.py already does (video.google.com/timedtext transcript fetch,
+# /shorts/ + youtu.be id extraction, and user_text always feeding structure()
+# regardless of platform enrichment success).
+
+TIMEDTEXT_XML = (
+    b'<?xml version="1.0" encoding="utf-8" ?><transcript>'
+    b'<text start="0.0" dur="2.5">Welcome back to the channel</text>'
+    b'<text start="2.5" dur="3.0">today we are baking sourdough bread</text>'
+    b"</transcript>"
+)
+
+
+@pytest.mark.parametrize("url", [
+    "https://youtu.be/dQw4w9WgXcQ",
+    "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "https://www.youtube.com/shorts/dQw4w9WgXcQ",
+    "https://youtube.com/shorts/dQw4w9WgXcQ?feature=share",
+])
+def test_youtube_url_forms_all_extract_the_video_id(vault, url):
+    def fetch(fetch_url, data=None, timeout=10):
+        if "oembed" in fetch_url:
+            return YT_OEMBED
+        assert "v=dQw4w9WgXcQ" in fetch_url  # the id reached the timedtext call
+        return TIMEDTEXT_XML
+    enr = enrich.enrich_url(url, config(vault), fetch=fetch)
+    assert enr.enriched and enr.platform == "youtube"
+    assert "sourdough bread" in enr.transcript
+
+
+def test_youtube_transcript_is_written_into_the_note(vault):
+    def fetch(url, data=None, timeout=10):
+        return YT_OEMBED if "oembed" in url else TIMEDTEXT_XML
+    enr = enrich.enrich_url("https://youtu.be/abc12345678", config(vault), fetch=fetch)
+    assert "Welcome back to the channel" in enr.transcript
+    structured = enrich.structure("great tutorial", enr, config(vault), router=no_router)
+    path = enrich.route_link(item(), "great tutorial", enr, structured, vault / "vault")
+    text = path.read_text()
+    assert "## Transcript" in text
+    assert "Welcome back to the channel" in text
+    assert "today we are baking sourdough bread" in text
+    # Transcript takes precedence over Caption when both could apply
+    assert "## Caption" not in text
+
+
+def test_youtube_transcript_absent_degrades_quietly(vault):
+    """Not every video has captions — an empty timedtext response must not
+    be an error, just no ## Transcript section (already the case; locking
+    it in)."""
+    def fetch(url, data=None, timeout=10):
+        return YT_OEMBED if "oembed" in url else b""
+    enr = enrich.enrich_url("https://youtu.be/abc12345678", config(vault), fetch=fetch)
+    assert enr.enriched is True  # oEmbed still succeeded
+    assert enr.transcript == ""
+    structured = enrich.structure("nice video", enr, config(vault), router=no_router)
+    path = enrich.route_link(item(), "nice video", enr, structured, vault / "vault")
+    assert "## Transcript" not in path.read_text()
+
+
+def test_instagram_failure_still_gets_a_real_description_from_user_words(vault):
+    """The owner's own words are fed into structure() regardless of whether
+    platform enrichment (Apify) succeeded — this is what makes the
+    fallback-first Instagram path actually useful rather than a blank note."""
+    def working_router(prompt, cfg, validate):
+        assert "saw this amazing plating technique" in prompt  # user's words reached the prompt
+        data = {"resource_type": "article", "title": "Plating technique",
+                "description": "A plating technique worth trying."}
+        assert validate(data) is None
+        return data, "gemini-flash", []
+
+    enr = enrich.enrich_url("https://instagram.com/reel/XYZ/", config(vault),
+                            fetch=lambda *a, **k: b"")  # unconfigured -> enriched=False
+    assert enr.enriched is False
+    structured = enrich.structure("saw this amazing plating technique", enr, config(vault),
+                                  router=working_router)
+    assert structured["description"] == "A plating technique worth trying."
+    path = enrich.route_link(item(), "saw this amazing plating technique", enr, structured,
+                             vault / "vault")
+    text = path.read_text()
+    assert "description: A plating technique worth trying." in text
+    assert "enriched: false" in text  # honest about the platform data itself
+    assert "## Insight" in text and "saw this amazing plating technique" in text
