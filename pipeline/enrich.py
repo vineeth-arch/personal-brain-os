@@ -75,11 +75,13 @@ def strip_urls(text: str) -> str:
     """The user's words, minus any URL — the link already lives in
     `source_url`, so leaving it in `## Insight` too just crowds out the one
     line of thought the user actually typed. Collapses the blank space a
-    removed URL leaves behind; whitespace-only input returns ''. Handles
-    every URL in the text (not just the one that made this a link capture,
-    D14) — a re-share sometimes carries a second link in the thought itself."""
+    removed URL leaves behind (including a run of spaces left mid-line, not
+    just at the edges) so the result reads as one clean sentence; whitespace-
+    only input returns ''. Handles every URL in the text (not just the one
+    that made this a link capture, D14) — a re-share sometimes carries a
+    second link in the thought itself."""
     without = _URL_RE.sub("", text or "")
-    lines = [ln.strip() for ln in without.splitlines()]
+    lines = [re.sub(r"[ \t]+", " ", ln).strip() for ln in without.splitlines()]
     return "\n".join(ln for ln in lines if ln).strip()
 
 

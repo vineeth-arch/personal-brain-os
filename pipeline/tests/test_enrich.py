@@ -186,7 +186,7 @@ def test_insight_section_absent_when_text_is_url_only(vault):
 
 
 def test_strip_urls_handles_multiple_urls_and_blank_input():
-    assert enrich.strip_urls("see https://a.com/x and also https://b.com/y") == "see  and also"
+    assert enrich.strip_urls("see https://a.com/x and also https://b.com/y") == "see and also"
     assert enrich.strip_urls("https://only-a-url.com") == ""
     assert enrich.strip_urls("   ") == ""
     assert enrich.strip_urls("") == ""
