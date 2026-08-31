@@ -20,6 +20,9 @@ config.json
 # Vite build output
 web/dist/
 
+# Stray nested clone (accidental duplicate, never re-add)
+web/brain-cockpit/
+
 # Watcher runtime heartbeat (liveness only, disposable)
 .watcher-heartbeat
 
