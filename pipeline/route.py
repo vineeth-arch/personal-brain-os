@@ -44,16 +44,65 @@ def _kebab(text: str) -> str:
     return slug[:60] or "note"
 
 
+# Frontmatter values come from a language model and from scraped page metadata,
+# neither of which owes us well-formed YAML. A title carrying a newline, or a
+# tag carrying a colon, rewrites the block: the remainder of the value becomes a
+# bogus top-level key and every field after it is lost. The parser is
+# line-based, so the damage is silent — the note just quietly loses its type or
+# its id. Hence: collapse to one line, and quote anything YAML would read as
+# structure. Values that are already plain (ordinary titles, bare URLs) are left
+# byte-identical, so this changes no existing note.
+_NEEDS_QUOTE = re.compile(r": | #|:$")
+_INDICATORS = tuple("-?:,[]{}#&*!|>'\"%@`")
+
+
+def _scalar(value: object) -> str:
+    """One frontmatter scalar, safe to interpolate after `key: `."""
+    text = re.sub(r"\s+", " ", str("" if value is None else value)).strip()
+    if not text:
+        return ""
+    if text.startswith(_INDICATORS) or _NEEDS_QUOTE.search(text):
+        return '"' + text.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return text
+
+
+def _wikilink(value: object) -> str:
+    """A [[wikilink]] target: one line, and no bracket or quote that would
+    escape the link and take the rest of the block with it."""
+    text = re.sub(r"\s+", " ", str("" if value is None else value)).strip()
+    return re.sub(r'[\[\]"]', "", text)
+
+
+def stamp_field(fm_block: str, key: str, value: str) -> str:
+    """Set a column-0 scalar frontmatter field in `fm_block`, appending it if
+    the note doesn't carry it yet. The block is the raw text between the ---
+    fences. Every other line, including list values, is left untouched."""
+    out, found = [], False
+    for line in fm_block.splitlines():
+        if line.startswith(f"{key}:"):
+            out.append(f"{key}: {value}".rstrip())
+            found = True
+        else:
+            out.append(line)
+    if not found:
+        out.append(f"{key}: {value}".rstrip())
+    return "\n".join(out)
+
+
 def _yaml_links(values: list[str]) -> str:
-    if not values:
+    links = [_wikilink(v) for v in (values or [])]
+    links = [v for v in links if v]
+    if not links:
         return "[]"
-    return "\n" + "\n".join(f'  - "[[{v}]]"' for v in values)
+    return "\n" + "\n".join(f'  - "[[{v}]]"' for v in links)
 
 
 def _yaml_list(values: list[str]) -> str:
-    if not values:
+    items = [_scalar(v) for v in (values or [])]
+    items = [v for v in items if v]
+    if not items:
         return "[]"
-    return "\n" + "\n".join(f"  - {v}" for v in values)
+    return "\n" + "\n".join(f"  - {v}" for v in items)
 
 
 def build_frontmatter(item, cls, duration_min: int | None = None) -> str:

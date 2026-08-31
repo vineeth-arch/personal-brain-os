@@ -147,6 +147,13 @@ def _title(text: str, path: Path) -> str:
     return stem.replace("-", " ").title()
 
 
+def _unquote(value: str) -> str:
+    """Give back the string, not the quoting (see api/notes._unquote)."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
+
+
 def parse_person(path: Path) -> Person | None:
     try:
         text = path.read_text()
@@ -161,7 +168,7 @@ def parse_person(path: Path) -> Person | None:
     for line in parts[1].splitlines():
         if ":" in line and not line.startswith((" ", "\t")):
             key, _, value = line.partition(":")
-            fm[key.strip()] = value.strip()
+            fm[key.strip()] = _unquote(value.strip())
     if fm.get("type") != "person":
         return None
     try:
@@ -275,9 +282,15 @@ def _replace_field(text: str, key: str, value: str) -> str:
 
 
 def _append_to_section(text: str, heading: str, line: str) -> str:
-    """Append a line under an H2, creating the section if it isn't there."""
+    """Append a line under an H2, creating the section if it isn't there.
+
+    The presence test has to be line-exact, exactly like the loop below. A
+    substring test said yes for "### Interaction log" (which contains
+    "## Interaction log"), then matched no line — so the function returned the
+    text unchanged, log_contact answered 200, the UI said "✅ Logged", and the
+    interaction was silently lost."""
     marker = f"## {heading}"
-    if marker not in text:
+    if not any(current.strip() == marker for current in text.splitlines()):
         return text.rstrip() + f"\n\n{marker}\n\n{line}\n"
     out, inserted = [], False
     lines = text.splitlines()

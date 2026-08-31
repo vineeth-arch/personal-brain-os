@@ -29,6 +29,18 @@ EXCERPT_CHARS = 300
 
 # ---- frontmatter ------------------------------------------------------------
 
+def _unquote(value: str) -> str:
+    """Strip the surrounding quotes a YAML scalar may carry.
+
+    route._scalar quotes anything that would otherwise be read as structure, and
+    people hand-quote values in Obsidian too, so the reader has to give back the
+    string rather than the quoting."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        inner = value[1:-1]
+        return inner.replace('\\"', '"').replace("\\\\", "\\") if value[0] == '"' else inner
+    return value
+
+
 def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     """Flat top-level keys only (list values are indented and skipped), matching
     the format route.build_frontmatter writes."""
@@ -41,7 +53,7 @@ def parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     for line in parts[1].splitlines():
         if ":" in line and not line.startswith((" ", "\t")):
             k, _, v = line.partition(":")
-            fm[k.strip()] = v.strip()
+            fm[k.strip()] = _unquote(v.strip())
     return fm, parts[2]
 
 
@@ -181,8 +193,24 @@ def approve(vault: Path, note_id: str, new_type: str) -> str:
         i += 1
         dest = dest_dir / f"{target.stem}-{i}{target.suffix}"
 
-    dest.write_text(_restamp(text, new_type, new_status))
-    target.unlink()
+    # Write to a temp file in the destination folder and rename it into place,
+    # then remove the inbox copy. If the unlink fails the note would exist twice
+    # under one immutable id (SCHEMA §1), which breaks every link pointing at
+    # it — so that failure is surfaced, not swallowed.
+    fd, tmp = tempfile.mkstemp(dir=dest_dir, prefix=".approve-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(_restamp(text, new_type, new_status))
+        os.replace(tmp, dest)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    try:
+        target.unlink()
+    except OSError:
+        dest.unlink(missing_ok=True)   # roll back rather than duplicate the id
+        log.exception("could not remove the inbox copy of %s — approve rolled back", note_id)
+        raise
     git_commit_vault(vault, f"api: filed {note_id} as {new_type}")
     return str(dest.relative_to(vault))
 
@@ -429,19 +457,9 @@ def _ensure_origin_human(fm_block: str) -> str:
 
 
 def _stamp_field(fm_block: str, key: str, value: str) -> str:
-    """Set a column-0 scalar frontmatter field, appending it if absent."""
-    lines = fm_block.splitlines()
-    out: list[str] = []
-    found = False
-    for line in lines:
-        if line.startswith(f"{key}:"):
-            out.append(f"{key}: {value}")
-            found = True
-        else:
-            out.append(line)
-    if not found:
-        out.append(f"{key}: {value}")
-    return "\n".join(out)
+    """Set a column-0 scalar frontmatter field, appending it if absent.
+    One implementation, in the pipeline's frontmatter authority."""
+    return route.stamp_field(fm_block, key, value)
 
 
 def _resource_summary(vault: Path, path: Path, fm: dict[str, str], body: str) -> dict:

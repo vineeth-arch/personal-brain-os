@@ -30,7 +30,7 @@ _URL_RE = re.compile(r"https?://[^\s<>\"')]+")
 _YT_ID_RE = re.compile(r"(?:youtu\.be/|youtube\.com/(?:watch\?v=|shorts/|embed/|live/))([\w-]{11})")
 _TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
 _OG_IMAGE_RE = re.compile(
-    r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']',
+    r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\'\r\n]+)["\']',
     re.IGNORECASE)
 _TIMEDTEXT_RE = re.compile(r"<text[^>]*>(.*?)</text>", re.IGNORECASE | re.DOTALL)
 
@@ -226,12 +226,12 @@ def build_resource_note(item, enr: Enrichment, structured: dict, user_text: str,
         f"source: {item.source}",
         "origin: human",
         "meta_origin: ai",
-        f"title: {title}",
-        f"cover: {enr.cover}",
-        f"source_url: {enr.url}",
-        f"description: {str(structured.get('description', '')).strip()}",
+        f"title: {route._scalar(title)}",
+        f"cover: {route._scalar(enr.cover)}",
+        f"source_url: {route._scalar(enr.url)}",
+        f"description: {route._scalar(structured.get('description', ''))}",
         "status: inbox",
-        f"platform: {enr.platform}",
+        f"platform: {route._scalar(enr.platform)}",
         f"enriched: {'true' if enr.enriched else 'false'}",
         f"enrich_attempts: {attempts}",
         f"enrich_last: {now_iso}",
@@ -282,6 +282,13 @@ def route_link(item, user_text: str, enr: Enrichment, structured: dict,
 
 # ---- frontmatter round-trip for retry ---------------------------------------
 
+def _unquote(value: str) -> str:
+    """Give back the string, not the quoting (see api/notes._unquote)."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ('"', "'"):
+        return value[1:-1]
+    return value
+
+
 def _parse_note(text: str) -> tuple[dict, str]:
     if not text.startswith("---\n"):
         return {}, text
@@ -292,7 +299,7 @@ def _parse_note(text: str) -> tuple[dict, str]:
     for line in parts[1].splitlines():
         if ":" in line and not line.startswith((" ", "\t")):
             k, _, v = line.partition(":")
-            fm[k.strip()] = v.strip()
+            fm[k.strip()] = _unquote(v.strip())
     return fm, parts[2]
 
 
@@ -307,11 +314,52 @@ class _RetryItem:
     source: str
 
 
+# The only frontmatter fields enrichment owns. Everything else on a resource
+# note — status, rating, categories, subjects, tags, consumed, sample, and any
+# field a human added — belongs to the user and is never touched here.
+ENRICHED_FIELDS = ("title", "cover", "description", "platform",
+                   "enriched", "enrich_attempts", "enrich_last")
+
+# Likewise the only body sections enrichment owns.
+ENRICHED_SECTIONS = ("Transcript", "Caption", "Enrichment")
+
+
+def _replace_section(body: str, heading: str, text: str) -> str:
+    """Set (or drop, when text is empty) one '## heading' section, leaving every
+    other section — the user's ## Insight, their own notes — exactly as it is."""
+    kept, skipping = [], False
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped == f"## {heading}":
+            skipping = True
+            continue
+        if skipping and stripped.startswith("## "):
+            skipping = False
+        if not skipping:
+            kept.append(line)
+    base = "\n".join(kept).strip()
+    if not text.strip():
+        return base
+    block = f"## {heading}\n\n{text.strip()}"
+    return f"{base}\n\n{block}" if base else block
+
+
 def reenrich_note(path: Path, config, fetch=None, router=None) -> bool:
-    """Re-attempt enrichment for one resource note. Rewrites it in place,
-    bumping enrich_attempts and setting enriched:true on success. Returns the
-    new enriched state. Never raises on enrichment failure."""
-    fm, body = _parse_note(path.read_text())
+    """Re-attempt enrichment for one resource note, MERGING the result in.
+
+    It used to rebuild the note from scratch, which reset status to `inbox`,
+    blanked categories/subjects/tags, and dropped every body section except
+    ## Insight. retry_pending calls this automatically from the watcher loop, so
+    a resource the user had read, rated and tagged was quietly returned to the
+    inbox 24h later. The vault is the source of truth (CLAUDE.md §1): enrichment
+    may only write the fields and sections it owns.
+
+    Returns the new enriched state. Never raises on enrichment failure.
+    """
+    from . import route  # local import: route imports nothing from enrich
+
+    text = path.read_text(encoding="utf-8")
+    fm, body = _parse_note(text)
     url = fm.get("source_url", "")
     if not url:
         return False
@@ -319,15 +367,27 @@ def reenrich_note(path: Path, config, fetch=None, router=None) -> bool:
     user_text = _insight_from_body(body)
     enr = enrich_url(url, config, fetch=fetch)
     structured = structure(user_text, enr, config, router=router)
-    item = _RetryItem(
-        captured=datetime.strptime(fm.get("created", "2000-01-01"), "%Y-%m-%d")
-        if fm.get("created") else datetime.now(),
-        source=fm.get("source", "manual"))
-    note_id = fm.get("id", item.captured.strftime("%Y%m%d%H%M%S"))
-    created = fm.get("created", item.captured.strftime("%Y-%m-%d"))
-    now_iso = datetime.now().isoformat(timespec="seconds")
-    path.write_text(build_resource_note(item, enr, structured, user_text,
-                                        note_id, created, now_iso, attempts))
+
+    fm_block = text.split("---\n", 2)[1]
+    updates = {
+        "title": str(structured.get("title") or enr.title or fm.get("title") or "untitled"),
+        "cover": enr.cover or fm.get("cover", ""),
+        "description": str(structured.get("description", "")).strip() or fm.get("description", ""),
+        "platform": enr.platform,
+        "enriched": "true" if enr.enriched else "false",
+        "enrich_attempts": str(attempts),
+        "enrich_last": datetime.now().isoformat(timespec="seconds"),
+    }
+    for key in ENRICHED_FIELDS:
+        fm_block = route.stamp_field(fm_block, key, route._scalar(updates[key]))
+
+    body = _replace_section(body, "Transcript", enr.transcript)
+    body = _replace_section(body, "Caption", "" if enr.transcript else enr.caption)
+    body = _replace_section(
+        body, "Enrichment", f"> {enr.detail}" if (not enr.enriched and enr.detail) else "")
+
+    path.write_text("---\n" + fm_block.rstrip("\n") + "\n---\n\n" + body.strip() + "\n",
+                    encoding="utf-8")
     return enr.enriched
 
 
