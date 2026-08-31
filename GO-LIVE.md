@@ -7,8 +7,9 @@ captures flowing in from anywhere, and Gmail/Calendar connected read-only
 
 Steps marked **[YOU]** are things only you can do — an account login, a
 button in someone else's dashboard, a phone tap. Everything else is
-copy-paste on the server. Budget ~45 minutes the first time, then updates
-are one command.
+copy-paste on the server. Budget **~90 minutes the first time** (§1–§4 get
+you live; §5–§7 are sync, Google, and phone capture, each skippable if you
+don't need them yet), then updates are one command.
 
 Why a VPS and not Vercel/Supabase: the cockpit's whole design is that your
 Obsidian vault is a folder of plain files watched by a long-running process.
@@ -174,19 +175,83 @@ unread), `gmail.compose` (create drafts — this scope cannot send),
    sign in and approve. The refresh token is stored in `data/config.json`;
    the Gmail and Calendar cards go live with real data.
 
-## 7. Capture from your phone (5 min)
+## 7. Capture from your phone (15 min the first time)
 
-The pipeline picks up text, links, and voice files dropped in the synced
-**inbox** folder — including `.m4a` voice memos and WhatsApp-style `.opus`
-forwards.
+The pipeline picks up text, links, voice files (`.m4a`, WhatsApp-style
+`.opus`), and now photos/screenshots dropped in the synced **inbox** folder.
+There are three ways in, from fastest-setup to richest:
 
-- **Quick text/link, any device**: the cockpit's own capture box — goes
-  straight to the server over the API, no sync needed.
+- **Quick text/link, any device, zero setup**: the cockpit's own capture box
+  (the PWA) — goes straight to the server over the API. As of this pass it
+  also has a camera-icon button for photos, downscaled in the browser before
+  upload — this covers macOS and is the fallback for phones too.
 - **iOS voice memos**: Shortcuts app → new shortcut → "Receive input from
   Share Sheet" → "Save File" → the synced inbox folder. Record → Share →
   one tap → a transcribed note lands in your vault within a minute or two.
-- **Android**: any recorder set to save into the synced inbox folder works
-  the same way.
+- **Android**: any recorder or file manager set to save into the synced
+  inbox folder works the same way.
+
+### The share-sheet Shortcut (photos, screenshots, Instagram/YouTube/Safari links)
+
+This is the one-tap flow the rest of this pass was built for: share an
+Instagram post, a YouTube video, a screenshot, or a Safari page straight from
+iOS, and it lands in the cockpit as a resource — extracted, described, and
+searchable — with your own thought attached. Build it once in the Shortcuts
+app:
+
+1. **New Shortcut** → tap the ⓘ settings icon → **"Use as Share Sheet
+   Action"** → **Share Sheet Types**: enable Images and URLs (and Text, so
+   Safari's "Share as Text" also works).
+2. Add an **If** action: condition **"Shortcut Input" → "is" → "Image"**.
+   Everything below goes inside that If block — branch A in the **If** half,
+   branch B in the **Otherwise** half.
+
+   **A — If: the input is an image (photo/screenshot):**
+   - **Extract Text from Image** (built-in Shortcuts action, on-device — this
+     is the "Apple Intelligence" pass: it's free, instant, and often means no
+     cloud vision call happens at all) → save the result as variable `OCR`.
+   - **Convert Image** → JPEG.
+   - **Resize Image** → 2048 (fit within, longest edge) — belt-and-braces
+     alongside the server's own downscale.
+   - **Ask for Input** (Text, allow empty) → prompt **"Add a thought?"** →
+     save as `Thought`.
+   - **Choose from Menu** with the 8 capture tags (`todo idea journal
+     learning person resource decision project`) plus **"No tag — let AI
+     decide"** → save the choice (blank for "no tag") as `Tag`.
+   - **Get Contents of URL**:
+     - URL: `https://cockpit.yourdomain.com/api/capture/image`
+     - Method: POST
+     - Headers: `Authorization: Bearer <your access token>`
+     - Request Body: **Form** — fields `file` (the resized image),
+       `text` (`Thought`), `tag` (`Tag`), `ocr` (`OCR`)
+
+   **B — Otherwise: the input is a URL or text (a shared link, or Safari "Share as Text"):**
+   - **Ask for Input** (Text, allow empty) → **"Add a thought?"** → `Thought`.
+   - **Choose from Menu** → same 8 tags + "No tag" → `Tag`.
+   - **Get Contents of URL**:
+     - URL: `https://cockpit.yourdomain.com/api/capture`
+     - Method: POST
+     - Headers: `Authorization: Bearer <your access token>`,
+       `Content-Type: application/json`
+     - Request Body: **JSON** — `{"text": "<Shortcut Input> <Thought>",
+       "tag": "<Tag or empty>"}`
+3. **Show Notification** — "Captured ✅" — at the end of both branches. The
+   note itself takes a minute or two to process; this is the instant trust
+   signal (the cockpit's own capture box works the same way).
+
+**⚠️ A real caveat, not a formality**: the access token lives in plain text
+inside this Shortcut once you paste it into the header field. Anyone who can
+open, export, or AirDrop the Shortcut to themselves can read it. Don't share
+this Shortcut file with anyone, and if you ever suspect it leaked, rotate
+`api.auth_token` in `data/config.json` and rebuild the Shortcut's header.
+
+**What happens next**: an image lands in `04-Resources` (if tagged/classified
+as a resource) with a description and any extracted text already filled in,
+or wherever its tag/classification sends it otherwise — a `#todo`-tagged
+whiteboard photo, for instance, gets its action items pulled into today's
+todo file exactly like a voice memo would. See `DEFERRED.md` for what this
+pass intentionally left out (video/reel *content* understanding, Apify for
+real Instagram captions, editing extracted fields from the cockpit).
 
 ## 8. Verify (2 min)
 
