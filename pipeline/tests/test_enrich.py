@@ -54,7 +54,7 @@ def test_extract_url():
 
 
 def test_youtube_oembed_parse(vault):
-    def fetch(url, data=None, timeout=10):
+    def fetch(url, data=None, timeout=10, headers=None):
         if "oembed" in url:
             return YT_OEMBED
         return b""  # timedtext empty — fine
@@ -66,7 +66,7 @@ def test_youtube_oembed_parse(vault):
 
 
 def test_recipe_detection_writes_sections(vault):
-    def fetch(url, data=None, timeout=10):
+    def fetch(url, data=None, timeout=10, headers=None):
         return YT_OEMBED if "oembed" in url else b""
     enr = enrich.enrich_url("https://youtu.be/abc12345678", config(vault), fetch=fetch)
     structured = enrich.structure("great weeknight recipe", enr, config(vault), router=recipe_router)
@@ -80,7 +80,7 @@ def test_recipe_detection_writes_sections(vault):
 
 
 def test_instagram_failure_saves_note_unenriched(vault):
-    def failing_fetch(url, data=None, timeout=10):
+    def failing_fetch(url, data=None, timeout=10, headers=None):
         raise ConnectionError("apify down")
     cfg = config(vault, apify={"actor_id": "some/actor"})
     import os
@@ -127,7 +127,7 @@ def test_retry_pending_one_reattempt_after_24h(vault, tmp_path):
     cfg = config(vault, apify={"actor_id": "a/b"})
 
     # this time Apify "works" — the fetch returns a caption payload
-    def working_fetch(url, data=None, timeout=10):
+    def working_fetch(url, data=None, timeout=10, headers=None):
         return json.dumps([{"caption": "a plating tip", "displayUrl": "https://x/i.jpg",
                             "ownerUsername": "chef"}]).encode()
     import os

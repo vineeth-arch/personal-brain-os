@@ -162,8 +162,10 @@ def _call(req: urllib.request.Request) -> dict:
         detail = e.read().decode(errors="replace")[:200]
         log.info("dex api call failed: %s %s", e.code, detail)
         if e.code in (401, 403):
+            # 502, not 401 — see api/google.py: a 401 tells the cockpit its own
+            # token is bad and logs the user out
             raise DexError(
-                401, "Dex turned the request away.",
+                502, "Dex turned the request away.",
                 "The Dex API key was rejected — it may have been rotated or revoked.",
                 "Check DEX_API_KEY in the server's environment, then try again.")
         if e.code == 404:

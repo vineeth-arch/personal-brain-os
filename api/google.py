@@ -46,6 +46,8 @@ SCOPES = " ".join([
 TIMEOUT = 10
 STATE_TTL_SECONDS = 600
 INBOX_LIMIT = 10
+# wall-clock budget for the per-message fan-out below
+INBOX_BUDGET_SECONDS = 20
 EVENT_DAYS = 7
 
 
@@ -229,8 +231,13 @@ def _call(req: urllib.request.Request) -> dict:
     except urllib.error.HTTPError as e:
         log.info("google api call failed: %s %s", e.code, e.read().decode(errors="replace")[:200])
         if e.code in (401, 403):
+            # 502, not 401. 401 is reserved for THIS server rejecting the
+            # cockpit's own bearer token: the client treats any 401 as "our
+            # token is bad", clears it and bounces the user to the connect
+            # screen saying "the server rejected the access token" — which was
+            # a lie when it was only Google's grant that had expired.
             raise GoogleError(
-                401, "Google turned the request away.",
+                502, "Google turned the request away.",
                 "The connection has expired or lost its permissions.",
                 "Open Integrations and press Connect Google to re-link the account.")
         raise GoogleError(
@@ -255,12 +262,24 @@ def _header(msg: dict, name: str) -> str:
 
 
 def unread(config, token_cache: dict) -> list[dict]:
+    """Recent unread mail.
+
+    Gmail has no batch metadata endpoint here, so this is 1 + N sequential
+    requests. At a 10s timeout each that is a ~110s worst case for one route —
+    long enough that the cockpit looks hung — so the per-message fan-out is
+    bounded by a wall-clock budget: whatever arrived by the deadline is
+    returned, and a slow morning shows fewer messages instead of hanging."""
     token = access_token(config, token_cache)
     listing = _get(token, f"{GMAIL_BASE}/messages?"
                           + urllib.parse.urlencode(
                               {"q": "in:inbox is:unread", "maxResults": INBOX_LIMIT}))
+    deadline = time.monotonic() + INBOX_BUDGET_SECONDS
     items = []
     for stub in listing.get("messages") or []:
+        if items and time.monotonic() > deadline:
+            log.info("gmail inbox budget spent — returning %d of %d messages",
+                     len(items), len(listing.get("messages") or []))
+            break
         msg = _get(token, f"{GMAIL_BASE}/messages/{stub['id']}?"
                           + urllib.parse.urlencode(
                               {"format": "metadata",

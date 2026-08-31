@@ -11,6 +11,7 @@ test is hermetic. Structuring reuses the Pass B model router.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import urllib.parse
@@ -20,6 +21,8 @@ from datetime import datetime
 from pathlib import Path
 
 from . import llm, route
+
+log = logging.getLogger("pipeline")
 
 HTTP_TIMEOUT = 10
 APIFY_TIMEOUT = 60
@@ -59,12 +62,15 @@ def is_link_text(text: str) -> bool:
 
 # ---- HTTP seam --------------------------------------------------------------
 
-def _default_fetch(url: str, data: bytes | None = None, timeout: int = HTTP_TIMEOUT) -> bytes:
-    """Injectable in tests. POST when data is given, else GET."""
+def _default_fetch(url: str, data: bytes | None = None, timeout: int = HTTP_TIMEOUT,
+                   headers: dict | None = None) -> bytes:
+    """Injectable in tests: fetch(url, data=, timeout=, headers=).
+    POST when data is given, else GET."""
     req = urllib.request.Request(
         url, data=data,
         headers={"User-Agent": "Mozilla/5.0 (Brain Cockpit)",
-                 **({"Content-Type": "application/json"} if data else {})})
+                 **({"Content-Type": "application/json"} if data else {}),
+                 **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
@@ -110,10 +116,12 @@ def _enrich_instagram(url: str, config, fetch) -> Enrichment:
         return Enrichment("instagram", False, url,
                           detail="Apify isn't configured (APIFY_TOKEN in the environment + apify.actor_id in config.json), so Instagram can't be enriched. The note is saved.")
     try:
-        api = (f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items"
-               f"?token={token}")
+        # the token rides in the Authorization header, never the query string —
+        # a URL carrying a secret ends up in proxy logs and error reports
+        api = f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items"
         body = json.dumps({"directUrls": [url], "resultsLimit": 1}).encode()
-        items = json.loads(fetch(api, data=body, timeout=APIFY_TIMEOUT))
+        items = json.loads(fetch(api, data=body, timeout=APIFY_TIMEOUT,
+                                 headers={"Authorization": f"Bearer {token}"}))
         item = items[0] if isinstance(items, list) and items else {}
         caption = str(item.get("caption") or "")
         cover = str(item.get("displayUrl") or item.get("thumbnailUrl") or "")
@@ -123,6 +131,11 @@ def _enrich_instagram(url: str, config, fetch) -> Enrichment:
                           title=caption[:80] or "instagram-post", caption=caption,
                           cover=cover, author=str(item.get("ownerUsername", "")))
     except Exception:
+        # The broad catch is deliberate — this scraper is ToS-grey and breaks
+        # routinely — but it once swallowed a TypeError from a changed call
+        # signature and reported a code bug as a normal outage. Log the real
+        # reason; keep telling the user the honest, useful version.
+        log.info("instagram enrichment failed", exc_info=True)
         return Enrichment("instagram", False, url,
                           detail="Instagram enrichment failed — this is expected periodically (the scraper is ToS-grey and breaks). The note is saved; it retries later.")
 

@@ -12,7 +12,16 @@ interface PollState<T> {
 // setTimeout chain instead of setInterval so slow responses never stack;
 // pauses while the tab is hidden and refetches on focus/visibility. Stale
 // data is kept through background errors so a blip doesn't blank the screen.
-export function usePolling<T>(fn: () => Promise<T>, intervalMs?: number): PollState<T> {
+//
+// `deps` re-runs the fetch when the CALLER's inputs change. Without it, `fn`
+// lived only in a ref: a screen whose fetcher closes over state (the Pipeline
+// event filter) kept showing the previous result until the next poll fired, so
+// clicking a filter looked like it did nothing for twenty seconds.
+export function usePolling<T>(
+  fn: () => Promise<T>,
+  intervalMs?: number,
+  deps: unknown[] = [],
+): PollState<T> {
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<ApiError | null>(null);
   const [loading, setLoading] = useState(true);
@@ -53,7 +62,8 @@ export function usePolling<T>(fn: () => Promise<T>, intervalMs?: number): PollSt
         }
       }
     }
-  }, [intervalMs]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [intervalMs, ...deps]);
 
   useEffect(() => {
     alive.current = true;

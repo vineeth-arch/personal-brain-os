@@ -160,7 +160,9 @@ def test_revoked_access_asks_for_a_reconnect(monkeypatch, google_client):
     monkeypatch.setattr(google.urllib.request, "urlopen", boom)
     with pytest.raises(google.GoogleError) as e:
         google.unread(FakeConfig(), {})
-    assert e.value.status == 401
+    # 502, not 401: 401 is reserved for the cockpit's own token, and reusing it
+    # here logged the user out whenever Google's grant expired
+    assert e.value.status == 502
     assert "Connect Google" in e.value.envelope["todo"]
 
 

@@ -305,6 +305,23 @@ function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: ()
   const [level, setLevel] = useState(0);
   const recorder = useRef<MediaRecorder | null>(null);
   const stopAudio = useRef<(() => void) | null>(null);
+  const stream = useRef<MediaStream | null>(null);
+
+  // Navigating away mid-recording used to leave the MediaStream open, so the
+  // browser's recording indicator stayed lit with nothing listening. Release
+  // the tracks and the audio graph on unmount, whatever state we are in.
+  useEffect(() => {
+    return () => {
+      stopAudio.current?.();
+      try {
+        recorder.current?.state !== "inactive" && recorder.current?.stop();
+      } catch {
+        // already stopped — nothing to release
+      }
+      stream.current?.getTracks().forEach((t) => t.stop());
+      stream.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (state.kind !== "recording") return;
@@ -321,6 +338,7 @@ function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: ()
     stopAudio.current?.();
     stopAudio.current = null;
     recorder.current = null;
+    stream.current = null;
     setSeconds(0);
     setLevel(0);
   };
@@ -352,9 +370,9 @@ function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: ()
       });
       return;
     }
-    let stream: MediaStream;
+    let media: MediaStream;
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      media = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch {
       setState({
         kind: "blocked",
@@ -365,8 +383,9 @@ function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: ()
       return;
     }
 
+    stream.current = media;
     const mime = mimeForRecording();
-    const rec = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined);
+    const rec = new MediaRecorder(media, mime ? { mimeType: mime } : undefined);
     const parts: BlobPart[] = [];
     rec.ondataavailable = (e) => {
       if (e.data.size > 0) parts.push(e.data);
@@ -374,7 +393,7 @@ function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: ()
     rec.onstop = () => {
       const blob = new Blob(parts, { type: rec.mimeType || mime || "audio/webm" });
       teardown();
-      stream.getTracks().forEach((t) => t.stop());
+      media.getTracks().forEach((t) => t.stop());
       if (blob.size > 0) void upload(blob, tag);
       else setState({ kind: "idle" });
     };
@@ -384,7 +403,7 @@ function MicButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: ()
       const ctx = new AudioContext();
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
-      ctx.createMediaStreamSource(stream).connect(analyser);
+      ctx.createMediaStreamSource(media).connect(analyser);
       const data = new Uint8Array(analyser.frequencyBinCount);
       let raf = 0;
       const sample = () => {
