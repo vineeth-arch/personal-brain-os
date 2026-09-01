@@ -14,7 +14,7 @@
 //
 // Run from the repo root:  node web/e2e/run-e2e.mjs
 import assert from "node:assert";
-import { execSync, spawn } from "node:child_process";
+import { execFileSync, execSync, spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import fs from "node:fs";
 import os from "node:os";
@@ -119,6 +119,113 @@ async function runPipeline(label) {
     await new Promise((r) => setTimeout(r, 100));
   }
   throw new Error(`pipeline run never started for ${label} — a previous run never finished`);
+}
+
+// ---- split-proposal fixtures (Task E1b) ----------------------------------------
+// Body + segments reused VERBATIM from api/tests/test_split.py's
+// PARENT_BODY_LINES/SEGMENTS — already proven contiguous, non-overlapping, and
+// covering every line (the validate_split invariant) by that suite, so this
+// e2e fixture can't accidentally violate the reconstruction property itself.
+const SPLIT_BODY_LINES = [
+  "The client call this morning went sideways fast.",
+  "They pushed back on scope again.",
+  "Need to follow up tomorrow with a written recap.",
+  "",
+  "Groceries: eggs, oat milk, spinach, coffee.",
+  "Meal prep Sunday night like always.",
+  "",
+  "Idea: the onboarding flow should ask for a name before anything else.",
+  "Small thing but it would make the first screen feel less cold.",
+];
+const SPLIT_SEGMENTS = [
+  { title: "The client call went sideways", start_line: 1, end_line: 4 },
+  { title: "Grocery run for the week", start_line: 5, end_line: 7 },
+  { title: "An onboarding idea", start_line: 8, end_line: 9 },
+];
+
+// Writes a real, schema-correct note directly to the vault (musing is one of
+// pipeline/route.py's SPLITTABLE types) so execute_split's real
+// _find_note_by_id can find it later by its id: frontmatter field.
+function writeSplitNote(root, { id, slug, created }) {
+  const dir = path.join(root, "vault", "02-Musings");
+  const body = SPLIT_BODY_LINES.join("\n");
+  const filePath = path.join(dir, `${created}-${slug}.md`);
+  const text = [
+    "---", `id: ${id}`, "type: musing", `created: ${created}`,
+    "source: voice", "origin: human", "status: active",
+    "categories: []", "subjects: []", "tags: []", "---", "",
+    body, "",
+  ].join("\n");
+  fs.writeFileSync(filePath, text);
+  return filePath;
+}
+
+// The body portion of a note's text (everything after the frontmatter's
+// closing fence + blank line) — for byte-identical before/after comparisons,
+// mirroring api/notes.py's parse_frontmatter without shelling out to Python.
+function noteBody(text) {
+  const sep = "\n---\n\n";
+  const idx = text.indexOf(sep);
+  assert.ok(idx !== -1, "note text has no frontmatter closing fence");
+  return text.slice(idx + sep.length);
+}
+
+// Recovers exactly the seg_body execute_split wrote into a child file, reading
+// the REAL file off disk — same structural-marker approach (frontmatter fence,
+// then the derived-from:: edge line) as api/tests/test_split.py's
+// _child_body_from_file, ported to JS so this e2e step proves the invariant
+// through the real HTTP round-trip rather than trusting a fixture's own idea
+// of what the file should contain.
+function childBodyFromFile(filePath, parentId) {
+  const text = fs.readFileSync(filePath, "utf8");
+  const fenceSep = "\n---\n";
+  const fenceIdx = text.indexOf(fenceSep);
+  assert.ok(fenceIdx !== -1, `${filePath} has no frontmatter closing fence`);
+  let after = text.slice(fenceIdx + fenceSep.length);
+  if (after.startsWith("\n")) after = after.slice(1);
+  const marker = `\n\n- derived-from:: [[${parentId}]]`;
+  const markerIdx = after.lastIndexOf(marker);
+  assert.ok(markerIdx !== -1, `${filePath} is missing its derived-from:: edge line`);
+  return after.slice(0, markerIdx);
+}
+
+// Insert one events.db row directly — split proposals live only in events.db
+// (CLAUDE.md §1: never note content in SQLite), and there is no API route
+// that creates one (only the watcher does, in production). No existing
+// fixture in this file shells out to sqlite, so this is the first. Uses
+// execFileSync rather than execSync/a shell string so the JSON `message`
+// column (which contains nested quotes) never has to survive shell quoting —
+// the payload travels through a temp JSON file instead.
+function seedSplitProposal(root, { file, noteId, title, segments, confidence = 0.82 }) {
+  const message = JSON.stringify({ note_id: noteId, title, confidence, segments });
+  const payloadPath = path.join(root, `.split-seed-${noteId}.json`);
+  fs.writeFileSync(payloadPath, JSON.stringify({ file, message }));
+  const venvPython = path.join(repo, ".venv", "bin", "python3");
+  const pythonBin = fs.existsSync(venvPython) ? venvPython : "python3";
+  // Matches pipeline/events.py's EventLog.log exactly: same events table
+  // columns, same datetime.now().isoformat(timespec="seconds") timestamp.
+  const script = `
+import json, sqlite3, sys
+from datetime import datetime
+payload = json.load(open(sys.argv[2], encoding="utf-8"))
+conn = sqlite3.connect(sys.argv[1])
+conn.execute(
+    "CREATE TABLE IF NOT EXISTS events ("
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, timestamp TEXT NOT NULL, file TEXT NOT NULL, "
+    "stage TEXT NOT NULL, status TEXT NOT NULL, duration_ms INTEGER, message TEXT, "
+    "plain_english_error TEXT)"
+)
+conn.execute(
+    "INSERT INTO events (timestamp, file, stage, status, duration_ms, message, "
+    "plain_english_error) VALUES (?,?,?,?,?,?,?)",
+    (datetime.now().isoformat(timespec="seconds"), payload["file"], "split",
+     "needs_review", None, payload["message"], ""),
+)
+conn.commit()
+conn.close()
+`;
+  execFileSync(pythonBin, ["-c", script, path.join(root, "events.db"), payloadPath]);
+  fs.rmSync(payloadPath);
 }
 
 // ---- the run --------------------------------------------------------------------
@@ -864,6 +971,119 @@ try {
   assert.equal(outboxFiles.length, 1,
     `expected exactly one file despite two real send attempts sharing one idempotency key, saw ${JSON.stringify(outboxFiles)}`);
   console.log("✓ Idempotency key genuinely prevented a duplicate note across two real server-side sends");
+
+  // ---- 16. Split proposal card: Split reconstructs child notes verbatim (Task E1b) ---
+  // Task E1's own brief required this e2e coverage and it never landed (the
+  // GATE E gap this task closes). The LLM itself is stubbed by seeding the
+  // proposal straight into events.db (split proposals never live in the
+  // vault — CLAUDE.md §1), same spirit as step 8's model stub; everything
+  // downstream — the API route, execute_split, the vault write, the UI — is
+  // the real thing.
+  const splitDir = path.join(root, "vault", "02-Musings");
+  const splitParentId = "20260820100001";
+  const splitParentPath = writeSplitNote(root, {
+    id: splitParentId, slug: "sunday-morning-notes", created: "2026-08-20",
+  });
+  const splitOriginalBody = noteBody(fs.readFileSync(splitParentPath, "utf8"));
+  seedSplitProposal(root, {
+    file: splitParentPath, noteId: splitParentId, title: "sunday-morning-notes",
+    segments: SPLIT_SEGMENTS,
+  });
+
+  await page.goto(`${BASE}/#/triage`);
+  const splitCard = page.locator("article", { hasText: "sunday-morning-notes" });
+  await splitCard
+    .getByRole("heading", { name: `This sounds like ${SPLIT_SEGMENTS.length} topics — split it?` })
+    .waitFor();
+  for (const seg of SPLIT_SEGMENTS) {
+    await splitCard.getByText(`• ${seg.title}`).waitFor();
+  }
+  await splitCard.getByRole("button", { name: "Keep as one" }).waitFor();
+  await splitCard.getByRole("button", { name: "Split" }).waitFor();
+  console.log("✓ Split proposal card renders the segment count, titles, and both decisions");
+
+  await splitCard.getByRole("button", { name: "Split" }).click();
+  await page.getByText("Split into separate notes.").waitFor();
+
+  const expectedChildIds = SPLIT_SEGMENTS.map((_, i) => `${splitParentId}${i + 1}`);
+  let childPaths = [];
+  for (let i = 0; i < 100; i++) {
+    childPaths = expectedChildIds.map((childId) =>
+      fs.readdirSync(splitDir)
+        .map((f) => path.join(splitDir, f))
+        .find((p) => p !== splitParentPath && fs.readFileSync(p, "utf8").includes(`id: ${childId}`)));
+    if (childPaths.every(Boolean)) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(childPaths.every(Boolean),
+    `expected child notes ${expectedChildIds.join(", ")}, found ${JSON.stringify(childPaths)}`);
+
+  const parentTextAfterSplit = fs.readFileSync(splitParentPath, "utf8");
+  assert.match(parentTextAfterSplit, /status: archived/, "parent was not archived after Split");
+  assert.equal(noteBody(parentTextAfterSplit), splitOriginalBody,
+    "the parent's body changed on Split — only status: may change, never the content");
+
+  // THE reconstruction invariant — the property E1's reviewer flagged as most
+  // critical, and the exact one E1's own pytest suite exists to protect: every
+  // child's ACTUAL body, read back off disk and concatenated in segment
+  // order, must reproduce the parent's original body exactly. This proves it
+  // holds through the REAL HTTP round-trip (API route → execute_split →
+  // vault write), not just at the unit level.
+  const childBodies = childPaths.map((p) => childBodyFromFile(p, splitParentId));
+  assert.equal(childBodies.join("\n"), SPLIT_BODY_LINES.join("\n"),
+    "concatenated child bodies did not reconstruct the parent's original body verbatim");
+
+  for (const p of childPaths) {
+    const childText = fs.readFileSync(p, "utf8");
+    assert.match(childText, /origin: ai/, `${p} missing origin: ai`);
+    assert.match(childText, new RegExp(`derived-from:: \\[\\[${splitParentId}\\]\\]`));
+  }
+  console.log("✓ Split writes one child per segment whose bodies reconstruct the parent verbatim; parent archived in place");
+
+  await page
+    .getByText(`This sounds like ${SPLIT_SEGMENTS.length} topics — split it?`)
+    .waitFor({ state: "detached" });
+  console.log("✓ The decided proposal card disappears from Triage without a reload (decidedProposals)");
+
+  // ---- 17. Split proposal card: Keep as one leaves the note untouched (Task E1b) ---
+  const keepParentId = "20260820100002";
+  const keepParentPath = writeSplitNote(root, {
+    id: keepParentId, slug: "sunday-morning-notes-2", created: "2026-08-20",
+  });
+  const keepOriginalText = fs.readFileSync(keepParentPath, "utf8");
+  seedSplitProposal(root, {
+    file: keepParentPath, noteId: keepParentId, title: "sunday-morning-notes-2",
+    segments: SPLIT_SEGMENTS,
+  });
+
+  // Already on #/triage from step 16 — a goto to the SAME hash won't remount
+  // the screen, so force the fresh /api/review fetch the same way step 14 did.
+  await page.reload();
+  const keepCard = page.locator("article", { hasText: "sunday-morning-notes-2" });
+  await keepCard
+    .getByRole("heading", { name: `This sounds like ${SPLIT_SEGMENTS.length} topics — split it?` })
+    .waitFor();
+  await keepCard.getByRole("button", { name: "Keep as one" }).click();
+  await page.getByText("Kept as one.").waitFor();
+
+  // must never touch the note itself — only the events.db decision row.
+  // Settle-wait rather than stopping at the first check, matching step 15's
+  // own idiom for "still true a moment later", not just "true right now".
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(fs.readFileSync(keepParentPath, "utf8"), keepOriginalText,
+    "Keep as one must never modify the note file — full-content byte comparison");
+  const noNewChildren = !fs.readdirSync(splitDir).some((f) => {
+    const p = path.join(splitDir, f);
+    return p !== keepParentPath &&
+      fs.readFileSync(p, "utf8").includes(`derived-from:: [[${keepParentId}]]`);
+  });
+  assert.ok(noNewChildren, "Keep as one must not create any child notes referencing this note's id");
+  console.log("✓ Keep as one leaves the note byte-identical on disk and creates no child notes");
+
+  await page
+    .getByText(`This sounds like ${SPLIT_SEGMENTS.length} topics — split it?`)
+    .waitFor({ state: "detached" });
+  console.log("✓ The kept proposal card disappears from Triage without a reload");
 
   console.log("\nE2E: all checks passed.");
 } catch (err) {
