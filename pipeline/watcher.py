@@ -23,7 +23,7 @@ from pathlib import Path
 
 from . import (archive, classify as classify_mod, config as config_mod, echo as echo_mod,
                enrich, errors, extract, ingest, intake, plaud, related, relationships, route,
-               todos, transliterate, vaultsync, vision as vision_mod)
+               split as split_mod, todos, transliterate, vaultsync, vision as vision_mod)
 from .events import EventLog
 from . import transcribe as transcribe_mod
 from .transcribe import Transcriber, build_transcriber
@@ -68,6 +68,7 @@ class Deps:
     enrich_router: object = None      # router(prompt, config, validate) -> (data, provider, attempts)
     transliterate_fn: object = None   # caller(text, block) -> str; None = the configured engine
     vision_caller: object = None      # caller(image_path, mime, key) -> raw text; None = real Claude
+    split_llm: object = None          # llm_fn(body, config) -> dict | None; None = real Haiku
     sleep: object = time.sleep        # retry backoff seam (tests inject a recorder)
 
 
@@ -339,6 +340,22 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
             else:
                 events.log(fkey, "related", "ok", int((time.monotonic() - t0) * 1000),
                            message="related=none")
+
+            # Stage 4c — multi-topic split proposal (Pass E). Review-gated:
+            # this NEVER splits the note — it only logs a proposal a human
+            # approves or dismisses in Triage (api/notes.py::execute_split
+            # does the actual split, only after a [Split] tap).
+            t0 = time.monotonic()
+            proposal = split_mod.propose(cls.type, body, config, llm_fn=deps.split_llm)
+            if proposal:
+                events.log(fkey, "split", "needs_review",
+                          int((time.monotonic() - t0) * 1000),
+                          message=json.dumps({
+                              "note_id": note_id,
+                              "title": cls.title,
+                              "confidence": proposal["confidence"],
+                              "segments": proposal["segments"],
+                          }))
 
         if item.kind != "image":
             # Stage 5 — extract action items (append only). Images have no
