@@ -165,6 +165,8 @@ def add_breakdown(vault: Path, block_id: str, feel: int, steps: list[str]) -> To
         raise LookupError(block_id)
     if parent.children:
         raise ValueError(f"{block_id} already has children")
+    if parent.feel is not None:
+        raise ValueError(f"{block_id} already has a feel marker")
 
     lines = parent.file.read_text(encoding="utf-8").splitlines()
     parent_line = lines[parent.line_no].rstrip() + f" 🎚{feel}"

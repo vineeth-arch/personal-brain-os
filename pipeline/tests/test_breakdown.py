@@ -119,6 +119,22 @@ def test_add_breakdown_already_has_children_raises_value_error(vault):
         todos.add_breakdown(vault, "20260901100000-1", 3, ["a", "b"])
 
 
+def test_add_breakdown_already_has_feel_marker_raises_value_error_and_leaves_file_unchanged(vault):
+    """A todo with a feel marker but no children (e.g., a manual edit or prior
+    corruption) must not be broken down again. The file bytes are checked to
+    ensure no partial write occurred before the exception."""
+    _write(vault, "2026-09-01.md",
+           "- [ ] plan the offsite ^20260901100000-1 🎚4\n")
+    original_text = (vault / todos.TODOS_FOLDER / "2026-09-01.md").read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="already has a feel marker"):
+        todos.add_breakdown(vault, "20260901100000-1", 3, ["a", "b"])
+
+    # Confirm the file is completely unchanged
+    final_text = (vault / todos.TODOS_FOLDER / "2026-09-01.md").read_text(encoding="utf-8")
+    assert final_text == original_text
+
+
 def test_add_breakdown_unknown_id_raises_lookup_error(vault):
     _write(vault, "2026-09-01.md", "- [ ] plan the offsite ^20260901100000-1\n")
     with pytest.raises(LookupError):

@@ -919,6 +919,25 @@ def test_todos_breakdown_feel_out_of_range_400(env):
         assert code == 400
 
 
+def test_todos_breakdown_step_with_newline_rejected_and_file_unmutated(env, monkeypatch):
+    root, vault, _, _ = env
+    todos_file = _seed_one_todo(vault)
+    original_text = todos_file.read_text(encoding="utf-8")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    # A step with an embedded newline — simulates an LLM returning multi-line text
+    steps_with_newline = ["book the room\nand confirm catering", "draft the agenda", "invite the team"]
+    _use_llm(monkeypatch, {"claude-haiku": lambda p, k: json.dumps({"steps": steps_with_newline})})
+
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/todos/20260901100000-1/breakdown", {"feel": 3})
+        # _validate_breakdown rejects the response, treated as a provider failure → 503
+        assert code == 503
+        assert set(body["error"]) == {"what", "cause", "todo"}
+
+        # Confirm the file on disk is unchanged (no partial write from the failed validation)
+        assert todos_file.read_text(encoding="utf-8") == original_text
+
+
 def test_todos_breakdown_all_providers_fail_503_and_leaves_file_unmutated(env, monkeypatch):
     root, vault, _, _ = env
     todos_file = _seed_one_todo(vault)

@@ -220,8 +220,8 @@ def _validate_breakdown(data: object) -> str | None:
     if not isinstance(steps, list) or not (2 <= len(steps) <= 4):
         return "steps must be a list of 2 to 4 items"
     for s in steps:
-        if not isinstance(s, str) or not s.strip() or len(s) > 80:
-            return "each step must be a non-empty string of 80 characters or fewer"
+        if not isinstance(s, str) or not s.strip() or len(s) > 80 or "\n" in s:
+            return "each step must be a single non-empty line of 80 characters or fewer"
     return None
 
 
