@@ -3,17 +3,17 @@
 - Multi-topic splitter: auto-split a genuinely multi-topic journal/musing recording into multiple notes (needs an LLM topic-segmenter; route.py has the SPLITTABLE seam).
 - Custom PWA install prompt/button (browser default install affordance is used for now).
 - Settings: edit server *paths* (vault/inbox/archive/failed) from the cockpit — engine, threshold, and ntfy became editable in Pass 4; paths stay server-side.
-- Capture confirmation echoes the first line of what was heard (transcript echo) — research B1.
-- Triage cards show the AI's evidence for its guess alongside confidence — research B2.
-- Track + display AI classification accuracy over time ("94% of last 50 approved unchanged") — research B3.
-- Bound the triage queue view (~5 per visit) + optional 5-minute timeboxed triage with a visual pie timer — research B4.
-- Anti-guilt drain: triage items older than N days auto-approve at best guess (origin: ai, git-revertible) — research B5.
+- ~~Capture confirmation echoes the first line of what was heard (transcript echo) — research B1.~~ — SHIPPED in Pass A: the toast/capture_log/ntfy echo the first ~10 words heard/seen (`pipeline/echo.py`).
+- ~~Triage cards show the AI's evidence for its guess alongside confidence — research B2.~~ — SHIPPED in Pass A: `evidence` field on classify + Triage card "Why: ..." line.
+- ~~Track + display AI classification accuracy over time ("94% of last 50 approved unchanged") — research B3.~~ — SHIPPED in Pass A: `service.accuracy()` + Triage accuracy strip.
+- ~~Bound the triage queue view (~5 per visit) + optional 5-minute timeboxed triage with a visual pie timer — research B4.~~ — SHIPPED in Pass A: bounded 5-card queue + opt-in pie timer.
+- ~~Anti-guilt drain: triage items older than N days auto-approve at best guess (origin: ai, git-revertible) — research B5.~~ — SHIPPED in Pass A: `notes.drain_review()` + `00-Inbox/parked/`.
 - Readwise-style hybrid resurfacing: 1–3/day, stochastic + spaced, connect/act/archive responses — research B6.
 - Show a related past note at classification time ("past-you thought this too") — research B7.
 - Streak card → cumulative + windowed framing ("217 captures · 5 of last 7 days"), never broken-chain messaging — research B8.
 - Daily ntfy digest: status + resurfaced note + queue count (the system visits you) — research B9.
 - Optional Goblin-style micro-step breakdown for extracted todos with a "how hard does it feel?" dial — research B10.
-- Surface the trust boundary in the UI ("nothing entered your vault without you — N notes gated this month") — research B11.
+- ~~Surface the trust boundary in the UI ("nothing entered your vault without you — N notes gated this month") — research B11.~~ — SHIPPED in Pass A: `trustLine()` on Triage's empty state + Settings.
 - Integrations: keep a rolling backup copy of config.json on every write (the write is already atomic + key-validated since Pass 2/4).
 - Integrations: true per-card SSE streaming instead of one cached GET /integrations, if health checks ever grow slow.
 - Integrations: per-integration retry/backoff + a real round-trip ntfy delivery receipt (test push is best-effort send, not confirmed receipt).

@@ -57,6 +57,9 @@
     { "id": "passH", "phase": "Build passes", "label": "Pass H — hardening + vault sync",
       "type": "file_exists", "path": "pipeline/vaultsync.py",
       "next_action": "Run the Pass H build session (vault git-sync, poison-file robustness)." },
+    { "id": "passA", "phase": "Build passes", "label": "Pass A — trust & triage",
+      "type": "file_exists", "path": "pipeline/echo.py",
+      "next_action": "Run the Pass A build session (evidence, accuracy, bounded queue, anti-guilt drain, trust line)." },
 
     { "id": "wire-config", "phase": "Wiring", "label": "config.json filled (vault + inbox paths)",
       "type": "config_field_set", "field": "vault_path",
