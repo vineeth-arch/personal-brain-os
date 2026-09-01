@@ -309,15 +309,37 @@ def test_trust_month_counts_gated_and_drained(env):
         {"timestamp": f"{this_month}-03T09:00:00", "file": "/in/c.md", "stage": "approve",
          "status": "ok", "message": "id=3 suggested=learning chosen=learning"},
         {"timestamp": f"{this_month}-04T09:00:00", "file": "/in/d.md", "stage": "drain",
-         "status": "ok", "message": "filed=musing conf=0.72"},
+         "status": "ok", "message": "filed=1 parked=0"},
         {"timestamp": f"{this_month}-05T09:00:00", "file": "/in/e.md", "stage": "drain",
-         "status": "ok", "message": "filed=journal conf=0.68"},
+         "status": "ok", "message": "filed=1 parked=0"},
     ]
     _seed_events(root / "events.db", rows)
     with Server(root) as s:
         code, body = s.req("GET", "/api/review")
         assert code == 200
         assert body["trust"] == {"gated_month": 3, "drained_month": 2}
+
+
+def test_trust_drained_sums_filed_count(env):
+    # Task A6b: trust.drained_month must sum the filed count from each drain event,
+    # not count the number of events. A single drain run can file multiple notes
+    # in one event row: message="filed=3 parked=0" means 3 notes were filed.
+    root, _, _, _ = env
+    this_month = date.today().isoformat()[:7]
+    rows = [
+        {"timestamp": f"{this_month}-01T09:00:00", "file": "/in/run1.md", "stage": "drain",
+         "status": "ok", "message": "filed=3 parked=0"},
+        {"timestamp": f"{this_month}-02T09:00:00", "file": "/in/run2.md", "stage": "drain",
+         "status": "ok", "message": "filed=2 parked=1"},
+        {"timestamp": f"{this_month}-03T09:00:00", "file": "/in/run3.md", "stage": "drain",
+         "status": "ok", "message": "filed=1 parked=2"},
+    ]
+    _seed_events(root / "events.db", rows)
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/review")
+        assert code == 200
+        # 3 drain events with filed=3, filed=2, filed=1 → total 6 notes drained
+        assert body["trust"] == {"gated_month": 0, "drained_month": 6}
 
 
 def test_capture_roundtrip(env):

@@ -147,15 +147,20 @@ def trust(db_path: Path) -> dict:
         "AND timestamp LIKE ?",
         (month_prefix + "%",),
     )
-    drained = _rows(
+    drained_rows = _rows(
         db_path,
-        "SELECT COUNT(*) FROM events WHERE stage='drain' AND status='ok' "
+        "SELECT message FROM events WHERE stage='drain' AND status='ok' "
         "AND timestamp LIKE ?",
         (month_prefix + "%",),
     )
+    drained_month = 0
+    for (message,) in drained_rows:
+        m = re.search(r"filed=(\d+)", message or "")
+        if m:
+            drained_month += int(m.group(1))
     return {
         "gated_month": gated[0][0] if gated else 0,
-        "drained_month": drained[0][0] if drained else 0,
+        "drained_month": drained_month,
     }
 
 
