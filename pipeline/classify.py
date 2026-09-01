@@ -43,6 +43,7 @@ class Classification:
     needs_review: bool = False
     routed_by: str = "tag"          # "tag" | "llm" | "plaud"
     provider: str = ""              # which model served the classification
+    evidence: str = ""              # one short clause a human would recognize (B2)
     attempts: list = field(default_factory=list)  # llm.Attempt rows for stats
     # raw speaker labels exactly as the device wrote them — only ever set on the
     # deterministic "plaud" route (SCHEMA-REFERENCE.md §7 Conversation); every
@@ -112,6 +113,7 @@ def classify(item, transcript: str, config, llm_fn=None) -> Classification:
         routed_by="llm",
         provider=provider,
         attempts=attempts,
+        evidence=str(data.get("evidence") or ""),
     )
 
 
@@ -137,17 +139,26 @@ def build_prompt(transcript: str) -> str:
     transcript = window_for_classification(transcript)
     return (
         "Classify this captured note. Return ONLY JSON with keys: "
-        'type, categories, subjects, tags, confidence, title.\n'
+        'type, categories, subjects, tags, confidence, title, evidence.\n'
         f"type must be one of: {', '.join(NOTE_TYPES)}.\n"
         "categories = what it IS, subjects = what it's ABOUT (short noun phrases). "
-        "tags = controlled vocabulary tags. confidence = 0..1. title = a short kebab-friendly title.\n\n"
+        "tags = controlled vocabulary tags. confidence = 0..1. title = a short kebab-friendly title. "
+        "evidence = give one short reason a human would recognize, e.g. "
+        "\"mentions 'remind me' and a date\".\n\n"
         f"NOTE:\n{transcript}"
     )
 
 
+EVIDENCE_MAX_CHARS = 120
+
+
 def validate_classification(data: object) -> str | None:
     """Schema gate every provider response must pass: locked type list,
-    confidence 0-1, non-empty title. Returns a problem string or None."""
+    confidence 0-1, non-empty title. Returns a problem string or None.
+
+    evidence (B2) is optional and never fails validation — an over-long
+    clause is trimmed in place (mutating `data`, which the caller returns
+    and uses as-is) rather than rejected, since it's a nicety, not a gate."""
     if not isinstance(data, dict):
         return "not a JSON object"
     if str(data.get("type", "")).lower() not in NOTE_TYPES:
@@ -160,4 +171,7 @@ def validate_classification(data: object) -> str | None:
         return "confidence outside 0..1"
     if not str(data.get("title") or "").strip():
         return "empty title"
+    evidence = data.get("evidence")
+    if isinstance(evidence, str) and len(evidence) > EVIDENCE_MAX_CHARS:
+        data["evidence"] = evidence[:EVIDENCE_MAX_CHARS]
     return None

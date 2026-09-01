@@ -178,6 +178,26 @@ def test_review_confidence_join(env):
         by_id = {i["id"]: i for i in body["items"]}
         assert by_id["20260701090000"]["confidence"] == 0.62
         assert by_id["20260701090100"]["confidence"] == 0.5  # fallback
+        # no evidence="..." substring in the classify message → null, not an error
+        assert by_id["20260701090000"]["evidence"] is None
+        assert by_id["20260701090100"]["evidence"] is None
+
+
+def test_review_evidence_join(env):
+    root, vault, _, _ = env
+    _seed_events(root / "events.db", [
+        {"timestamp": "2026-07-01T09:00:00", "file": "/in/walk.m4a", "stage": "classify",
+         "status": "needs_review",
+         "message": "type=learning confidence=0.62 by=llm "
+                    "evidence=\"mentions 'remind me' and a date\""},
+        {"timestamp": "2026-07-01T09:00:01", "file": "/in/walk.m4a", "stage": "route",
+         "status": "ok", "message": "wrote 2026-07-01-walk.md"},
+    ])
+    _note(vault / "00-Inbox" / "2026-07-01-walk.md", "20260701090000", "learning", "needs-review", "b")
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/review")
+        by_id = {i["id"]: i for i in body["items"]}
+        assert by_id["20260701090000"]["evidence"] == "mentions 'remind me' and a date"
 
 
 def test_approve_write_path(env):

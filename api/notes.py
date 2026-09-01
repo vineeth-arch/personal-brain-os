@@ -26,6 +26,7 @@ from pipeline.enrich import insight_text as _insight_text
 log = logging.getLogger("api")
 
 _CONFIDENCE_RE = re.compile(r"confidence=(\d+(?:\.\d+)?)")
+_EVIDENCE_RE = re.compile(r'evidence="([^"]*)"')
 _DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
 
 EXCERPT_CHARS = 300
@@ -113,16 +114,17 @@ def git_commit_vault(vault: Path, message: str) -> bool:
 
 # ---- review queue -----------------------------------------------------------
 
-def _confidence_map(db_path: Path) -> dict[str, float]:
-    """note filename → classifier confidence, joined from events.db.
+def _classify_map(db_path: Path) -> dict[str, tuple[float, str | None]]:
+    """note filename → (classifier confidence, evidence), joined from events.db.
 
     Route events log 'wrote <name>.md' (basenames, ', '-joined); the nearest
     preceding classify event on the same source file carries
-    'type=X confidence=0.62 by=llm'. Later route events win.
+    'type=X confidence=0.62 by=llm evidence="..."' (evidence optional).
+    Later route events win.
     """
     if not db_path.exists():
         return {}
-    out: dict[str, float] = {}
+    out: dict[str, tuple[float, str | None]] = {}
     try:
         conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
         try:
@@ -145,9 +147,16 @@ def _confidence_map(db_path: Path) -> dict[str, float]:
         if not m:
             continue
         conf = float(m.group(1))
+        ev = _EVIDENCE_RE.search(classify_msg)
+        evidence = ev.group(1) if ev else None
         for name in route_msg.removeprefix("wrote ").split(", "):
-            out[name.strip()] = conf
+            out[name.strip()] = (conf, evidence)
     return out
+
+
+def _confidence_map(db_path: Path) -> dict[str, float]:
+    """Backward-compatible wrapper over _classify_map — confidence only."""
+    return {name: conf for name, (conf, _evidence) in _classify_map(db_path).items()}
 
 
 def _suggested_attendees_map(db_path: Path) -> dict[str, dict[str, str]]:
@@ -189,7 +198,7 @@ def list_review(vault: Path, db_path: Path) -> list[dict]:
     inbox_dir = vault / route.INBOX_FOLDER
     if not inbox_dir.is_dir():
         return []
-    confidences = _confidence_map(db_path)
+    classifications = _classify_map(db_path)
     suggestions = _suggested_attendees_map(db_path)
     people_by_id = {p.id: p.name for p in relationships.load_people(vault)}
     items = []
@@ -207,15 +216,17 @@ def list_review(vault: Path, db_path: Path) -> list[dict]:
             {"id": pid, "label": label, "name": people_by_id.get(pid, label)}
             for label, pid in suggestions.get(path.name, {}).items()
         ] if note_type == "conversation" else []
+        confidence, evidence = classifications.get(path.name, (0.5, None))
         items.append({
             "id": fm.get("id", ""),
             "file": f"{route.INBOX_FOLDER}/{path.name}",
             "title": _DATE_PREFIX_RE.sub("", path.stem),
             "excerpt": body.strip()[:EXCERPT_CHARS],
             "suggested_type": note_type,
-            "confidence": confidences.get(path.name, 0.5),
+            "confidence": confidence,
             "created": fm.get("created", ""),
             "suggested_attendees": attendees,
+            "evidence": evidence,
         })
     return items
 

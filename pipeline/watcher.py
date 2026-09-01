@@ -290,9 +290,10 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
                 cls = classify_mod.classify(item, transcript, config, deps.classifier_fn)
             status = "needs_review" if cls.needs_review else "ok"
             provider_note = f" provider={cls.provider}" if cls.provider else ""
+            evidence_note = f' evidence="{cls.evidence}"' if cls.evidence else ""
             events.log(fkey, "classify", status, int((time.monotonic() - t0) * 1000),
                        message=f"type={cls.type} confidence={cls.confidence:.2f} by={cls.routed_by}"
-                               + provider_note)
+                               + provider_note + evidence_note)
             for att in cls.attempts:   # router stats — aggregated by GET /api/providers
                 conf_note = f" confidence={att.confidence:.2f}" if att.confidence is not None else ""
                 events.log(fkey, "llm", "ok" if att.outcome == "served" else "failed",
