@@ -215,6 +215,64 @@ def test_transient_chunk_failure_is_retried_with_backoff(tmp_path):
     assert "ok text" in out
 
 
+# ---- chunk cache (Pass E, task E3) ---------------------------------------------
+
+@needs_ffmpeg
+def test_cache_dir_none_leaves_behavior_unchanged(tmp_path):
+    """Regression check: the default (no cache_dir) must behave exactly like
+    before this task."""
+    audio = _wav(tmp_path / "long.wav", 12)
+    t = CountingTranscriber()
+    out = tr.transcribe_long(audio, t, sleep=lambda s: None, chunk_seconds=4)
+    assert t.calls == 3
+    assert out.count("chunk text") == 3
+
+
+@needs_ffmpeg
+def test_every_chunk_failing_quarantines_instead_of_a_placeholder_only_note_unchanged(tmp_path):
+    audio = _wav(tmp_path / "long.wav", 8)
+    with pytest.raises(StageError) as exc:
+        tr.transcribe_long(audio, AlwaysFailingChunk(), sleep=lambda s: None, chunk_seconds=4)
+    assert exc.value.transient is False
+
+
+@needs_ffmpeg
+def test_first_call_caches_only_the_successful_chunks(tmp_path):
+    audio = _wav(tmp_path / "long.wav", 12)
+    cache_dir = tmp_path / "cache"
+    out = tr.transcribe_long(audio, FailingChunk(fail_on=2), sleep=lambda s: None,
+                             chunk_seconds=4, cache_dir=cache_dir)
+
+    assert (cache_dir / "chunk-0000.txt").exists()
+    assert not (cache_dir / "chunk-0001.txt").exists()
+    assert (cache_dir / "chunk-0002.txt").exists()
+    assert "unintelligible — audio archived" in out
+
+
+@needs_ffmpeg
+def test_second_call_reuses_cache_and_only_retranscribes_the_missing_chunk(tmp_path):
+    audio = _wav(tmp_path / "long.wav", 12)
+    cache_dir = tmp_path / "cache"
+    tr.transcribe_long(audio, FailingChunk(fail_on=2), sleep=lambda s: None,
+                       chunk_seconds=4, cache_dir=cache_dir)
+
+    healed = CountingTranscriber()
+    out = tr.transcribe_long(audio, healed, sleep=lambda s: None,
+                             chunk_seconds=4, cache_dir=cache_dir)
+
+    assert healed.calls == 1, "only the previously-failed chunk should hit the engine"
+    assert "unintelligible" not in out, "the atomic-write cache path must have worked"
+
+
+@needs_ffmpeg
+def test_cache_dir_is_removed_once_every_chunk_succeeds(tmp_path):
+    audio = _wav(tmp_path / "long.wav", 8)
+    cache_dir = tmp_path / "cache"
+    tr.transcribe_long(audio, CountingTranscriber(), sleep=lambda s: None,
+                       chunk_seconds=4, cache_dir=cache_dir)
+    assert not cache_dir.exists()
+
+
 # ---- the language hint ---------------------------------------------------------
 
 def test_openai_multipart_carries_the_language_hint(tmp_path):

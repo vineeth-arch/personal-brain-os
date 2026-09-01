@@ -2,6 +2,8 @@
 OpenAI whisper-1 implementations. Text files skip this stage entirely."""
 from __future__ import annotations
 
+import re
+import shutil
 import subprocess
 import tempfile
 import time
@@ -217,13 +219,34 @@ def _marker(index: int, seconds_per_chunk: int) -> str:
 
 def transcribe_long(audio_path: Path, transcriber: Transcriber, *, sleep=time.sleep,
                     on_event=None, chunk_seconds: int = CHUNK_SECONDS,
-                    attempts: int = 3, backoff_base: int = 2) -> str:
+                    attempts: int = 3, backoff_base: int = 2,
+                    cache_dir: Path | None = None) -> str:
     """Transcribe a long recording in segments and stitch them into one text.
 
     Each segment gets the same transient-retry policy the watcher applies to a
     whole file. A segment that fails permanently leaves a placeholder and the
     rest of the meeting still becomes a note — two hours are never lost to one
     bad ten minutes. `on_event(message, ok)` reports per-chunk outcomes.
+
+    `cache_dir`, when given, makes a re-run cheap: each chunk's SUCCESSFUL
+    transcript is cached to `cache_dir/chunk-%04d.txt` (atomic write —
+    written to a temp file in the same directory, then renamed into place)
+    before this function uses it; on the NEXT call with the same
+    `cache_dir`, a chunk whose cache file already exists is read from disk
+    instead of re-transcribed. Only chunks that failed or were never
+    attempted hit the transcription engine again. `cache_dir` is created if
+    missing. If every chunk succeeds this run, `cache_dir` is removed before
+    returning — a fully-successful transcription has no further use for the
+    cached pieces. If it isn't fully successful, this function never deletes
+    it itself — the caller decides when the cache is no longer needed
+    (this repo's disposable-cache convention: losing it just means the next
+    resume re-transcribes everything, no data lost, matching how every other
+    cache in this codebase is documented). Segmentation must be
+    deterministic for the cache to align correctly across calls — same
+    `audio_path` + same `chunk_seconds` always produces the same chunk
+    boundaries via ffmpeg's `-segment_time`, so callers must always pass the
+    SAME `chunk_seconds` for a given cache_dir (the default is stable; don't
+    vary it across calls against the same cache).
     """
     with tempfile.TemporaryDirectory(prefix="bc-chunks-") as tmp:
         chunks = _segment(audio_path, Path(tmp), chunk_seconds)
@@ -231,20 +254,28 @@ def transcribe_long(audio_path: Path, transcriber: Transcriber, *, sleep=time.sl
             raise StageError("Could not split the long recording.",
                              "ffmpeg produced no segments from the file.",
                              "Check the recording plays, then drop it back in the inbox.")
+        if cache_dir is not None:
+            cache_dir.mkdir(parents=True, exist_ok=True)
         pieces = []
         failed = 0
         for i, chunk in enumerate(chunks):
-            text = None
-            for attempt in range(1, attempts + 1):
-                try:
-                    text = transcriber.transcribe(chunk)
-                    break
-                except StageError as e:
-                    if not e.transient or attempt == attempts:
-                        if on_event:
-                            on_event(f"chunk {i + 1}/{len(chunks)} failed permanently", False)
+            cache_file = cache_dir / f"chunk-{i:04d}.txt" if cache_dir is not None else None
+            text = cache_file.read_text(encoding="utf-8") if cache_file and cache_file.exists() else None
+            if text is None:
+                for attempt in range(1, attempts + 1):
+                    try:
+                        text = transcriber.transcribe(chunk)
                         break
-                    sleep(backoff_base * 2 ** (attempt - 1))
+                    except StageError as e:
+                        if not e.transient or attempt == attempts:
+                            if on_event:
+                                on_event(f"chunk {i + 1}/{len(chunks)} failed permanently", False)
+                            break
+                        sleep(backoff_base * 2 ** (attempt - 1))
+                if text is not None and cache_file is not None:
+                    tmp_cache = cache_file.with_suffix(".tmp")
+                    tmp_cache.write_text(text, encoding="utf-8")
+                    tmp_cache.replace(cache_file)
             marker = _marker(i, chunk_seconds)
             if text is None:
                 failed += 1
@@ -263,9 +294,77 @@ def transcribe_long(audio_path: Path, transcriber: Transcriber, *, sleep=time.sl
                 "Check the recording plays and the transcription engine is reachable, "
                 "then drop the file back in the inbox.")
 
+        if cache_dir is not None and failed == 0 and cache_dir.exists():
+            shutil.rmtree(cache_dir, ignore_errors=True)
+
         if on_event:
             summary = f"stitched {len(chunks)} chunk(s)"
             if failed:
                 summary += f", {failed} failed"
             on_event(summary, failed == 0)
         return "\n\n".join(pieces).strip()
+
+
+# ---- resuming a partially-failed transcription (Pass E) -----------------------
+# A partial failure still writes a note (placeholders and all) and archives the
+# audio — it never reaches `failed/`, so it's never seen by the retry route.
+# `resume_note` repairs one of these after the fact, given the note and its
+# archived audio explicitly: there is no index in this codebase from a note's
+# id back to its archived audio's filename today (adding one is a bigger
+# schema decision, out of scope here), so the caller supplies both paths.
+_UNINTELLIGIBLE_RE = re.compile(
+    r"\[\d{2}:\d{2}\] \[\d+ minutes? unintelligible — audio archived\]")
+
+
+def resume_note(note_path: Path, audio_path: Path, transcriber: Transcriber,
+                cache_dir: Path, *, sleep=time.sleep) -> int:
+    """Repair an already-written note's placeholder gaps by re-running
+    transcription against the SAME audio, reusing (and extending) whatever's
+    already cached — only chunks that are still missing/failed actually hit
+    the transcription engine. `cache_dir` is caller-supplied (this function
+    doesn't invent one — there's no index today mapping a note back to its
+    archived audio's cache location; the caller already knows both paths).
+    Replaces each newly-recovered chunk's EXACT placeholder text in the
+    note's body with the fresh transcript (marker-delimited — only a
+    placeholder whose [hh:mm] marker matches a chunk that's no longer
+    unintelligible is touched; a chunk still failing is left completely
+    alone, matching the note's own placeholder text exactly so nothing
+    changes for it). Returns the count of chunks recovered — 0 is a valid,
+    harmless outcome (nothing was fixable yet). Deletes `cache_dir` once no
+    placeholders remain in the note (nothing left to resume).
+
+    This function is pipeline-level and does NOT call `git_commit_vault` —
+    that's an api/-layer concern (this module has no api/ imports, matching
+    every other pipeline module's boundary). Committing the note change is
+    the caller's job.
+    """
+    text = note_path.read_text(encoding="utf-8")
+    if not _UNINTELLIGIBLE_RE.search(text):
+        return 0  # nothing to resume — short-circuit before any transcription work
+
+    new_transcript = transcribe_long(audio_path, transcriber, sleep=sleep, cache_dir=cache_dir)
+
+    recovered = 0
+    for piece in new_transcript.split("\n\n"):
+        piece = piece.strip()
+        if not piece.startswith("["):
+            continue
+        marker, _, rest = piece.partition("] ")
+        marker += "]"
+        rest = rest.strip()
+        if _UNINTELLIGIBLE_RE.fullmatch(f"{marker} {rest}"):
+            continue  # this chunk is STILL unintelligible — nothing to replace
+        placeholder_pattern = re.compile(
+            re.escape(marker) + r" \[\d+ minutes? unintelligible — audio archived\]")
+        new_text, n = placeholder_pattern.subn(f"{marker} {rest}", text, count=1)
+        if n:
+            text = new_text
+            recovered += 1
+
+    if recovered:
+        note_path.write_text(text, encoding="utf-8")
+
+    if not _UNINTELLIGIBLE_RE.search(text) and cache_dir.exists():
+        shutil.rmtree(cache_dir, ignore_errors=True)
+
+    return recovered

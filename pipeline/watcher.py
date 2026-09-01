@@ -83,13 +83,15 @@ class Result:
 
 
 def _transcribe(item, deps: Deps, events: EventLog | None = None,
-                duration: float | None = None) -> str:
+                duration: float | None = None, config=None) -> str:
     """Text passes through; an image has no transcript at all — the watcher
     reads it directly via vision, never as text (Pass V2/V3); audio goes to
     the engine — whole for a normal recording, in stitched 10-minute segments
     once it is long enough that one request would be refused or crawl (Pass P).
     `duration` is probed once by the caller and threaded through (a retry
-    re-enters this function without re-probing)."""
+    re-enters this function without re-probing). `config` is threaded through
+    only so a long-audio chunk cache can be keyed off `config.archive_path` —
+    it's optional here because not every caller has one to give."""
     if item.kind == "image":
         return ""
     if item.kind in ("text", "link"):
@@ -98,14 +100,21 @@ def _transcribe(item, deps: Deps, events: EventLog | None = None,
         def on_event(message, ok):
             if events:
                 events.log(str(item.path), "transcribe", "ok" if ok else "failed", message=message)
+        # Keyed off the inbox item's OWN filename stem: the failed-retry route
+        # restores a quarantined file to inbox/ under its exact original
+        # filename before this function runs again, so the stem — and this
+        # cache dir — is stable across a retry cycle (Pass E, task E3).
+        cache_dir = (Path(config.archive_path) / ".chunks" / item.path.stem
+                    if config is not None else None)
         return transcribe_mod.transcribe_long(
             item.path, deps.transcriber, sleep=deps.sleep, on_event=on_event,
-            attempts=RETRY_ATTEMPTS, backoff_base=RETRY_BASE_SECONDS)
+            attempts=RETRY_ATTEMPTS, backoff_base=RETRY_BASE_SECONDS,
+            cache_dir=cache_dir)
     return deps.transcriber.transcribe(item.path)
 
 
 def _transcribe_with_retry(item, deps: Deps, events: EventLog | None = None,
-                           duration: float | None = None) -> str:
+                           duration: float | None = None, config=None) -> str:
     """Retry policy: transient failures (network, 5xx, rate limits) get
     RETRY_ATTEMPTS tries with exponential backoff BEFORE quarantine; permanent
     ones (bad audio, missing binary, bad key) escape on the first try.
@@ -114,7 +123,7 @@ def _transcribe_with_retry(item, deps: Deps, events: EventLog | None = None,
     file."""
     for attempt in range(1, RETRY_ATTEMPTS + 1):
         try:
-            return _transcribe(item, deps, events, duration)
+            return _transcribe(item, deps, events, duration, config)
         except errors.StageError as e:
             e.attempts = attempt
             if not e.transient or attempt == RETRY_ATTEMPTS:
@@ -163,7 +172,7 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
             events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000),
                        message="source=plaud speakers=" + ",".join(plaud_transcript.speakers))
         else:
-            transcript = _transcribe_with_retry(item, deps, events, duration)
+            transcript = _transcribe_with_retry(item, deps, events, duration, config)
             events.log(fkey, "transcribe", "ok", int((time.monotonic() - t0) * 1000))
 
         # Stage 2b — transliterate. Hindi speech comes back in Devanagari; the
