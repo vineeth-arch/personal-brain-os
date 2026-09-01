@@ -898,8 +898,11 @@ function OutboxPill() {
         disabled={sending}
         onClick={async () => {
           setSending(true);
-          await outbox.drain();
-          setSending(false);
+          try {
+            await outbox.drain();
+          } finally {
+            setSending(false);
+          }
         }}
         className="text-subtle text-xs font-bold underline disabled:opacity-60"
       >
@@ -954,17 +957,23 @@ function QuickCapture() {
     } catch (err) {
       const isNetworkFailure = err instanceof ApiError && err.status === 0;
       if (isNetworkFailure) {
-        await outbox.enqueue({ kind: "text", body: { text: body, tag: sentTag ?? undefined } });
-        toast("Saved to outbox — sends when you're back online.");
-      } else {
-        const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
-        toast(
-          envelope ? `${envelope.what} ${envelope.todo}` : "Capture didn't reach the server.",
-          "error",
-        );
-        setText(body); // nothing is lost
-        setTag(sentTag);
+        try {
+          await outbox.enqueue({ kind: "text", body: { text: body, tag: sentTag ?? undefined } });
+          toast("Saved to outbox — sends when you're back online.");
+          return;
+        } catch {
+          // enqueue itself failed (IndexedDB unavailable, quota, private
+          // browsing) — fall through to the existing error/restore-input
+          // behavior below instead of silently losing the text
+        }
       }
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(
+        envelope ? `${envelope.what} ${envelope.todo}` : "Capture didn't reach the server.",
+        "error",
+      );
+      setText(body); // nothing is lost
+      setTag(sentTag);
     }
   };
 

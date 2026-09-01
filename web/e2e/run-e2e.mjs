@@ -729,6 +729,24 @@ try {
     "outbox pill/Send-now rendered before anything was queued");
 
   const outboxWord = "quibblewroughtcapture";
+  const outboxInboxDir = path.join(root, "inbox");
+  const filesContaining = (word) =>
+    fs.readdirSync(outboxInboxDir).filter((f) => {
+      try {
+        return fs.readFileSync(path.join(outboxInboxDir, f), "utf8").includes(word);
+      } catch {
+        return false; // non-text (e.g. audio) files from earlier steps
+      }
+    });
+  const waitForFilesContaining = async (word, timeoutMs = 5000) => {
+    const start = Date.now();
+    let found = filesContaining(word);
+    while (!found.length && Date.now() - start < timeoutMs) {
+      await new Promise((r) => setTimeout(r, 100));
+      found = filesContaining(word);
+    }
+    return found;
+  };
 
   // (a) live attempt: no X-Capture-Key on this hop (the live path never
   // sends one) — aborted purely client-side, never reaches the server.
@@ -745,36 +763,93 @@ try {
   assert.equal(liveAttemptHits, 1, "the live capture attempt should have hit the route exactly once");
   console.log("✓ A network failure on the live capture path queues to the outbox");
 
-  // (b) first retry of the queued item: genuinely forward to the real server
-  // (so a note really gets written) but still fail the response the browser
-  // sees, so the item stays queued for a second retry.
+  // (a2) Regression test for the "swallowed IndexedDB write failure" bug: if
+  // enqueue()'s own IndexedDB write fails (private browsing, disabled IDB,
+  // quota), the caller must fall through to the EXISTING error/restore-input
+  // behavior — not silently report "Saved to outbox" while the text is lost
+  // for good. Break the real IndexedDB and prove the old fallback UI still
+  // fires, with the typed text still visible, not thrown away.
+  await page.evaluate(() => {
+    // test-only monkeypatch: shadow the prototype's open() with one that
+    // always throws synchronously, simulating a broken IndexedDB
+    window.indexedDB.open = () => {
+      throw new Error("simulated IndexedDB failure (e2e)");
+    };
+  });
+  await page.route("**/api/capture", (route) => route.abort());
+  const fallbackWord = "wortleblazepending";
+  await page.getByLabel("Quick capture").fill(fallbackWord);
+  await page.getByRole("button", { name: "Capture", exact: true }).click();
+  // the pre-existing network-failure fallback: an error toast and the typed
+  // text restored to the input — NEVER the outbox "success" toast, and NEVER
+  // a silently cleared, unrecoverable input
+  await page.getByText(/Couldn't reach the Brain Cockpit server/).waitFor();
+  assert.equal(await page.getByLabel("Quick capture").inputValue(), fallbackWord,
+    "a failed enqueue (broken IndexedDB) must restore the typed text, not silently drop it");
+  // still exactly the one item from (a) — a broken IndexedDB write must not
+  // be reported as a second successful enqueue
+  await page.getByText("1 queued").waitFor();
+  await page.unroute("**/api/capture");
+  await page.evaluate(() => {
+    delete window.indexedDB.open; // restore the real (prototype) implementation
+  });
+  console.log("✓ A failed IndexedDB write falls back to the existing error/restore-input behavior, not a silent loss");
+
+  // (b) first retry of the queued item from (a): genuinely forward to the
+  // real server (so a note really gets written) but still fail the response
+  // the browser sees, so the item stays queued for a second retry. The
+  // forward's response status is asserted explicitly — otherwise a wrong
+  // token, a changed request shape, or a null body would silently fail to
+  // land anything, and "only one file" at the end would be vacuously true.
   let firstRetryKey = null;
+  let firstForwardStatus = null;
   await page.route("**/api/capture", async (route) => {
-    firstRetryKey = await route.request().headerValue("x-capture-key");
+    const key = await route.request().headerValue("x-capture-key");
     try {
-      await fetch(`${BASE}/api/capture`, {
+      const res = await fetch(`${BASE}/api/capture`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${TOKEN}`,
           "Content-Type": "application/json",
-          ...(firstRetryKey ? { "X-Capture-Key": firstRetryKey } : {}),
+          ...(key ? { "X-Capture-Key": key } : {}),
         },
         body: route.request().postData(),
       });
-    } catch { /* best-effort forward — the abort below is what the page sees */ }
-    return route.abort();
+      firstForwardStatus = res.status;
+    } catch {
+      firstForwardStatus = null; // the forward itself failed — asserted below
+    }
+    await route.abort();
+    // set only after the abort has been dispatched to the browser, so the
+    // test's poll below can't observe "the key is known" before the drain
+    // this route is servicing has actually settled client-side
+    firstRetryKey = key;
   });
   await page.getByRole("button", { name: "Send now" }).click();
-  // the onClick handler's own await isn't awaited by .click() itself, so poll
-  // for the route handler (which runs async, mid-drain) to have fired
-  for (let i = 0; i < 50 && firstRetryKey === null; i++) {
-    await new Promise((r) => setTimeout(r, 100));
-  }
+  // the onClick handler's own await isn't awaited by .click() itself, and a
+  // still-in-flight drain would make a second "Send now" click below
+  // early-return (the `draining` guard) without ever draining anything — so
+  // wait for the button to be re-enabled, which only happens once drain()
+  // (and its own internal `draining` reset) has fully settled.
+  await page.waitForFunction(() => {
+    const btn = [...document.querySelectorAll("button")].find((b) => b.textContent === "Send now");
+    return btn instanceof HTMLButtonElement && !btn.disabled;
+  });
+  assert.equal(firstForwardStatus, 201,
+    `the forwarded first-retry request did not actually land on the real server (status ${firstForwardStatus})`);
   assert.ok(firstRetryKey, "the retried send did not carry an X-Capture-Key header");
   // the drain attempt itself failed client-side too, so the item is still queued
   await page.getByText("1 queued").waitFor();
   await page.unroute("**/api/capture");
-  console.log("✓ The retry carried the queued item's id as X-Capture-Key and reached the real server");
+  console.log("✓ The retry carried the queued item's id as X-Capture-Key and reached the real server (201)");
+
+  // Pin the dedup claim to an actual state transition, not just an
+  // end-of-test snapshot: exactly one file must exist right now, from (b)'s
+  // forward alone — before (c) even runs.
+  const filesAfterFirstLanding = await waitForFilesContaining(outboxWord);
+  assert.equal(filesAfterFirstLanding.length, 1,
+    `expected exactly one file after the first landed retry, saw ${JSON.stringify(filesAfterFirstLanding)}`);
+  console.log("✓ The first retry's forward genuinely wrote one file (state confirmed before the dedup retry)");
 
   // (c) second retry of the SAME item, unrouted (real server, real network):
   // the server must recognize firstRetryKey and refuse to write a second file.
@@ -782,19 +857,10 @@ try {
   await page.getByText("1 queued").waitFor({ state: "detached" });
   console.log("✓ Send now (second attempt) drains the outbox and the pill disappears");
 
-  const outboxInboxDir = path.join(root, "inbox");
-  let outboxFiles = [];
-  for (let i = 0; i < 50; i++) {
-    outboxFiles = fs.readdirSync(outboxInboxDir).filter((f) => {
-      try {
-        return fs.readFileSync(path.join(outboxInboxDir, f), "utf8").includes(outboxWord);
-      } catch {
-        return false; // non-text (e.g. audio) files from earlier steps
-      }
-    });
-    if (outboxFiles.length) break;
-    await new Promise((r) => setTimeout(r, 100));
-  }
+  // Settle-wait rather than stopping at the first match: confirms the count
+  // holds at one instead of merely having been one at some instant.
+  await new Promise((r) => setTimeout(r, 500));
+  const outboxFiles = filesContaining(outboxWord);
   assert.equal(outboxFiles.length, 1,
     `expected exactly one file despite two real send attempts sharing one idempotency key, saw ${JSON.stringify(outboxFiles)}`);
   console.log("✓ Idempotency key genuinely prevented a duplicate note across two real server-side sends");

@@ -38,8 +38,17 @@ async function withStore<T>(
     return await new Promise<T>((resolve, reject) => {
       const tx = db.transaction(STORE, mode);
       const req = fn(tx.objectStore(STORE));
-      req.onsuccess = () => resolve(req.result);
+      let result: T;
+      req.onsuccess = () => {
+        result = req.result;
+      };
       req.onerror = () => reject(req.error);
+      // Resolve on the TRANSACTION's completion, not the request's success —
+      // req.onsuccess fires before a readwrite transaction has actually
+      // committed, so a commit-time abort would otherwise be reported to the
+      // caller as a successful write.
+      tx.oncomplete = () => resolve(result);
+      tx.onabort = () => reject(tx.error ?? new Error("IndexedDB transaction aborted"));
     });
   } finally {
     db.close();
@@ -95,15 +104,16 @@ export async function enqueue(item: NewQueuedCapture): Promise<void> {
   }
   const id = crypto.randomUUID();
   const queued = { id, ...item } as QueuedCapture;
-  try {
-    await withStore("readwrite", (s) => s.put(queued));
-    await refreshCount();
-  } catch {
-    // IndexedDB write failed — nothing queued, caller's existing catch-block
-    // error toast is what the user sees; this is a silent degrade to
-    // "today's behavior" (capture is lost from the outbox's perspective,
-    // exactly as it already is today without this feature)
-  }
+  // A genuine write failure (private browsing, disabled IndexedDB, quota, an
+  // aborted transaction) must propagate to the caller — each of the three
+  // Today.tsx hooks catches this and falls back to its existing
+  // pending/manual-retry UI instead of claiming the capture was saved when
+  // it silently wasn't.
+  await withStore("readwrite", (s) => s.put(queued));
+  // Only the count refresh is best-effort: the item is already durably
+  // written by this point, so a failure to re-read the count doesn't mean
+  // the write failed and must not undo an already-successful enqueue.
+  await refreshCount();
 }
 
 async function sendQueued(item: QueuedCapture): Promise<void> {
@@ -127,7 +137,7 @@ export async function drain(): Promise<{ sent: number; left: number }> {
     try {
       items = await withStore("readonly", (s) => s.getAll());
     } catch {
-      return { sent: 0, left: 0 };
+      return { sent: 0, left: getOutboxCount() }; // read failed — report the last-known count, not a false zero
     }
     let sent = 0;
     for (const item of items) {
