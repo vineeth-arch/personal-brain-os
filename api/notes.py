@@ -248,6 +248,42 @@ def count_review(vault: Path) -> int:
     return n
 
 
+def _move_note(vault: Path, source: Path, text: str, new_type: str) -> Path:
+    """Restamp type/status and atomically relocate a note into its type's
+    folder — the identical mkstemp→replace→unlink dance `approve()` and
+    `drain_review()` both need. Raises OSError if the source copy can't be
+    removed after a successful write (never leave a note duplicated under
+    one immutable id — SCHEMA §1 — every link pointing at it would break)."""
+    new_status = route.STATUS_INITIAL.get(new_type, "active")
+    dest_dir = vault / route.TYPE_FOLDER[new_type]
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / source.name
+    i = 1
+    while dest.exists():
+        i += 1
+        dest = dest_dir / f"{source.stem}-{i}{source.suffix}"
+
+    # Write to a temp file in the destination folder and rename it into place,
+    # then remove the source copy. If the unlink fails the note would exist
+    # twice under one immutable id (SCHEMA §1), which breaks every link
+    # pointing at it — so that failure is surfaced, not swallowed.
+    fd, tmp = tempfile.mkstemp(dir=dest_dir, prefix=".move-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(_restamp(text, new_type, new_status))
+        os.replace(tmp, dest)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    try:
+        source.unlink()
+    except OSError:
+        dest.unlink(missing_ok=True)   # roll back rather than duplicate the id
+        log.exception("could not remove the source copy of %s — move rolled back", source)
+        raise
+    return dest
+
+
 def approve(vault: Path, note_id: str, new_type: str,
            attendees: list[str] | None = None, *,
            events: EventLog | None = None) -> str:
@@ -285,33 +321,7 @@ def approve(vault: Path, note_id: str, new_type: str,
         raise LookupError(note_id)
     suggested = found_fm.get("type") or "none"
 
-    new_status = route.STATUS_INITIAL.get(new_type, "active")
-    dest_dir = vault / route.TYPE_FOLDER[new_type]
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / target.name
-    i = 1
-    while dest.exists():
-        i += 1
-        dest = dest_dir / f"{target.stem}-{i}{target.suffix}"
-
-    # Write to a temp file in the destination folder and rename it into place,
-    # then remove the inbox copy. If the unlink fails the note would exist twice
-    # under one immutable id (SCHEMA §1), which breaks every link pointing at
-    # it — so that failure is surfaced, not swallowed.
-    fd, tmp = tempfile.mkstemp(dir=dest_dir, prefix=".approve-", suffix=".tmp")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(_restamp(text, new_type, new_status))
-        os.replace(tmp, dest)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
-    try:
-        target.unlink()
-    except OSError:
-        dest.unlink(missing_ok=True)   # roll back rather than duplicate the id
-        log.exception("could not remove the inbox copy of %s — approve rolled back", note_id)
-        raise
+    dest = _move_note(vault, target, text, new_type)
 
     # Confirming attendees happens only AFTER the note is safely filed — had
     # the move above failed, no person note should have been touched at all.
