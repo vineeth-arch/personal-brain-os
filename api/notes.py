@@ -355,6 +355,89 @@ def approve(vault: Path, note_id: str, new_type: str,
     return str(dest.relative_to(vault))
 
 
+# ---- anti-guilt drain (Pass A, B5) ------------------------------------------
+
+def drain_review(vault: Path, db_path: Path, *, older_than_days: int = 14,
+                 floor: float = 0.5, now: date | None = None) -> dict:
+    """Anti-guilt drain (Pass A, B5): triage items older than `older_than_days`
+    are resolved without waiting on a human — filed at the classifier's best
+    guess when it was confident enough, parked out of the queue otherwise.
+    Every note this touches keeps its full content; nothing is deleted, and
+    the whole run is ONE git commit so it's undone with one `git revert`.
+    `origin: ai` + `drained: true` mark exactly which notes this filed, so
+    that provenance (CLAUDE.md §1/§2) is never ambiguous later.
+
+    Floor check: a filename with NO classify event at all (e.g. a tag-routed
+    capture that skipped the LLM entirely) is treated as PARKED, never filed
+    at a default confidence — only a filename that DOES have a classify
+    event, at/above `floor`, is eligible to be filed.
+
+    Conversations are ALWAYS parked, on top of that floor check, never filed
+    — checked verbatim against pipeline/watcher.py rather than assumed: its
+    `is_conversation` branch routes the type deterministically and logs
+    `stage='attendees'` for the suggestion, but it ALSO still logs an
+    unconditional `stage='classify'` event afterwards (confidence 1.0,
+    `by=plaud`) purely so GET /api/review can display a confidence number —
+    so a conversation is NOT actually "missing" from `_classify_map` the way
+    a tag-routed capture is, and the floor check alone would wrongly treat
+    its 1.0 confidence as "confident enough" and file it. Hence the explicit
+    `note_type != "conversation"` guard below: a conversation's TYPE is never
+    in doubt, only its attendees are, and auto-filing it would either skip
+    attendee confirmation entirely or invent one — both wrong under CLAUDE.md
+    §3 (no AI bulk-write reaches a person note unreviewed). Parking a stale
+    unconfirmed conversation, so a human can still confirm attendees by hand,
+    is the correct, constitution-consistent behavior."""
+    now = now or date.today()
+    inbox_dir = vault / route.INBOX_FOLDER
+    if not inbox_dir.is_dir():
+        return {"filed": 0, "parked": 0}
+    classified = _classify_map(db_path)  # {filename: (confidence, evidence)}
+    filed = parked = 0
+    for path in sorted(inbox_dir.glob("*.md")):
+        text = read_note(path)
+        if text is None:
+            continue
+        fm, _ = parse_frontmatter(text)
+        if fm.get("status") != "needs-review":
+            continue
+        created_str = fm.get("created", "")
+        try:
+            created = date.fromisoformat(created_str)
+        except ValueError:
+            continue  # unparseable date — never touched by an automated sweep
+        if (now - created).days < older_than_days:
+            continue
+        note_type = fm.get("type", "musing")
+        confident_enough = path.name in classified and classified[path.name][0] >= floor
+        # a conversation's type is never in doubt, only its attendees are —
+        # never auto-file one, whatever its (always 1.0, by=plaud) confidence
+        # reads as; see the docstring above for why this can't be left to the
+        # floor check alone
+        if confident_enough and note_type in route.TYPE_FOLDER and note_type != "conversation":
+            dest = _move_note(vault, path, text, note_type)
+            fm_block, sep, body = dest.read_text(encoding="utf-8").partition("\n---\n")
+            fm_block = route.stamp_field(fm_block, "origin", "ai")
+            fm_block = route.stamp_field(fm_block, "drained", "true")
+            dest.write_text(fm_block + sep + body, encoding="utf-8")
+            filed += 1
+        else:
+            parked_dir = inbox_dir / "parked"
+            parked_dir.mkdir(exist_ok=True)
+            dest = parked_dir / path.name
+            i = 1
+            while dest.exists():
+                i += 1
+                dest = parked_dir / f"{path.stem}-{i}{path.suffix}"
+            path.rename(dest)
+            parked += 1
+    if filed or parked:
+        git_commit_vault(
+            vault,
+            f"triage drain: {filed} filed at best guess, {parked} parked — "
+            "revert with: git revert HEAD")
+    return {"filed": filed, "parked": parked}
+
+
 # ---- capture ----------------------------------------------------------------
 
 def _slug(text: str) -> str:

@@ -106,6 +106,18 @@ and `trust.drained_month` count this calendar month's approve / drain events
 respectively (`drained_month` is always `0` until a later pass adds the drain
 job — documented here now so the contract doesn't need a second edit then).
 
+An item sitting in this queue for 14+ days is resolved automatically by a
+once-daily drain tick (anti-guilt, Pass A/B5) rather than left to age
+forever: a confident classifier guess (`confidence >= 0.5`) is filed exactly
+like an `/approve` call would file it, then marked `origin: ai` and
+`drained: true` so its provenance is never ambiguous — every filing is
+revertible with a single `git revert`. Everything else (including every
+`type: conversation` item, which never carries a classify event and so is
+always treated as below the floor) moves to `00-Inbox/parked/` with its
+frontmatter completely untouched and simply stops appearing in `items` here.
+Parked notes are not deleted — a human can still find and re-file them by
+hand — they're just out of the daily queue.
+
 ### `POST /api/review/{id}/approve`
 
 Request `{"type": "learning", "attendees": []}` — `type` is one of the 13 note

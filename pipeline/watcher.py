@@ -18,6 +18,7 @@ import os
 import subprocess
 import time
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from . import (archive, classify as classify_mod, config as config_mod, echo as echo_mod,
@@ -430,6 +431,29 @@ def sync_vault(config, events: EventLog) -> None:
                       + (f" — {result.detail}" if result.detail else ""))
 
 
+def drain_tick(config, events: EventLog) -> None:
+    """Anti-guilt drain (Pass A, B5) — files stale triage items at best guess
+    once a day. Lazy import: api/notes.py isn't a dependency of the pipeline
+    package under normal operation (only the FastAPI app imports it), and a
+    top-level import here would create a pipeline→api coupling nothing else
+    in this package has. Never raises — same "a tick may fail, the loop may
+    not" contract as every other run_loop step."""
+    if not config.raw.get("triage", {}).get("drain", True):
+        return
+    today_key = f"drain-{date.today().isoformat()}"
+    if events.reminder_fired(today_key):
+        return
+    try:
+        from api import notes
+        result = notes.drain_review(Path(config.vault_path), events.db_path)
+        events.log(str(config.vault_path), "drain", "ok",
+                  message=f"filed={result['filed']} parked={result['parked']}")
+    except Exception:
+        log.exception("drain tick failed — retrying at the next poll")
+        return
+    events.mark_reminder(today_key)
+
+
 def run_once(config, events: EventLog, deps: Deps) -> list[Result]:
     events.heartbeat(HEARTBEAT_PATH)
     # pull anything new out of the app-owned folders (Plaud Desktop, Note Pro
@@ -458,6 +482,7 @@ def run_loop(config, events, deps) -> None:
             if results:
                 print(f"Processed {len(results)} file(s).")
             todos.tick(config, events)              # reminders + optional digest
+            drain_tick(config, events)                # Pass A: anti-guilt drain — best-guess filing
             enrich.retry_pending(config, events)    # one re-attempt for stale enriched:false notes
             intake.sweep_orphaned_sidecars(config.inbox_path)  # abandoned photo-insight dotfiles
             sync_vault(config, events)               # push/pull the vault's own git history

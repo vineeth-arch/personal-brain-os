@@ -99,6 +99,15 @@ class EventLog:
             "AND timestamp LIKE ?", (day.isoformat() + "%",))
         return cur.fetchone()[0]
 
+    def _drain_events_on(self, day: date) -> list[tuple[str, str]]:
+        """(file, message) for every successful drain run logged on `day` —
+        at most one per day given the once-daily reminder gate, but a manual
+        retry could add more, so the caller sums defensively."""
+        cur = self.conn.execute(
+            "SELECT file, message FROM events WHERE stage='drain' AND status='ok' "
+            "AND timestamp LIKE ?", (day.isoformat() + "%",))
+        return cur.fetchall()
+
     def _failed_latest(self) -> list[tuple[str, str]]:
         """Files whose LATEST event is a failure, with the reason.
 

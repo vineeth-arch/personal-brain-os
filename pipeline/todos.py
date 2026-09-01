@@ -23,6 +23,8 @@ TODOS_FOLDER = "06-Todos"
 
 _FROM_RE = re.compile(r"\s*\(from \[\[[\w-]+\]\]\)$")
 
+_DRAIN_FILED_RE = re.compile(r"filed=(\d+)")
+
 _LINE_RE = re.compile(
     r"^- \[(?P<done>[ x])\] (?P<task>.*?)"
     r"(?: 📅 (?P<due>\d{4}-\d{2}-\d{2}))?"
@@ -119,6 +121,17 @@ def in_range(todo: Todo, range_name: str, today: date | None = None) -> bool:
     return False
 
 
+def _yesterday_drain_filed(events, day: date) -> int:
+    """Total items the drain filed yesterday, for the morning digest's one
+    quiet line — 0 when the drain didn't run or filed nothing."""
+    total = 0
+    for _file, message in events._drain_events_on(day):
+        m = _DRAIN_FILED_RE.search(message or "")
+        if m:
+            total += int(m.group(1))
+    return total
+
+
 # ---- the --loop tick: reminders + optional 8am digest --------------------------
 
 def tick(config, events, now: datetime | None = None) -> None:
@@ -165,10 +178,11 @@ def _tick(config, events, now: datetime) -> None:
     overdue = [t for t in todos if in_range(t, "overdue", today)]
     stats = events.digest_stats(today - timedelta(days=1))
     quiet_pipeline = not (stats["captured"] or stats["needs_review"] or stats["failed"])
+    drain_filed = _yesterday_drain_filed(events, today - timedelta(days=1))
     # the relationship half of the morning — folded into THIS push, never a second one
     people_lines = morning.people_section(config, today)
     people_lines += morning.push_section(config, events.db_path)
-    if not due_today and not overdue and quiet_pipeline and not people_lines:
+    if not due_today and not overdue and quiet_pipeline and not drain_filed and not people_lines:
         events.mark_reminder(digest_key)  # nothing to say today; don't re-check
         return
     lines = []
@@ -179,6 +193,8 @@ def _tick(config, events, now: datetime) -> None:
         if stats["failed"]:
             summary.append(f"{stats['failed']} failed")
         lines.append(" · ".join(summary))
+    if drain_filed:
+        lines.append(f"{drain_filed} old items filed at best guess — one command undoes it.")
     if overdue:
         lines.append("Overdue:")
         lines += [f"• {t.task} (was {t.due})" for t in overdue]
