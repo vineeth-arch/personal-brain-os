@@ -256,50 +256,150 @@ function fmtDay(iso: string): string {
     : d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+// Small checkbox circle shared by the parent row and its micro-step children
+// (the child one just renders smaller — same shape, same tonal treatment).
+function TodoCheckbox({
+  done,
+  label,
+  onClick,
+  size = 7,
+}: {
+  done: boolean;
+  label: string;
+  onClick: () => void;
+  size?: 5 | 7;
+}) {
+  const dim = size === 7 ? "h-7 w-7" : "h-5 w-5";
+  const icon = size === 7 ? 12 : 9;
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      onClick={onClick}
+      className={`flex ${dim} shrink-0 items-center justify-center rounded-full border-2 transition-colors motion-reduce:transition-none ${
+        done ? "bg-inverted border-transparent" : "border-emphasis"
+      }`}
+    >
+      {done && (
+        <svg width={icon} height={icon} viewBox="0 0 12 12" aria-hidden="true">
+          <path d="M2 6.5 4.8 9 10 3.5" stroke="var(--cal-text-inverted)" strokeWidth="2" fill="none" strokeLinecap="round" />
+        </svg>
+      )}
+    </button>
+  );
+}
+
+// The 1-5 "how hard does it feel" dial — the same filled/hollow tonal dot
+// primitive as StreakDots.tsx (bg-inverted filled, border-emphasis hollow),
+// but interactive: tapping a dot commits that value immediately (B10).
+function FeelDial({ busy, onPick }: { busy: boolean; onPick: (n: number) => void }) {
+  const [picked, setPicked] = useState<number | null>(null);
+  return (
+    <div className="flex shrink-0 items-center gap-1.5" role="group" aria-label="How hard does this feel?">
+      {[1, 2, 3, 4, 5].map((n) => (
+        <button
+          key={n}
+          type="button"
+          disabled={busy}
+          aria-label={`Feel ${n} of 5`}
+          onClick={() => {
+            setPicked(n);
+            onPick(n);
+          }}
+          className={`h-3 w-3 rounded-full disabled:opacity-60 ${
+            picked !== null && n <= picked ? "bg-inverted" : "border-emphasis border-2"
+          }`}
+        />
+      ))}
+    </div>
+  );
+}
+
 function AgendaRow({
   item,
   onToggle,
+  onBreakdown,
 }: {
   item: TodoItem;
-  onToggle: (item: TodoItem) => void;
+  onToggle: (id: string, done: boolean) => void;
+  onBreakdown: (item: TodoItem, feel: number) => Promise<void>;
 }) {
+  const [dialOpen, setDialOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const pickFeel = async (n: number) => {
+    setBusy(true);
+    try {
+      await onBreakdown(item, n);
+    } finally {
+      setBusy(false);
+      setDialOpen(false);
+    }
+  };
+
   return (
-    <li className="flex min-h-11 items-center gap-3 py-1">
-      <button
-        type="button"
-        aria-label={item.done ? `Reopen: ${item.task}` : `Mark done: ${item.task}`}
-        onClick={() => onToggle(item)}
-        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full border-2 transition-colors motion-reduce:transition-none ${
-          item.done ? "bg-inverted border-transparent" : "border-emphasis"
-        }`}
-      >
-        {item.done && (
-          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
-            <path d="M2 6.5 4.8 9 10 3.5" stroke="var(--cal-text-inverted)" strokeWidth="2" fill="none" strokeLinecap="round" />
-          </svg>
-        )}
-      </button>
-      <div className="min-w-0 flex-1">
-        <p
-          className={`truncate text-sm transition-opacity motion-reduce:transition-none ${
-            item.done ? "text-subtle line-through opacity-60" : "text-emphasis font-semibold"
-          }`}
-        >
-          {item.task}
-        </p>
-        {(item.overdue || item.time) && (
-          <p className="text-subtle text-xs">
-            {item.overdue && !item.done ? (
-              // overdue is marked tonally, never with the accent
-              <span className="bg-cal-muted text-emphasis rounded px-1.5 py-0.5 font-bold">
-                Overdue · {item.due ? fmtDay(item.due) : ""}
-              </span>
-            ) : (
-              item.time && `at ${item.time}`
-            )}
+    <li className="py-1">
+      <div className="flex min-h-11 items-center gap-3">
+        <TodoCheckbox
+          done={item.done}
+          label={item.done ? `Reopen: ${item.task}` : `Mark done: ${item.task}`}
+          onClick={() => onToggle(item.id, item.done)}
+        />
+        <div className="min-w-0 flex-1">
+          <p
+            className={`truncate text-sm transition-opacity motion-reduce:transition-none ${
+              item.done ? "text-subtle line-through opacity-60" : "text-emphasis font-semibold"
+            }`}
+          >
+            {item.task}
           </p>
-        )}
+          {(item.overdue || item.time) && (
+            <p className="text-subtle text-xs">
+              {item.overdue && !item.done ? (
+                // overdue is marked tonally, never with the accent
+                <span className="bg-cal-muted text-emphasis rounded px-1.5 py-0.5 font-bold">
+                  Overdue · {item.due ? fmtDay(item.due) : ""}
+                </span>
+              ) : (
+                item.time && `at ${item.time}`
+              )}
+            </p>
+          )}
+        </div>
+        {item.children.length === 0 &&
+          (dialOpen ? (
+            <FeelDial busy={busy} onPick={(n) => void pickFeel(n)} />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setDialOpen(true)}
+              className="text-subtle hover:text-emphasis shrink-0 whitespace-nowrap text-xs font-bold"
+            >
+              Break this down
+            </button>
+          ))}
       </div>
+      {item.children.length > 0 && (
+        <ul className="ml-10 mt-1 space-y-1">
+          {item.children.map((child) => (
+            <li key={child.id} className="flex min-h-9 items-center gap-2">
+              <TodoCheckbox
+                size={5}
+                done={child.done}
+                label={child.done ? `Reopen: ${child.task}` : `Mark done: ${child.task}`}
+                onClick={() => onToggle(child.id, child.done)}
+              />
+              <span
+                className={`truncate text-xs ${
+                  child.done ? "text-subtle line-through opacity-60" : "text-default"
+                }`}
+              >
+                {child.task}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
     </li>
   );
 }
@@ -314,17 +414,34 @@ function Agenda() {
   if (error && !data) return null; // the hero card owns whole-screen error surfacing
 
   const withFlips = (items: TodoItem[]) =>
-    items.map((i) => (i.id in flipped ? { ...i, done: flipped[i.id] } : i));
+    items.map((i) => ({
+      ...(i.id in flipped ? { ...i, done: flipped[i.id] } : i),
+      children: i.children.map((c) => (c.id in flipped ? { ...c, done: flipped[c.id] } : c)),
+    }));
 
-  const toggle = async (item: TodoItem) => {
-    const next = !item.done;
-    setFlipped((f) => ({ ...f, [item.id]: next })); // optimistic
+  // Shared by parent rows and their micro-step children — a child is a
+  // normal todo as far as toggle is concerned (B10), it just renders
+  // indented. Toggling a child rolls up onto its parent server-side.
+  const toggle = async (id: string, done: boolean) => {
+    const next = !done;
+    setFlipped((f) => ({ ...f, [id]: next })); // optimistic
     try {
-      await api.toggleTodo(item.id);
+      await api.toggleTodo(id);
       toast(next ? "Done." : "Reopened.");
       refetch();
     } catch (err) {
-      setFlipped((f) => ({ ...f, [item.id]: item.done }));
+      setFlipped((f) => ({ ...f, [id]: done }));
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(envelope ? `${envelope.what} ${envelope.todo}` : "That didn't reach the server.", "error");
+    }
+  };
+
+  const breakdown = async (item: TodoItem, feel: number) => {
+    try {
+      await api.breakdownTodo(item.id, feel);
+      toast("Broken down.");
+      refetch();
+    } catch (err) {
       const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
       toast(envelope ? `${envelope.what} ${envelope.todo}` : "That didn't reach the server.", "error");
     }
@@ -345,7 +462,7 @@ function Agenda() {
           {today.length > 0 ? (
             <ul className="mt-2">
               {today.map((t) => (
-                <AgendaRow key={t.id} item={t} onToggle={toggle} />
+                <AgendaRow key={t.id} item={t} onToggle={toggle} onBreakdown={breakdown} />
               ))}
             </ul>
           ) : (
@@ -359,7 +476,7 @@ function Agenda() {
               </summary>
               <ul>
                 {tomorrow.map((t) => (
-                  <AgendaRow key={t.id} item={t} onToggle={toggle} />
+                  <AgendaRow key={t.id} item={t} onToggle={toggle} onBreakdown={breakdown} />
                 ))}
               </ul>
             </details>

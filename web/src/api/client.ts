@@ -12,6 +12,7 @@ import type {
   GmailMessage,
   ProviderStat,
   SelfCheckResponse,
+  TodoChild,
   TodoItem,
   TodoRange,
   ErrorEnvelope,
@@ -357,6 +358,11 @@ export const api = {
   todos: (range: TodoRange) => request<{ items: TodoItem[] }>(`/api/todos?range=${range}`),
   toggleTodo: (id: string) =>
     request<{ ok: boolean; done: boolean }>(`/api/todos/${id}/toggle`, { method: "POST" }),
+  breakdownTodo: (id: string, feel: number) =>
+    request<{ id: string; task: string; feel: number; children: TodoChild[] }>(
+      `/api/todos/${id}/breakdown`,
+      { method: "POST", body: JSON.stringify({ feel }) },
+    ),
   build: (fresh = false) => request<BuildResponse>(`/api/build${fresh ? "?fresh=1" : ""}`),
   providers: () => request<{ providers: ProviderStat[] }>("/api/providers"),
   config: () => request<AppConfig>("/api/config"),

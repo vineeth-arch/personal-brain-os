@@ -215,6 +215,14 @@ export interface DraftCreated {
 // Todos (Pass T): Obsidian Tasks-compatible checkbox lines in 06-Todos/.
 export type TodoRange = "today" | "tomorrow" | "week" | "overdue";
 
+// A micro-step under a parent todo (B10) — a normal todo as far as toggle is
+// concerned, it just renders indented under its parent.
+export interface TodoChild {
+  id: string;
+  task: string;
+  done: boolean;
+}
+
 export interface TodoItem {
   id: string;
   task: string;
@@ -223,6 +231,8 @@ export interface TodoItem {
   done: boolean;
   overdue: boolean;
   file: string;
+  feel: number | null; // 1-5 "how hard does it feel" dial — null until broken down
+  children: TodoChild[];
 }
 
 // Build tracker (Pass B): live probes — reality is the checklist.

@@ -563,7 +563,15 @@ BUILD_ITEMS = [
 TODO_ITEMS = [] if MODE_EMPTY else [
     {"id": "20260703140000-1", "task": "call the dentist", "due": date.today().isoformat(),
      "time": "14:00", "done": False, "overdue": False,
-     "file": f"06-Todos/{date.today().isoformat()}.md"},
+     "file": f"06-Todos/{date.today().isoformat()}.md", "feel": None, "children": []},
+    # already broken down, to demonstrate the rendered-children state (B10)
+    {"id": "20260703140000-2", "task": "plan the offsite", "due": date.today().isoformat(),
+     "time": None, "done": False, "overdue": False,
+     "file": f"06-Todos/{date.today().isoformat()}.md", "feel": 4,
+     "children": [
+         {"id": "20260703140000-2a", "task": "book the room", "done": False},
+         {"id": "20260703140000-2b", "task": "draft the agenda", "done": False},
+     ]},
 ]
 
 # Search fixtures (Pass Q) — a static set standing in for a real whole-vault
@@ -1156,13 +1164,54 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith("/api/todos/") and path.endswith("/toggle"):
                 block_id = path.split("/")[3]
                 item = next((t for t in TODO_ITEMS if t["id"] == block_id), None)
+                if item:
+                    item["done"] = not item["done"]
+                    return self._send(200, {"ok": True, "done": item["done"]})
+                # a child id rolls up onto its parent (B10), mirroring todos.toggle
+                for parent in TODO_ITEMS:
+                    child = next((c for c in parent["children"] if c["id"] == block_id), None)
+                    if child:
+                        child["done"] = not child["done"]
+                        all_done = all(c["done"] for c in parent["children"])
+                        if all_done and not parent["done"]:
+                            parent["done"] = True
+                        elif not all_done and parent["done"]:
+                            parent["done"] = False
+                        return self._send(200, {"ok": True, "done": child["done"]})
+                return self._send(404, {"error": {
+                    "what": "That todo isn't in the daily notes anymore.",
+                    "cause": "Its line was edited or removed in Obsidian, or the id is unknown.",
+                    "todo": "Refresh the agenda."}})
+            if path.startswith("/api/todos/") and path.endswith("/breakdown"):
+                block_id = path.split("/")[3]
+                item = next((t for t in TODO_ITEMS if t["id"] == block_id), None)
                 if not item:
                     return self._send(404, {"error": {
                         "what": "That todo isn't in the daily notes anymore.",
                         "cause": "Its line was edited or removed in Obsidian, or the id is unknown.",
                         "todo": "Refresh the agenda."}})
-                item["done"] = not item["done"]
-                return self._send(200, {"ok": True, "done": item["done"]})
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                feel = json.loads(raw or b"{}").get("feel")
+                if not isinstance(feel, int) or not (1 <= feel <= 5):
+                    return self._send(400, {"error": {
+                        "what": "That's not a feel-dial value this screen understands.",
+                        "cause": f"'{feel}' isn't 1 through 5.",
+                        "todo": "Tap one of the five dots."}})
+                if item["children"]:
+                    return self._send(409, {"error": {
+                        "what": "This todo's already broken down.",
+                        "cause": "It has steps under it already — breaking it down twice would duplicate them.",
+                        "todo": "Check the steps already there."}})
+                item["feel"] = feel
+                item["children"] = [
+                    {"id": f"{block_id}a", "task": "figure out the first concrete step", "done": False},
+                    {"id": f"{block_id}b", "task": "do the middle of it", "done": False},
+                    {"id": f"{block_id}c", "task": "wrap it up", "done": False},
+                ]
+                return self._send(200, {
+                    "id": item["id"], "task": item["task"], "feel": item["feel"],
+                    "children": item["children"],
+                })
             if path == "/api/people/voice":
                 raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 samples = [s for s in json.loads(raw or b"{}").get("samples", []) if s.strip()]
