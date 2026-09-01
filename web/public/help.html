@@ -473,7 +473,13 @@
         <li><b>Otherwise</b> (a URL or text):
           <ul style="margin-top:6px"><li>Get Contents of URL → <code>POST {cockpit}/api/capture</code>, JSON body <code>{"url": [Shortcut Input], "insight": [the thought]}</code>, same Authorization header</li></ul>
         </li>
-        <li><b>Show Notification</b> "✅ Saved to Brain"</li>
+        <li><b>If</b> the request failed (no response, or not 2xx):
+          <ul style="margin-top:6px"><li>Repeat the same Get Contents of URL step once more</li></ul>
+        </li>
+        <li><b>If</b> it still failed:
+          <ul style="margin-top:6px"><li>Show Notification "Didn't reach the brain — kept in Photos/Files, share again."</li></ul>
+        </li>
+        <li><b>Otherwise, Show Notification</b> "✅ Saved to Brain"</li>
       </ul></div>
       <div class="card"><div class="tool-eyebrow">Where the pieces come from</div><h3>Two values, one place</h3><ul>
         <li><b>{cockpit}</b> — your Railway URL (or tunnel hostname), e.g. <code>https://app-production-xxxx.up.railway.app</code></li>
