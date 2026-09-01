@@ -22,8 +22,8 @@ from datetime import date
 from pathlib import Path
 
 from . import (archive, classify as classify_mod, config as config_mod, echo as echo_mod,
-               enrich, errors, extract, ingest, intake, plaud, relationships, route, todos,
-               transliterate, vaultsync, vision as vision_mod)
+               enrich, errors, extract, ingest, intake, plaud, related, relationships, route,
+               todos, transliterate, vaultsync, vision as vision_mod)
 from .events import EventLog
 from . import transcribe as transcribe_mod
 from .transcribe import Transcriber, build_transcriber
@@ -188,6 +188,12 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
                                message="no transliteration engine answered — "
                                        "note kept in Devanagari")
 
+        # Hoisted here (rather than computed only where Stage 5 needs it)
+        # because Stage 4b below (classify/route path only) also needs it, and
+        # this way every kind computes it exactly once — same value either way,
+        # since it depends only on item.captured.
+        note_id = item.captured.strftime("%Y%m%d%H%M%S")
+
         # D13: a capture tag wins over automatic link-detection. Without this,
         # "#journal ... here's the article https://..." was silently pulled
         # off the journal and filed as an untitled resource — the tag the
@@ -307,11 +313,34 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
             events.log(fkey, "route", "ok", int((time.monotonic() - t0) * 1000),
                        message=f"wrote {', '.join(p.name for p in paths)}")
 
+            # Stage 4b — related note ("past-you thought this too", B7). This
+            # is AI-suggested metadata, same provenance class as the note's
+            # own meta_origin (already set by build_frontmatter from
+            # cls.routed_by) — no separate origin field needed for one link.
+            t0 = time.monotonic()
+            match = related.find(config.vault_path, cls.title, body, note_id)
+            if match:
+                dest = paths[0]
+                fm_block, sep, rest = dest.read_text(encoding="utf-8").partition("\n---\n")
+                # route._wikilink only sanitizes an id (strips brackets/quotes
+                # that would escape the field) — it does not add the
+                # "[[...]]" wrapping itself; route._yaml_links does that for
+                # LIST fields (`f'  - "[[{v}]]"'`). This is the single-scalar
+                # equivalent, hand-formatted the same way.
+                link_value = f'"[[{route._wikilink(match["id"])}]]"'
+                dest.write_text(
+                    route.stamp_field(fm_block, "related", link_value)
+                    + sep + rest, encoding="utf-8")
+                events.log(fkey, "related", "ok", int((time.monotonic() - t0) * 1000),
+                           message=f'related_id={match["id"]} related_title="{match["title"]}"')
+            else:
+                events.log(fkey, "related", "ok", int((time.monotonic() - t0) * 1000),
+                           message="related=none")
+
         if item.kind != "image":
             # Stage 5 — extract action items (append only). Images have no
             # transcript to extract from.
             t0 = time.monotonic()
-            note_id = item.captured.strftime("%Y%m%d%H%M%S")
             n = extract.extract(transcript, note_id, item.captured, config, llm_fn=deps.extract_llm)
             events.log(fkey, "extract", "ok", int((time.monotonic() - t0) * 1000),
                        message=f"{len(n)} action item(s)")

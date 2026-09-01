@@ -28,6 +28,7 @@ log = logging.getLogger("api")
 
 _CONFIDENCE_RE = re.compile(r"confidence=(\d+(?:\.\d+)?)")
 _EVIDENCE_RE = re.compile(r'evidence="([^"]*)"')
+_RELATED_TITLE_RE = re.compile(r'related_title="([^"]*)"')
 _DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
 
 EXCERPT_CHARS = 300
@@ -155,6 +156,47 @@ def _classify_map(db_path: Path) -> dict[str, tuple[float, str | None]]:
     return out
 
 
+def _related_map(db_path: Path) -> dict[str, str | None]:
+    """note filename → related note's title, joined from events.db, same
+    join shape as _classify_map but against stage='related'. A row exists
+    for every processed file (watcher logs 'related=none' explicitly), so a
+    missing dict entry means 'never processed', not 'no related note'.
+
+    Unlike _classify_map's classify event (logged BEFORE route), the related
+    event is logged AFTER route — so the subquery here looks FORWARD
+    (`rel.id > r.id`, nearest first via `ORDER BY rel.id ASC`), not backward.
+    Getting this direction backwards would silently return the wrong related
+    event (or none) instead of erroring."""
+    if not db_path.exists():
+        return {}
+    out: dict[str, str | None] = {}
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT r.message,"
+                " (SELECT rel.message FROM events rel"
+                "  WHERE rel.file = r.file AND rel.stage = 'related' AND rel.id > r.id"
+                "  ORDER BY rel.id ASC LIMIT 1)"
+                " FROM events r WHERE r.stage = 'route' AND r.status = 'ok' ORDER BY r.id"
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        log.exception("related join failed")
+        return {}
+    for route_msg, related_msg in rows:
+        if not route_msg:
+            continue
+        title = None
+        if related_msg:
+            m = _RELATED_TITLE_RE.search(related_msg)
+            title = m.group(1) if m else None
+        for name in route_msg.removeprefix("wrote ").split(", "):
+            out[name.strip()] = title
+    return out
+
+
 def _confidence_map(db_path: Path) -> dict[str, float]:
     """Backward-compatible wrapper over _classify_map — confidence only."""
     return {name: conf for name, (conf, _evidence) in _classify_map(db_path).items()}
@@ -200,6 +242,7 @@ def list_review(vault: Path, db_path: Path) -> list[dict]:
     if not inbox_dir.is_dir():
         return []
     classifications = _classify_map(db_path)
+    related_titles = _related_map(db_path)
     suggestions = _suggested_attendees_map(db_path)
     people_by_id = {p.id: p.name for p in relationships.load_people(vault)}
     items = []
@@ -228,6 +271,7 @@ def list_review(vault: Path, db_path: Path) -> list[dict]:
             "created": fm.get("created", ""),
             "suggested_attendees": attendees,
             "evidence": evidence,
+            "related_title": related_titles.get(path.name),
         })
     return items
 

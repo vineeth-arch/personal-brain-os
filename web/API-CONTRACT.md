@@ -75,6 +75,7 @@ apart from "bad token".
     "suggested_type": "learning",
     "confidence": 0.7,
     "evidence": "mentions 'remind me' and a date",
+    "related_title": "some earlier note title",
     "created": "2026-07-03",
     "suggested_attendees": []
   } ],
@@ -96,6 +97,12 @@ suggest. For a conversation, each entry is
 — a SUGGESTION only (`pipeline.plaud.match_people`, conservative: it never
 guesses between two people sharing a name). Nothing is written to the note or
 to a person until confirmed via approve's `attendees` list below.
+
+`related_title` (Pass R, B7) — "past-you thought this too": at classify time
+the pipeline substring-scans the vault for a prior note sharing a significant
+word with this one's title and stamps `related: [[id]]` into frontmatter when
+it finds one. `null` when no match was found (a semantic upgrade to
+embeddings is planned for a later pass).
 
 `queue_total` is the full count of items in `items` (informational — a future
 pass may slice the array itself, this field lets the client show "N total"
@@ -281,7 +288,8 @@ have `captured: true` — the same definition, just windowed.
 { "note": {
   "id": "20260101090000", "title": "note-title",
   "file": "02-Musings/2026-01-01-note-title.md",
-  "excerpt": "…", "type": "musing", "created": "2026-01-01"
+  "excerpt": "…", "type": "musing", "created": "2026-01-01",
+  "related_title": null
 }, "notes": [ /* up to 2, same shape */ ] }
 ```
 
@@ -295,7 +303,10 @@ or archived). `file` is vault-relative — the frontend builds
 `obsidian://open?vault=<vault>&file=<file minus .md>` itself. Every call to
 this route also records that its picks were shown (advancing their cooldown),
 so polling it repeatedly cycles through the eligible pool rather than
-re-showing the same note.
+re-showing the same note. `related_title` (Pass R, B7) is resolved from the
+note's own `related: [[id]]` frontmatter, stamped whenever it was originally
+classified — `null` when the note has no related link, or the linked note
+can no longer be found.
 
 ### `POST /api/resurfaced/{id}/response`
 

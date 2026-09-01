@@ -112,6 +112,9 @@ function ReviewCard({ item, isTop, onDecide, leaving }: CardProps) {
           (older notes, deterministic routes) — a missing reason is honest,
           an invented one wouldn't be. */}
       {item.evidence && <p className="text-subtle mt-1 text-sm">Why: {item.evidence}.</p>}
+      {item.related_title && (
+        <p className="text-subtle mt-1 text-sm">Past-you thought this too: {item.related_title}.</p>
+      )}
 
       <AttendeeChips attendees={item.suggested_attendees} confirmed={confirmed} onToggle={toggle} />
 

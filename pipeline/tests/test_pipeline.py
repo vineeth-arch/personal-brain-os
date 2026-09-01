@@ -431,3 +431,86 @@ def test_run_once_drains_watched_folders_too(tmp_path, monkeypatch):
     assert old.exists(), "the watched folder's own copy is never touched"
     assert len(results) == 1 and results[0].status != "failed"
     assert not any((inbox / "plaud").glob("*")), "the copy was processed and archived, not left behind"
+
+
+# ---- related note (Pass R, B7) ----------------------------------------------
+# Stage 4b of process_file's classify/route path: a substring match against
+# an existing note's title stamps `related: [[id]]` and logs a stage='related'
+# event either way (match or not) — see pipeline/related.py.
+
+def _related_env(tmp_path):
+    vault, inbox, archive, failed = (tmp_path / d for d in ("vault", "inbox", "archive", "failed"))
+    for d in (vault, inbox, archive, failed):
+        d.mkdir()
+    from pipeline.events import EventLog
+    events = EventLog(tmp_path / "events.db", vault)
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed)
+    return config, events
+
+
+def test_related_note_matched_and_stamped(tmp_path, monkeypatch):
+    config, events = _related_env(tmp_path)
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+
+    # An existing note whose title shares a >=4-char word ("warehouse") with
+    # the new capture's classified title.
+    existing_dir = config.vault_path / "03-Learnings"
+    existing_dir.mkdir(parents=True)
+    (existing_dir / "2026-01-01-warehouse-inspection-notes.md").write_text(
+        "---\nid: existingid1\ntype: learning\ncreated: 2026-01-01\nstatus: active\n---\n\n"
+        "Notes from the visit.\n", encoding="utf-8")
+
+    (config.inbox_path / "capture.txt").write_text(
+        "Some thoughts worth keeping around.\n", encoding="utf-8")
+
+    def stub_classifier(transcript, cfg):
+        return {"type": "learning", "confidence": 0.95, "title": "Warehouse logistics plan"}
+
+    deps = watcher.Deps(transcriber=None, classifier_fn=stub_classifier)
+    results = watcher.run_once(config, events, deps)
+    events.close()
+    assert len(results) == 1 and results[0].status != "failed"
+
+    new_notes = [p for p in existing_dir.glob("*.md") if "warehouse-logistics-plan" in p.name]
+    assert len(new_notes) == 1
+    text = new_notes[0].read_text(encoding="utf-8")
+    assert 'related: "[[existingid1]]"' in text
+
+    conn = sqlite3.connect(tmp_path / "events.db")
+    row = conn.execute(
+        "SELECT status, message FROM events WHERE stage = 'related'").fetchone()
+    conn.close()
+    assert row is not None
+    status, message = row
+    assert status == "ok"
+    assert "related_id=existingid1" in message
+    assert 'related_title="warehouse-inspection-notes"' in message
+
+
+def test_related_note_no_match_logs_event_without_stamping(tmp_path, monkeypatch):
+    config, events = _related_env(tmp_path)
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+
+    (config.inbox_path / "capture.txt").write_text(
+        "Nothing here shares any word with anything else.\n", encoding="utf-8")
+
+    def stub_classifier(transcript, cfg):
+        return {"type": "learning", "confidence": 0.95, "title": "Completely unrelated musing"}
+
+    deps = watcher.Deps(transcriber=None, classifier_fn=stub_classifier)
+    results = watcher.run_once(config, events, deps)
+    events.close()
+    assert len(results) == 1 and results[0].status != "failed"
+
+    new_notes = list((config.vault_path / "03-Learnings").glob("*.md"))
+    assert len(new_notes) == 1
+    text = new_notes[0].read_text(encoding="utf-8")
+    assert "related:" not in text
+
+    conn = sqlite3.connect(tmp_path / "events.db")
+    row = conn.execute(
+        "SELECT status, message FROM events WHERE stage = 'related'").fetchone()
+    conn.close()
+    assert row == ("ok", "related=none")

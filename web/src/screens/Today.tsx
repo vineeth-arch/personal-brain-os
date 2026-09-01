@@ -168,6 +168,9 @@ function ResurfacedCard({
         {note.title}
       </h3>
       <p className="text-default mt-2 text-sm">{note.excerpt}</p>
+      {note.related_title && (
+        <p className="text-subtle mt-1 text-sm">Past-you thought this too: {note.related_title}.</p>
+      )}
       <div className="mt-4 flex flex-wrap gap-2">
         <a
           href={deepLink}

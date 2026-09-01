@@ -78,6 +78,7 @@ export interface ReviewItem {
   suggested_type: NoteType;
   confidence: number;
   evidence: string | null;
+  related_title: string | null;
   created: string;
   // always present ([] when there is nothing to suggest — never only on
   // type: conversation), so the client never has to special-case a missing key
@@ -139,6 +140,7 @@ export interface ResurfacedNote {
   excerpt: string;
   type: NoteType;
   created: string;
+  related_title: string | null;
 }
 
 // Pass R (B6): Connect/Act/Archive on a resurfaced card.

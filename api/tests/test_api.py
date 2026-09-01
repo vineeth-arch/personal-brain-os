@@ -200,6 +200,51 @@ def test_review_evidence_join(env):
         assert by_id["20260701090000"]["evidence"] == "mentions 'remind me' and a date"
 
 
+def test_review_related_title_join(env):
+    root, vault, _, _ = env
+    _seed_events(root / "events.db", [
+        {"timestamp": "2026-07-01T09:00:00", "file": "/in/walk.m4a", "stage": "route",
+         "status": "ok", "message": "wrote 2026-07-01-walk.md"},
+        {"timestamp": "2026-07-01T09:00:01", "file": "/in/walk.m4a", "stage": "related",
+         "status": "ok", "message": 'related_id=20260601000000 related_title="an earlier note"'},
+        {"timestamp": "2026-07-01T09:05:00", "file": "/in/noevents.m4a", "stage": "route",
+         "status": "ok", "message": "wrote 2026-07-01-noevents.md"},
+    ])
+    _note(vault / "00-Inbox" / "2026-07-01-walk.md", "20260701090000", "learning", "needs-review", "b")
+    _note(vault / "00-Inbox" / "2026-07-01-noevents.md", "20260701090100", "musing", "needs-review", "b")
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/review")
+        by_id = {i["id"]: i for i in body["items"]}
+        assert by_id["20260701090000"]["related_title"] == "an earlier note"
+        # a route event with NO following related event (a note processed
+        # before this task shipped) → null, no crash
+        assert by_id["20260701090100"]["related_title"] is None
+
+
+def test_review_related_join_direction_matters(env):
+    """The one place _related_map genuinely differs from its _classify_map
+    template: the related event is logged AFTER route, not before — so the
+    subquery must look FORWARD (rel.id > r.id, ORDER BY rel.id ASC), not
+    backward like _classify_map's classify join. Seeding a stale related
+    event BEFORE route and the real one AFTER route, with different titles,
+    is exactly the case a backwards (`<`/DESC) join would get wrong — it
+    would silently return the stale before-route title instead of erroring."""
+    root, vault, _, _ = env
+    _seed_events(root / "events.db", [
+        {"timestamp": "2026-06-30T09:00:00", "file": "/in/walk.m4a", "stage": "related",
+         "status": "ok", "message": 'related_id=stale related_title="stale before-route title"'},
+        {"timestamp": "2026-07-01T09:00:00", "file": "/in/walk.m4a", "stage": "route",
+         "status": "ok", "message": "wrote 2026-07-01-walk.md"},
+        {"timestamp": "2026-07-01T09:00:01", "file": "/in/walk.m4a", "stage": "related",
+         "status": "ok", "message": 'related_id=correct related_title="correct after-route title"'},
+    ])
+    _note(vault / "00-Inbox" / "2026-07-01-walk.md", "20260701090000", "learning", "needs-review", "b")
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/review")
+        by_id = {i["id"]: i for i in body["items"]}
+        assert by_id["20260701090000"]["related_title"] == "correct after-route title"
+
+
 def test_approve_write_path(env):
     root, vault, _, _ = env
     _note(vault / "00-Inbox" / "2026-07-01-walk.md", "20260701090000", "musing", "needs-review",

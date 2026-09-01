@@ -16,12 +16,14 @@ TODAY = date(2026, 8, 31)
 
 
 def _candidate(vault: Path, folder: str, note_id: str, slug: str, created: str,
-              body: str = "Some content.\n\nMore.") -> Path:
+              body: str = "Some content.\n\nMore.", related_id: str | None = None) -> Path:
     d = vault / folder
     d.mkdir(parents=True, exist_ok=True)
     path = d / f"{created}-{slug}.md"
+    related_line = f'related: "[[{related_id}]]"\n' if related_id else ""
     path.write_text(
-        f"---\nid: {note_id}\ntype: musing\ncreated: {created}\nstatus: active\n---\n\n{body}\n",
+        f"---\nid: {note_id}\ntype: musing\ncreated: {created}\nstatus: active\n"
+        f"{related_line}---\n\n{body}\n",
         encoding="utf-8")
     return path
 
@@ -221,3 +223,35 @@ def test_digest_includes_resurfaced_line(tmp_path, monkeypatch):
 
     assert len(pushes) == 1
     assert "Resurfaced: an-old-hunch" in pushes[0]
+
+
+# ---- related_title resolution (Pass R, B7) -----------------------------------
+# A resurface candidate resolves its OWN `related: [[id]]` frontmatter (stamped
+# by watcher.py at classification time) to the linked note's title via a
+# bounded live vault lookup — a different mechanism from api/notes.py's
+# events.db join, since a resurface candidate has no events.db trail from
+# THIS run (see pipeline/resurface.py::_resolve_title).
+
+def test_candidate_resolves_related_title_from_frontmatter(tmp_path):
+    vault = tmp_path / "vault"
+    _candidate(vault, "03-Learnings", "other-id", "an-earlier-note", "2026-01-01",
+              body="The earlier thought.")
+    _candidate(vault, "02-Musings", "n1", "a-later-echo", "2026-02-01",
+              body="Related to that earlier thought.", related_id="other-id")
+    candidates = {c["id"]: c for c in resurface._candidates(vault)}
+    assert candidates["n1"]["related_title"] == "an-earlier-note"
+
+
+def test_candidate_related_link_to_missing_note_is_none(tmp_path):
+    vault = tmp_path / "vault"
+    _candidate(vault, "02-Musings", "n1", "a-dangling-link", "2026-02-01",
+              related_id="deleted-or-moved-id")
+    candidates = {c["id"]: c for c in resurface._candidates(vault)}
+    assert candidates["n1"]["related_title"] is None
+
+
+def test_candidate_with_no_related_field_is_none(tmp_path):
+    vault = tmp_path / "vault"
+    _candidate(vault, "02-Musings", "n1", "just-a-note", "2026-02-01")
+    candidates = {c["id"]: c for c in resurface._candidates(vault)}
+    assert candidates["n1"]["related_title"] is None

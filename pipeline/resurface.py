@@ -17,6 +17,7 @@ from pathlib import Path
 from . import route
 
 _DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
+_WIKILINK_ID_RE = re.compile(r"\[\[([\w-]+)\]\]")
 EXCERPT_CHARS = 300
 RESURFACE_FOLDERS = ("musing", "learning", "insight")
 
@@ -47,6 +48,24 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
     return fm, parts[2]
 
 
+def _resolve_title(vault: Path, note_id: str) -> str | None:
+    """Best-effort title lookup by immutable id, for resolving a stamped
+    `related: [[id]]` link into a human title. Bounded, best-effort: any
+    read/parse failure or a dangling id (the linked note was moved/deleted)
+    just means no related_title — never an error."""
+    for path in sorted(vault.rglob("*.md")):
+        rel_parts = path.relative_to(vault).parts
+        if not rel_parts or rel_parts[0] in ("raw", "_System"):
+            continue
+        text = _read_note(path)
+        if not text:
+            continue
+        fm, _ = _parse_frontmatter(text)
+        if fm.get("id") == note_id:
+            return _DATE_PREFIX_RE.sub("", path.stem)
+    return None
+
+
 def _candidates(vault: Path) -> list[dict]:
     folders = [vault / route.TYPE_FOLDER[t] for t in RESURFACE_FOLDERS]
     out = []
@@ -63,6 +82,11 @@ def _candidates(vault: Path) -> list[dict]:
                 continue
             paragraph = next((seg.strip() for seg in body.split("\n\n") if seg.strip()), "")
             created_str = fm.get("created", "")
+            related_title = None
+            related_raw = fm.get("related", "")
+            m = _WIKILINK_ID_RE.search(related_raw)
+            if m:
+                related_title = _resolve_title(vault, m.group(1))
             out.append({
                 "id": note_id,
                 "title": _DATE_PREFIX_RE.sub("", p.stem),
@@ -70,6 +94,7 @@ def _candidates(vault: Path) -> list[dict]:
                 "excerpt": paragraph[:EXCERPT_CHARS],
                 "type": fm.get("type", "musing"),
                 "created": created_str,
+                "related_title": related_title,
             })
     return out
 
