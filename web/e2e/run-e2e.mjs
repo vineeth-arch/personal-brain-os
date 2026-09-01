@@ -643,6 +643,47 @@ try {
   await page.getByText(`Keep typing — at least 2 characters.`).waitFor();
   console.log("✓ Whole-vault search finds a seeded note and links back to Obsidian");
 
+  // ---- 13. Triage is a bounded queue, not a backlog (Pass A) ------------------
+  // Seven notes parked in review; Triage must offer five, then exactly as many
+  // more as the human asks for. Real inbox notes on disk — the review queue is
+  // a filesystem scan of 00-Inbox for status: needs-review (api/notes.py).
+  const triageInbox = path.join(root, "vault", "00-Inbox");
+  assert.equal(fs.readdirSync(triageInbox).length, 0,
+    "00-Inbox wasn't empty before the triage fixtures — the counts below would be wrong");
+  const seedReviewNote = (day, title, type) =>
+    fs.writeFileSync(
+      path.join(triageInbox, `2026-06-0${day}-${title}.md`),
+      [
+        "---", `id: 2026060${day}090000`, `type: ${type}`, `created: 2026-06-0${day}`,
+        "source: text", "origin: human", "meta_origin: ai", "status: needs-review",
+        "categories: []", "subjects: []", "tags: []", "---", "",
+        `Something worth deciding about — ${title}.`, "",
+      ].join("\n"),
+    );
+  seedReviewNote(1, "triage-oldest", "learning");
+  for (let n = 2; n <= 7; n++) seedReviewNote(n, `triage-note-${n}`, "musing");
+
+  await page.goto(`${BASE}/#/triage`);
+  await page.getByText("Showing 5 of 7 — one decision each.").waitFor();
+  const cards = page.locator("article[data-review-card]");
+  assert.equal(await cards.count(), 5, "Triage rendered something other than one slice of five");
+  // oldest first: the note that has waited longest is the one being asked about
+  await cards.first().getByRole("heading", { name: "triage-oldest" }).waitFor();
+  await page.getByRole("button", { name: "2 more" }).waitFor();
+  console.log("✓ Triage shows 5 of 7, oldest first, with 2 more on offer");
+
+  // one decision — the sixth card slides in, the slice stays five
+  await cards.first().getByRole("button", { name: "Approve as learning" }).click();
+  await page.getByText("Approved as learning").waitFor();
+  await page.getByText("Showing 5 of 6 — one decision each.").waitFor();
+  assert.equal(await cards.count(), 5, "the queue didn't refill to five after one decision");
+  await page.getByRole("button", { name: "1 more" }).click();
+  await page.getByText("Showing 6 of 6 — one decision each.").waitFor();
+  assert.equal(await cards.count(), 6, "asking for more didn't render the rest of the queue");
+  assert.equal(await page.getByRole("button", { name: /^\d+ more$/ }).count(), 0,
+    "the more button stayed after the queue was exhausted");
+  console.log("✓ Deciding one refills the slice; [n more] expands once and then goes away");
+
   console.log("\nE2E: all checks passed.");
 } catch (err) {
   failed = true;

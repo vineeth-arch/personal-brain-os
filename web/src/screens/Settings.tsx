@@ -1,5 +1,13 @@
 import { useState } from "react";
-import { api, DEFAULT_API_BASE, getApiBase, getToken, saveConnection } from "../api/client";
+import {
+  api,
+  DEFAULT_API_BASE,
+  getApiBase,
+  getToken,
+  getTriageTimerEnabled,
+  saveConnection,
+  setTriageTimerEnabled,
+} from "../api/client";
 import type { ConfigWrite, EngineName, ErrorEnvelope, TransliterationEngine } from "../api/types";
 import { CloudEngineConfirm } from "../components/CloudEngineConfirm";
 import { toast } from "../components/Toast";
@@ -170,6 +178,8 @@ export function Settings() {
       <PipelineSettingsCard onSaved={() => status.refetch()} />
 
       <HinglishSettingsCard />
+
+      <TriageTimerCard />
 
       <Card title="Deep links">
         <ul className="space-y-2">
@@ -489,6 +499,50 @@ function PipelineSettingsCard({ onSaved }: { onSaved: () => void }) {
           </div>
         </form>
       )}
+    </Card>
+  );
+}
+
+// The only setting on this screen that never leaves the browser: it changes
+// how Triage looks, not how the pipeline runs, so it lives in localStorage
+// (client.ts) instead of config.json — no server call, nothing to save.
+function TriageTimerCard() {
+  const [on, setOn] = useState(getTriageTimerEnabled);
+
+  const choose = (next: boolean) => {
+    if (next === on) return;
+    setTriageTimerEnabled(next);
+    setOn(next);
+    toast(next ? "Triage timer on." : "Triage timer off.");
+  };
+
+  return (
+    <Card title="Triage timer">
+      <div className="flex gap-2" role="group" aria-label="Triage timer">
+        <button
+          type="button"
+          onClick={() => choose(false)}
+          aria-pressed={!on}
+          className={`min-h-11 flex-1 rounded-xl border px-4 text-sm font-bold ${
+            !on ? "bg-emphasis text-emphasis border-emphasis" : "border-subtle text-subtle"
+          }`}
+        >
+          Off
+        </button>
+        <button
+          type="button"
+          onClick={() => choose(true)}
+          aria-pressed={on}
+          className={`min-h-11 flex-1 rounded-xl border px-4 text-sm font-bold ${
+            on ? "bg-emphasis text-emphasis border-emphasis" : "border-subtle text-subtle"
+          }`}
+        >
+          On
+        </button>
+      </div>
+      <p className="text-subtle mt-2 text-xs">
+        Puts a 5-minute ring on Triage. When it runs out, the rest keeps till next visit.
+      </p>
     </Card>
   );
 }

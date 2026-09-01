@@ -47,6 +47,10 @@ import type {
 
 const BASE_KEY = "cockpit.apiBase";
 const TOKEN_KEY = "cockpit.token";
+// Triage's optional 5-minute pie timer. A screen preference, not pipeline
+// config — it never leaves the browser, so it lives here with the other
+// localStorage keys rather than in config.json.
+const TRIAGE_TIMER_KEY = "cockpit.triageTimer";
 export const DEFAULT_API_BASE = "http://127.0.0.1:8000";
 
 // Fired when the server rejects the token so App can swap to the connect screen.
@@ -87,6 +91,13 @@ export function saveConnection(base: string, token: string): void {
 }
 export function clearToken(): void {
   localStorage.removeItem(TOKEN_KEY);
+}
+// Off unless the key says exactly "on" — a missing key reads as off.
+export function getTriageTimerEnabled(): boolean {
+  return localStorage.getItem(TRIAGE_TIMER_KEY) === "on";
+}
+export function setTriageTimerEnabled(on: boolean): void {
+  localStorage.setItem(TRIAGE_TIMER_KEY, on ? "on" : "off");
 }
 
 // Every failure path ends in one of these: an envelope the UI renders
