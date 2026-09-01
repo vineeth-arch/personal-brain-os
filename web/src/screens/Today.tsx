@@ -25,6 +25,20 @@ const SHARED_CAPTURE_TEXT = (() => {
   return parts.join(" ");
 })();
 
+// TS twin of pipeline/echo.py::first_words — same semantics, same edge
+// cases, kept in sync by hand (no shared runtime between backend and web).
+function firstWords(text: string, n = 10, maxChars = 60): string {
+  const words = text.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "";
+  let joined = words.slice(0, n).join(" ");
+  const truncatedByWords = words.length > n;
+  if (joined.length > maxChars) {
+    joined = joined.slice(0, maxChars).trimEnd();
+    return joined + "…";
+  }
+  return joined + (truncatedByWords ? "…" : "");
+}
+
 type Health = "ok" | "attention" | "problem";
 
 function heartbeatAgeMin(status: Status): number | null {
@@ -669,7 +683,10 @@ function QuickCapture() {
     // Optimistic: trust signal first, network second (SCHEMA-REFERENCE.md §8).
     setText("");
     setTag(null);
-    toast("✅ Captured");
+    // A4: echo what was actually typed back, so the toast is evidence the
+    // capture landed as written, not just a bare acknowledgement.
+    const echo = firstWords(body);
+    toast(echo ? `✅ Captured — "${echo}"` : "✅ Captured");
     try {
       await api.capture(body, sentTag);
     } catch (err) {

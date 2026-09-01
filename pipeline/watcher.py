@@ -20,9 +20,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import (archive, classify as classify_mod, config as config_mod, enrich, errors,
-               extract, ingest, intake, plaud, relationships, route, todos, transliterate,
-               vaultsync, vision as vision_mod)
+from . import (archive, classify as classify_mod, config as config_mod, echo as echo_mod,
+               enrich, errors, extract, ingest, intake, plaud, relationships, route, todos,
+               transliterate, vaultsync, vision as vision_mod)
 from .events import EventLog
 from . import transcribe as transcribe_mod
 from .transcribe import Transcriber, build_transcriber
@@ -326,9 +326,27 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
         res.dest = paths[0].parent.name
         res.confidence = cls.confidence
         res.status = status
+
+        echo = ""
+        if item.kind == "audio":
+            echo = echo_mod.first_words(transcript)
+        elif item.kind == "image":
+            # vision_mod.describe returns {description, resource_type,
+            # extracted_text} or None (see pipeline/vision.py) — not raw
+            # text, so the echo is the description field, same as the title
+            # fallback in enrich.route_image.
+            echo = echo_mod.first_words((vision_result or {}).get("description") or "")
+        echo_clause = f' — heard: "{echo}"' if item.kind == "audio" and echo else (
+            f' — saw: "{echo}"' if item.kind == "image" and echo else "")
+
         events.append_capture_log(
             f"{'⚠️ needs-review' if cls.needs_review else '✅'} {item.path.name} → "
-            f"{cls.type} → {res.dest} (conf {cls.confidence:.2f})")
+            f"{cls.type} → {res.dest} (conf {cls.confidence:.2f}){echo_clause}")
+
+        if item.kind == "audio" and echo:
+            errors.ntfy(config.ntfy_url, config.ntfy_topic, f'Heard: "{echo}"',
+                       title="Brain Cockpit — captured")
+
         return res
 
     except errors.StageError as e:

@@ -185,9 +185,16 @@ def test_mic_recording_runs_end_to_end(tmp_path, monkeypatch):
 
     monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
     monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
-    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed)
+    # A1: trust-through-evidence (B1) — a set ntfy config must fire exactly
+    # one push carrying the transcript echo for an audio capture.
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed,
+                    ntfy_url="https://ntfy.example", ntfy_topic="t")
     events = EventLog(tmp_path / "events.db", vault)
     deps = watcher.Deps(transcriber=FakeTranscriber(), classifier_fn=stub_classifier)
+
+    pushes = []
+    monkeypatch.setattr(watcher.errors, "ntfy",
+                        lambda url, topic, msg, title="", click="": pushes.append((title, msg)))
 
     results = watcher.run_once(config, events, deps)
 
@@ -201,6 +208,20 @@ def test_mic_recording_runs_end_to_end(tmp_path, monkeypatch):
     # source archived, never deleted; inbox drained
     assert not any(inbox.iterdir())
     assert len(list(archive.iterdir())) == 1
+
+    # A4: the capture_log line carries the transcript echo (first 10 words),
+    # on the SAME line as the routing summary (one line per capture).
+    from pipeline.echo import first_words
+    transcript = FakeTranscriber().transcribe(Path("x"))
+    expected_echo = first_words(transcript)
+    log_text = (vault / "_System" / "capture_log.md").read_text(encoding="utf-8")
+    assert f'heard: "{expected_echo}"' in log_text
+
+    # exactly one audio ntfy push, titled and bodied with the same echo
+    assert len(pushes) == 1
+    title, msg = pushes[0]
+    assert title == "Brain Cockpit — captured"
+    assert msg == f'Heard: "{expected_echo}"'
 
 
 def test_untagged_photo_becomes_a_described_resource_note(tmp_path, monkeypatch):
@@ -218,7 +239,10 @@ def test_untagged_photo_becomes_a_described_resource_note(tmp_path, monkeypatch)
 
     monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
     monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
-    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed)
+    # A1/A4: ntfy IS configured here — proves photo captures deliberately
+    # don't push, even when the config would allow it (only audio does).
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed,
+                    ntfy_url="https://ntfy.example", ntfy_topic="t")
     events = EventLog(tmp_path / "events.db", vault)
 
     def vision_caller(path, mime, key):
@@ -228,9 +252,21 @@ def test_untagged_photo_becomes_a_described_resource_note(tmp_path, monkeypatch)
 
     deps = watcher.Deps(transcriber=None, vision_caller=vision_caller)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key-for-test")
+
+    pushes = []
+    monkeypatch.setattr(watcher.errors, "ntfy",
+                        lambda url, topic, msg, title="", click="": pushes.append((title, msg)))
+
     results = watcher.run_once(config, events, deps)
 
     assert len(results) == 1 and results[0].status != "failed", results[0].error
+
+    # A4: the capture_log line carries the vision-caption echo ("saw:"), and
+    # photo captures never fire ntfy (only audio does).
+    log_text = (vault / "_System" / "capture_log.md").read_text(encoding="utf-8")
+    assert 'saw: "a sunset over the bay"' in log_text
+    assert pushes == []
+
     resources = _notes_of_type(vault, "04-Resources", "resource")
     assert len(resources) == 1
     text = resources[0].read_text(encoding="utf-8")
