@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { api, getTriageTimerEnabled } from "../api/client";
-import type { NoteType, ReviewItem, SuggestedAttendee } from "../api/types";
+import { api, getTriageTimerEnabled, trustLine } from "../api/client";
+import type { NoteType, ReviewItem, ReviewTrust, SuggestedAttendee } from "../api/types";
 import { NOTE_TYPES } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
 import { StreakDots } from "../components/StreakDots";
@@ -224,7 +224,7 @@ function PieTimer({ onExpire }: { onExpire: () => void }) {
   );
 }
 
-function EmptyState() {
+function EmptyState({ trust }: { trust: ReviewTrust | undefined }) {
   const streak = usePolling(api.streak);
   return (
     <div className="pt-8">
@@ -232,6 +232,7 @@ function EmptyState() {
         Inbox zero.
       </h2>
       <p className="text-default mt-3 text-base">Nothing needs you.</p>
+      {trust && <p className="text-subtle mt-2 text-sm">{trustLine(trust)}</p>}
       {streak.data && (
         <div className="mt-10">
           <StreakDots streak={streak.data} />
@@ -315,7 +316,7 @@ export function Triage() {
   }
 
   const queue = items ?? [];
-  if (queue.length === 0) return <EmptyState />;
+  if (queue.length === 0) return <EmptyState trust={review.data?.trust} />;
 
   // visibleCount outruns the queue as items are decided — the count on screen
   // and the [n more] label both work off what is actually left.

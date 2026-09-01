@@ -684,6 +684,34 @@ try {
     "the more button stayed after the queue was exhausted");
   console.log("✓ Deciding one refills the slice; [n more] expands once and then goes away");
 
+  // ---- 14. Trust boundary line (Pass A, Task A6) -------------------------------
+  // Approve the remaining six to reach inbox zero, then read the honest sentence:
+  // 7 notes gated by a human this month, 0 drained (the drain never ran here).
+  const waitForCardCount = (n) =>
+    page.waitForFunction(
+      (count) => document.querySelectorAll("article[data-review-card]").length === count,
+      n,
+    );
+  for (let remaining = 6; remaining >= 1; remaining--) {
+    await cards.first().getByRole("button", { name: /^Approve as /, exact: false }).click();
+    await waitForCardCount(remaining - 1);
+  }
+  // usePolling(api.review) fetched once on mount, before any of these seven
+  // approvals — a reload forces a fresh /api/review so trust reflects them.
+  await page.reload();
+  await page.getByText("Inbox zero.").waitFor();
+  await page
+    .getByText("Nothing enters your vault without you — 7 notes gated this month.")
+    .waitFor();
+  console.log("✓ Triage empty state states the trust boundary — 7 gated, 0 drained (dropped)");
+
+  // Settings shows the identical sentence — same trustLine(), same /api/review data.
+  await page.goto(`${BASE}/#/settings`);
+  await page
+    .getByText("Nothing enters your vault without you — 7 notes gated this month.")
+    .waitFor();
+  console.log("✓ Settings shows the same trust line as Triage's empty state");
+
   console.log("\nE2E: all checks passed.");
 } catch (err) {
   failed = true;

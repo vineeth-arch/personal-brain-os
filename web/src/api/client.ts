@@ -32,6 +32,7 @@ import type {
   PushTarget,
   ResurfacedNote,
   ReviewResponse,
+  ReviewTrust,
   Resource,
   ResourceDetail,
   ResourceStatus,
@@ -98,6 +99,20 @@ export function getTriageTimerEnabled(): boolean {
 }
 export function setTriageTimerEnabled(on: boolean): void {
   localStorage.setItem(TRIAGE_TIMER_KEY, on ? "on" : "off");
+}
+
+// The trust boundary line (Triage's empty state and Settings share this exact
+// sentence, built from the exact same shape) — how many notes were gated
+// through a human decision this month vs. filed automatically at best guess.
+// Zero-drain drops the second clause; there is nothing to revert.
+export function trustLine(trust: ReviewTrust): string {
+  const base = `Nothing enters your vault without you — ${trust.gated_month} note${
+    trust.gated_month === 1 ? "" : "s"
+  } gated this month`;
+  if (trust.drained_month > 0) {
+    return `${base}, ${trust.drained_month} drained at best guess (revertible).`;
+  }
+  return `${base}.`;
 }
 
 // Every failure path ends in one of these: an envelope the UI renders

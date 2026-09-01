@@ -7,6 +7,7 @@ import {
   getTriageTimerEnabled,
   saveConnection,
   setTriageTimerEnabled,
+  trustLine,
 } from "../api/client";
 import type { ConfigWrite, EngineName, ErrorEnvelope, TransliterationEngine } from "../api/types";
 import { CloudEngineConfirm } from "../components/CloudEngineConfirm";
@@ -80,6 +81,10 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
 
 export function Settings() {
   const status = usePolling(api.status);
+  // Same trust boundary line as Triage's empty state (client.ts's trustLine) —
+  // a second, small poll of /api/review just for the .trust field, acceptable
+  // since Settings doesn't otherwise need review data.
+  const review = usePolling(api.review);
   const [base, setBase] = useState(getApiBase());
   const [token, setToken] = useState(getToken() ?? "");
   const [busy, setBusy] = useState(false);
@@ -119,6 +124,10 @@ export function Settings() {
 
   return (
     <div className="space-y-6">
+      {review.data?.trust && (
+        <p className="text-subtle text-sm">{trustLine(review.data.trust)}</p>
+      )}
+
       <Card title="Connection">
         <form onSubmit={saveAndTest} className="space-y-4">
           <label className="block">

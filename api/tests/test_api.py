@@ -296,6 +296,30 @@ def test_trust_month_counts(env):
         assert body["trust"] == {"gated_month": 2, "drained_month": 0}
 
 
+def test_trust_month_counts_gated_and_drained(env):
+    # Task A6's trust line reads BOTH clauses at once — a human gated some
+    # notes and the drain (Task A5) filed others at best guess, same month.
+    root, _, _, _ = env
+    this_month = date.today().isoformat()[:7]
+    rows = [
+        {"timestamp": f"{this_month}-01T09:00:00", "file": "/in/a.md", "stage": "approve",
+         "status": "ok", "message": "id=1 suggested=learning chosen=learning"},
+        {"timestamp": f"{this_month}-02T09:00:00", "file": "/in/b.md", "stage": "approve",
+         "status": "ok", "message": "id=2 suggested=learning chosen=learning"},
+        {"timestamp": f"{this_month}-03T09:00:00", "file": "/in/c.md", "stage": "approve",
+         "status": "ok", "message": "id=3 suggested=learning chosen=learning"},
+        {"timestamp": f"{this_month}-04T09:00:00", "file": "/in/d.md", "stage": "drain",
+         "status": "ok", "message": "filed=musing conf=0.72"},
+        {"timestamp": f"{this_month}-05T09:00:00", "file": "/in/e.md", "stage": "drain",
+         "status": "ok", "message": "filed=journal conf=0.68"},
+    ]
+    _seed_events(root / "events.db", rows)
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/review")
+        assert code == 200
+        assert body["trust"] == {"gated_month": 3, "drained_month": 2}
+
+
 def test_capture_roundtrip(env):
     root, _, inbox, _ = env
     from pipeline import intake
