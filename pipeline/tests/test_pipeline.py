@@ -514,3 +514,103 @@ def test_related_note_no_match_logs_event_without_stamping(tmp_path, monkeypatch
         "SELECT status, message FROM events WHERE stage = 'related'").fetchone()
     conn.close()
     assert row == ("ok", "related=none")
+
+
+def test_link_capture_downloads_cover_end_to_end(tmp_path, monkeypatch):
+    """Pass F2: when enrich.download_covers is on and the cover fetch
+    succeeds, the resource note's cover is rewritten to a local
+    attachments/ path and the enrich event line reports cover_downloaded=true.
+    The cover-fetch seam has no Deps field (only `config` is threaded into
+    route_link per the task brief) — monkeypatching enrich._default_cover_fetch
+    mirrors this file's existing convention of monkeypatching module-level
+    seams (DB_PATH, HEARTBEAT_PATH, errors.ntfy) for hermetic e2e coverage."""
+    from pipeline import enrich
+    from pipeline.events import EventLog
+
+    vault, inbox, archive, failed = (tmp_path / d for d in ("vault", "inbox", "archive", "failed"))
+    for d in (vault, inbox, archive, failed):
+        d.mkdir()
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed,
+                    raw={"enrich": {"download_covers": True}})
+
+    page_html = (b'<html><head><title>A great article</title>'
+                b'<meta property="og:image" content="https://cdn.example.com/cover.jpg"></head></html>')
+
+    def fetch(url, data=None, timeout=10, headers=None):
+        return page_html
+
+    def no_router(prompt, cfg, validate):
+        return None, None, []
+
+    def fake_cover_fetcher(url, timeout):
+        assert url == "https://cdn.example.com/cover.jpg"
+        return ("image/jpeg", b"<jpeg bytes>")
+
+    monkeypatch.setattr(enrich, "_default_cover_fetch", fake_cover_fetcher)
+
+    events = EventLog(tmp_path / "events.db", vault)
+    deps = watcher.Deps(transcriber=None, enrich_fetch=fetch, enrich_router=no_router)
+
+    (inbox / "share.txt").write_text(
+        "worth a read\n\nhttps://example.com/great-article", encoding="utf-8")
+    watcher.run_once(config, events, deps)
+
+    resources = list((vault / "04-Resources").glob("*.md"))
+    assert len(resources) == 1
+    fm = _fm(resources[0])
+    assert fm["cover"].startswith("attachments/") and fm["cover"].endswith("-cover.jpg")
+    cover_id = fm["cover"].split("/")[1].removesuffix("-cover.jpg")
+    assert (vault / "attachments" / f"{cover_id}-cover.jpg").read_bytes() == b"<jpeg bytes>"
+
+    conn = sqlite3.connect(tmp_path / "events.db")
+    row = conn.execute(
+        "SELECT message FROM events WHERE stage = 'enrich' AND status = 'ok'").fetchone()
+    conn.close()
+    assert "cover_downloaded=true" in row[0]
+    events.close()
+
+
+def test_link_capture_cover_download_off_logs_false(tmp_path, monkeypatch):
+    """Same as above but the flag is off (default config) — cover stays the
+    remote URL and the event line reads cover_downloaded=false."""
+    from pipeline.events import EventLog
+
+    vault, inbox, archive, failed = (tmp_path / d for d in ("vault", "inbox", "archive", "failed"))
+    for d in (vault, inbox, archive, failed):
+        d.mkdir()
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed)
+
+    page_html = (b'<html><head><title>A great article</title>'
+                b'<meta property="og:image" content="https://cdn.example.com/cover.jpg"></head></html>')
+
+    def fetch(url, data=None, timeout=10, headers=None):
+        return page_html
+
+    def no_router(prompt, cfg, validate):
+        return None, None, []
+
+    events = EventLog(tmp_path / "events.db", vault)
+    deps = watcher.Deps(transcriber=None, enrich_fetch=fetch, enrich_router=no_router)
+
+    (inbox / "share.txt").write_text(
+        "worth a read\n\nhttps://example.com/great-article", encoding="utf-8")
+    watcher.run_once(config, events, deps)
+
+    resources = list((vault / "04-Resources").glob("*.md"))
+    assert len(resources) == 1
+    fm = _fm(resources[0])
+    assert fm["cover"] == "https://cdn.example.com/cover.jpg"
+    assert not (vault / "attachments").exists()
+
+    conn = sqlite3.connect(tmp_path / "events.db")
+    row = conn.execute(
+        "SELECT message FROM events WHERE stage = 'enrich' AND status = 'ok'").fetchone()
+    conn.close()
+    assert "cover_downloaded=false" in row[0]
+    events.close()

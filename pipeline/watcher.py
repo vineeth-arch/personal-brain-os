@@ -224,9 +224,12 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
                 enr = (enrich.enrich_url(url, config, fetch=deps.enrich_fetch) if url
                        else enrich.Enrichment("web", False, "", detail="No URL found in the capture."))
                 structured = enrich.structure(transcript, enr, config, router=deps.enrich_router)
-                paths = [enrich.route_link(item, transcript, enr, structured, config.vault_path)]
+                paths = [enrich.route_link(item, transcript, enr, structured, config.vault_path,
+                                           config=config)]
+                cover_note = f" cover_downloaded={str(enr.cover.startswith('attachments/')).lower()}"
                 events.log(fkey, "enrich", "ok", int((time.monotonic() - t0) * 1000),
-                           message=f"platform={enr.platform} enriched={str(enr.enriched).lower()}")
+                           message=f"platform={enr.platform} enriched={str(enr.enriched).lower()}"
+                                   + cover_note)
                 events.log(fkey, "route", "ok", 0, message=f"wrote {paths[0].name}")
                 cls = classify_mod.Classification(type="resource", title=structured.get("title", item.name),
                                                   confidence=1.0, needs_review=False, routed_by="link")

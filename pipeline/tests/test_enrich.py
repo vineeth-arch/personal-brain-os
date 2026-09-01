@@ -560,3 +560,123 @@ def test_instagram_failure_still_gets_a_real_description_from_user_words(vault):
     assert "description: A plating technique worth trying." in text
     assert "enriched: false" in text  # honest about the platform data itself
     assert "## Insight" in text and "saw this amazing plating technique" in text
+
+
+# ---- Pass F2: link-resource cover download ----------------------------------
+
+COVER_URL = "https://cdn.example.com/thumb.jpg"
+
+
+def _cover_enr(cover=COVER_URL):
+    return enrich.Enrichment("web", True, "https://x.com", title="Some Page", cover=cover)
+
+
+def test_cover_download_success_rewrites_cover_and_writes_file(vault):
+    def fake_fetcher(url, timeout):
+        assert url == COVER_URL
+        return ("image/jpeg", b"<jpeg bytes>")
+
+    enr = _cover_enr()
+    cfg = config(vault, enrich={"download_covers": True})
+    path = enrich.route_link(item(), "nice", enr, {"title": "Some Page"}, vault / "vault",
+                             config=cfg, cover_fetcher=fake_fetcher)
+    note_id = item().captured.strftime("%Y%m%d%H%M%S")
+    text = path.read_text(encoding="utf-8")
+    assert f"cover: attachments/{note_id}-cover.jpg" in text
+    cover_file = vault / "vault" / "attachments" / f"{note_id}-cover.jpg"
+    assert cover_file.exists()
+    assert cover_file.read_bytes() == b"<jpeg bytes>"
+
+
+def test_cover_download_failure_keeps_remote_url(vault):
+    def fake_fetcher(url, timeout):
+        return None  # simulates any fetch failure
+
+    enr = _cover_enr()
+    cfg = config(vault, enrich={"download_covers": True})
+    path = enrich.route_link(item(), "nice", enr, {"title": "Some Page"}, vault / "vault",
+                             config=cfg, cover_fetcher=fake_fetcher)
+    text = path.read_text(encoding="utf-8")
+    assert f"cover: {COVER_URL}" in text
+    assert not (vault / "vault" / "attachments").exists()
+
+
+def test_cover_download_wrong_content_type_keeps_remote_url(vault):
+    def fake_fetcher(url, timeout):
+        return ("text/html", b"<html>404</html>")  # the URL 404'd into an error page
+
+    enr = _cover_enr()
+    cfg = config(vault, enrich={"download_covers": True})
+    path = enrich.route_link(item(), "nice", enr, {"title": "Some Page"}, vault / "vault",
+                             config=cfg, cover_fetcher=fake_fetcher)
+    text = path.read_text(encoding="utf-8")
+    assert f"cover: {COVER_URL}" in text
+    assert not (vault / "vault" / "attachments").exists()
+
+
+def test_cover_download_too_large_keeps_remote_url(vault):
+    def fake_fetcher(url, timeout):
+        return ("image/jpeg", b"x" * (5 * 1024 * 1024 + 1))  # one byte over the cap
+
+    enr = _cover_enr()
+    cfg = config(vault, enrich={"download_covers": True})
+    path = enrich.route_link(item(), "nice", enr, {"title": "Some Page"}, vault / "vault",
+                             config=cfg, cover_fetcher=fake_fetcher)
+    text = path.read_text(encoding="utf-8")
+    assert f"cover: {COVER_URL}" in text
+    assert not (vault / "vault" / "attachments").exists()
+
+
+def test_cover_download_flag_off_never_calls_fetcher(vault):
+    calls = []
+
+    def fake_fetcher(url, timeout):
+        calls.append(url)
+        return ("image/jpeg", b"<jpeg bytes>")  # would succeed if called
+
+    enr = _cover_enr()
+    # flag absent entirely (no "enrich" key in raw)
+    path = enrich.route_link(item(), "nice", enr, {"title": "Some Page"}, vault / "vault",
+                             config=config(vault), cover_fetcher=fake_fetcher)
+    assert f"cover: {COVER_URL}" in path.read_text(encoding="utf-8")
+    assert calls == []
+
+    # flag explicitly False
+    path2 = enrich.route_link(item(), "nice", enr, {"title": "Some Page 2"}, vault / "vault",
+                              config=config(vault, enrich={"download_covers": False}),
+                              cover_fetcher=fake_fetcher)
+    assert f"cover: {COVER_URL}" in path2.read_text(encoding="utf-8")
+    assert calls == []
+
+    # config=None entirely
+    path3 = enrich.route_link(item(), "nice", enr, {"title": "Some Page 3"}, vault / "vault",
+                              cover_fetcher=fake_fetcher)
+    assert f"cover: {COVER_URL}" in path3.read_text(encoding="utf-8")
+    assert calls == []
+
+
+def test_cover_download_no_cover_found_skips_fetch_entirely(vault):
+    calls = []
+
+    def fake_fetcher(url, timeout):
+        calls.append(url)
+        return ("image/jpeg", b"<jpeg bytes>")
+
+    enr = _cover_enr(cover="")  # no og:image found by enrichment
+    cfg = config(vault, enrich={"download_covers": True})
+    path = enrich.route_link(item(), "nice", enr, {"title": "Some Page"}, vault / "vault",
+                             config=cfg, cover_fetcher=fake_fetcher)
+    assert "cover: " in path.read_text(encoding="utf-8")  # empty scalar, no crash
+    assert calls == []
+
+
+def test_existing_route_link_callers_unaffected_by_new_kwargs(vault):
+    """Every pre-existing call in this file omits config=/cover_fetcher=
+    entirely — confirms both new kwargs default to off with zero behavior
+    change for callers that don't pass them (this test is a smoke check;
+    the real proof is that the rest of this file's tests, written before
+    this task, still pass unmodified)."""
+    enr = _cover_enr()
+    path = enrich.route_link(item(), "nice", enr, {"title": "Some Page"}, vault / "vault")
+    assert f"cover: {COVER_URL}" in path.read_text(encoding="utf-8")
+    assert not (vault / "vault" / "attachments").exists()

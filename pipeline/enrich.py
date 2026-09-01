@@ -115,6 +115,59 @@ def _default_fetch(url: str, data: bytes | None = None, timeout: int = HTTP_TIME
         return resp.read()
 
 
+# ---- cover-download seam (Pass F2) ------------------------------------------
+# Separate from `_default_fetch`: that seam returns only bytes (no headers, no
+# byte cap), but a cover download needs the Content-Type (to confirm it's
+# actually an image before writing anything to disk) and a hard byte ceiling
+# (to avoid a huge response blocking the pipeline or filling the vault).
+
+COVER_DOWNLOAD_TIMEOUT = 5
+COVER_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _default_cover_fetch(url: str, timeout: int) -> tuple[str, bytes] | None:
+    """Real implementation: (content_type, body_bytes), or None on ANY error
+    (network, timeout, non-2xx, whatever). Reads at most COVER_MAX_BYTES+1
+    bytes — one over the cap is enough to detect "too big" without reading
+    an unbounded response fully into memory first."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 (Brain Cockpit)"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            data = resp.read(COVER_MAX_BYTES + 1)
+        return content_type, data
+    except Exception:
+        return None
+
+
+def _download_cover(cover_url: str, dest: Path, *, fetcher=None,
+                    timeout: int = COVER_DOWNLOAD_TIMEOUT,
+                    max_bytes: int = COVER_MAX_BYTES) -> bool:
+    """Best-effort local cache of a resource's remote cover image. Returns
+    True on success, False on ANY failure (bad content-type, too large,
+    network error, write error) — never raises. The caller always still has
+    the original remote URL as a fallback when this returns False, so a
+    failure here must never break or delay the note being written."""
+    fetcher = fetcher or _default_cover_fetch
+    try:
+        result = fetcher(cover_url, timeout)
+    except Exception:
+        return False
+    if result is None:
+        return False
+    content_type, data = result
+    if not content_type.startswith("image/"):
+        return False
+    if len(data) > max_bytes:
+        return False
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+    except OSError:
+        return False
+    return True
+
+
 # ---- per-platform enrichers -------------------------------------------------
 
 def _unescape(text: str) -> str:
@@ -449,10 +502,21 @@ def build_resource_note(item, enr: Enrichment, structured: dict, user_text: str,
 
 
 def route_link(item, user_text: str, enr: Enrichment, structured: dict,
-               vault_path: Path, attempts: int = 1) -> Path:
+               vault_path: Path, attempts: int = 1, config=None, cover_fetcher=None) -> Path:
     note_id = item.captured.strftime("%Y%m%d%H%M%S")
     created = item.captured.strftime("%Y-%m-%d")
     now_iso = datetime.now().isoformat(timespec="seconds")
+
+    if config is not None and enr.cover and enr.cover.startswith(("http://", "https://")):
+        download_covers = bool((getattr(config, "raw", {}).get("enrich") or {}).get("download_covers", False))
+        if download_covers:
+            dest = Path(vault_path) / "attachments" / f"{note_id}-cover.jpg"
+            if _download_cover(enr.cover, dest, fetcher=cover_fetcher):
+                enr.cover = f"attachments/{note_id}-cover.jpg"
+            # any failure: enr.cover is left completely untouched — the
+            # original remote URL still renders (or falls back to the
+            # category-initial tile), exactly as it does today
+
     title = str(structured.get("title") or enr.title or "untitled")
     dest_dir = Path(vault_path) / route.TYPE_FOLDER["resource"]
     dest_dir.mkdir(parents=True, exist_ok=True)
