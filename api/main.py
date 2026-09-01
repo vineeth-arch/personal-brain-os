@@ -612,6 +612,11 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                         404, "That note isn't in the vault anymore.",
                         "It may have been moved, renamed, or deleted since the proposal was made.",
                         "Refresh the triage screen.")
+                except ValueError as e:
+                    raise Envelope(
+                        409, "That split proposal doesn't cover the whole note.",
+                        str(e),
+                        "Dismiss it with Keep as one — the note itself is untouched.")
             events.log(proposal_file, "split", "ok",
                       message=f"id={note_id} decision={body.decision}")
         finally:

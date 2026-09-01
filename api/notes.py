@@ -1172,11 +1172,29 @@ def execute_split(vault: Path, note_id: str, segments: list[dict]) -> list[str]:
     # start_line/end_line are 1-indexed against split.propose()'s prompt,
     # which numbers the pipeline's raw transcript text (no such leading
     # blank line), so it must be stripped here or every segment would be
-    # off by one line — verified by the body-reconstruction test.
-    lines = body.lstrip("\n").splitlines()
+    # off by one line — verified by the body-reconstruction test. Strip
+    # exactly that one separator newline, not every leading newline — a
+    # transcript that itself happened to start with a blank line would
+    # otherwise be over-stripped, reintroducing the same off-by-one the
+    # other way.
+    lines = (body[1:] if body.startswith("\n") else body).splitlines()
     note_type = fm.get("type", "musing")
     dest_dir = vault / route.TYPE_FOLDER.get(note_type, route.INBOX_FOLDER)
     dest_dir.mkdir(parents=True, exist_ok=True)
+
+    # validate_split only checks that segments are gap-free and non-
+    # overlapping starting at line 1 — it never sees the body, so it can't
+    # confirm the LAST segment actually reaches the end. Enforced here,
+    # before any file is written, so a proposal that would silently drop
+    # the note's tail is rejected outright rather than losing content: the
+    # whole point of this function is that concatenating every child
+    # reproduces the parent exactly.
+    if not segments:
+        raise ValueError(f"no segments to split {note_id} into")
+    if segments[-1]["end_line"] < len(lines):
+        raise ValueError(
+            f"segments for {note_id} stop at line {segments[-1]['end_line']} "
+            f"but the note has {len(lines)} lines — the tail would be lost")
 
     child_ids: list[str] = []
     for i, seg in enumerate(segments, start=1):
@@ -1184,7 +1202,13 @@ def execute_split(vault: Path, note_id: str, segments: list[dict]) -> list[str]:
         while child_id in child_ids:  # pathological collision guard
             child_id += "x"
         child_ids.append(child_id)
-        seg_body = "\n".join(lines[seg["start_line"] - 1:seg["end_line"]]).rstrip()
+        # No .rstrip() here — a segment legitimately ending on a blank line
+        # (an ordinary LLM segmentation) would otherwise have that blank
+        # line silently dropped, breaking the reconstruction invariant. The
+        # child template below already supplies its own "\n\n" separator
+        # before the derived-from:: line, so stripping isn't needed for
+        # formatting either.
+        seg_body = "\n".join(lines[seg["start_line"] - 1:seg["end_line"]])
         title = seg.get("title") or f"part {i}"
         fm_lines = [
             "---",

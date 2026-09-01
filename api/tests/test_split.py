@@ -16,10 +16,15 @@ from api.tests.test_api import Server, _seed_events, env  # noqa: F401
 
 PARENT_ID = "20260628070000"
 
+# Segment 1 deliberately ENDS on a blank line (line 4) and segment 2 STARTS
+# on one (line 5 is content, but segment boundaries elsewhere in this suite
+# only ever land a blank line at a segment START — never an END). A
+# .rstrip() on a segment's joined lines silently drops a trailing blank line,
+# so shaping the fixture this way is what actually exercises that bug.
 SEGMENTS = [
-    {"title": "The client call went sideways", "start_line": 1, "end_line": 3},
-    {"title": "Grocery run for the week", "start_line": 4, "end_line": 6},
-    {"title": "An onboarding idea", "start_line": 7, "end_line": 9},
+    {"title": "The client call went sideways", "start_line": 1, "end_line": 4},
+    {"title": "Grocery run for the week", "start_line": 5, "end_line": 7},
+    {"title": "An onboarding idea", "start_line": 8, "end_line": 9},
 ]
 
 PARENT_BODY_LINES = [
@@ -36,12 +41,12 @@ PARENT_BODY_LINES = [
 
 
 def _seed_proposal(db: Path, *, note_id: str = PARENT_ID, confidence: float = 0.82,
-                   file: str = "/in/sunday.m4a") -> None:
+                   file: str = "/in/sunday.m4a", segments: list[dict] = SEGMENTS) -> None:
     message = json.dumps({
         "note_id": note_id,
         "title": "sunday-morning-notes",
         "confidence": confidence,
-        "segments": SEGMENTS,
+        "segments": segments,
     })
     _seed_events(db, [
         {"timestamp": "2026-06-28T07:00:00", "file": file, "stage": "split",
@@ -59,6 +64,23 @@ def _write_parent_note(vault: Path, note_id: str = PARENT_ID) -> Path:
         f"origin: human\nmeta_origin: ai\nstatus: active\ncategories: []\n"
         f"subjects: []\ntags: []\n---\n\n{body}\n", encoding="utf-8")
     return path
+
+
+def _child_body_from_file(path: Path, note_id: str) -> str:
+    """Recover exactly the seg_body execute_split wrote into a child file,
+    reading the REAL file off disk rather than trusting any test fixture —
+    this is what makes the reconstruction-invariant test below actually
+    prove something. Splits on the same structural markers execute_split's
+    own template uses (the frontmatter fence, then its own "\\n\\n"
+    separators around the derived-from:: line), not on any assumption about
+    the content in between."""
+    text = path.read_text(encoding="utf-8")
+    _, _, after = text.partition("\n---\n")
+    after = after[1:] if after.startswith("\n") else after
+    marker = f"\n\n- derived-from:: [[{note_id}]]"
+    body_part, sep, _ = after.rpartition(marker)
+    assert sep, f"child file {path.name} is missing its derived-from:: edge line"
+    return body_part
 
 
 # ---- GET /api/review split_proposals ----------------------------------------
@@ -125,26 +147,26 @@ def test_split_decision_reconstructs_parent_body_exactly(env):
         assert "type: musing" in parent_text
         assert original_body in parent_text
 
-        # every child note exists with the right segment's exact body lines,
-        # origin: ai, and a derived-from:: edge line pointing at the parent
+        # child_ids come back in segment order (execute_split appends them
+        # in the same loop that writes each file), so each child can be
+        # found by its OWN immutable id rather than by guessing at content.
         folder = vault / "02-Musings"
-        child_bodies = []
-        for seg in SEGMENTS:
-            expected_lines = PARENT_BODY_LINES[seg["start_line"] - 1:seg["end_line"]]
-            expected_body = "\n".join(expected_lines).rstrip()
-            matches = [
-                p for p in folder.glob("*.md")
-                if p != parent_path and expected_body in p.read_text(encoding="utf-8")
-            ]
-            assert len(matches) == 1, f"expected exactly one child for segment {seg['title']!r}"
+        child_paths: list[Path] = []
+        for child_id in child_ids:
+            matches = [p for p in folder.glob("*.md")
+                      if p != parent_path and f"id: {child_id}" in p.read_text(encoding="utf-8")]
+            assert len(matches) == 1, f"expected exactly one child with id {child_id}"
             child_text = matches[0].read_text(encoding="utf-8")
             assert "origin: ai" in child_text
             assert f"derived-from:: [[{PARENT_ID}]]" in child_text
-            child_bodies.append(expected_body)
+            child_paths.append(matches[0])
 
-        # THE reconstruction invariant: every child's body concatenated back
-        # together, in segment order, reproduces the parent's original body
-        # exactly.
+        # THE reconstruction invariant: every child's ACTUAL body, read back
+        # off disk (not the test's own idea of what it should be) and
+        # concatenated in segment order, reproduces the parent's original
+        # body exactly — including the blank line at segment 1's end, which
+        # a wrongly-reintroduced .rstrip() would drop.
+        child_bodies = [_child_body_from_file(p, PARENT_ID) for p in child_paths]
         assert "\n".join(child_bodies) == original_body
 
         # exactly ONE new commit was made for the whole batch
@@ -162,6 +184,60 @@ def test_split_decision_reconstructs_parent_body_exactly(env):
         assert code == 404
 
 
+def test_split_rejected_when_segments_dont_cover_the_tail(env):
+    """validate_split can't see the body (it never checks the LAST segment's
+    end_line reaches the end), so execute_split must guard it itself —
+    otherwise the note's tail silently never appears in any child. A
+    corrupted/short proposal is rejected with 409 BEFORE anything is
+    written: no child files, the parent's status untouched, no commit."""
+    root, vault, _, _ = env
+    short_segments = [
+        {"title": "The client call went sideways", "start_line": 1, "end_line": 4},
+        {"title": "Grocery run for the week", "start_line": 5, "end_line": 7},
+        # stops at line 7 — lines 8-9 (real prose) would vanish
+    ]
+    _seed_proposal(root / "events.db", segments=short_segments)
+    parent_path = _write_parent_note(vault)
+    original_text = parent_path.read_text(encoding="utf-8")
+
+    with Server(root) as s:
+        code, body = s.req("POST", f"/api/review/split/{PARENT_ID}", {"decision": "split"})
+        assert code == 409
+        assert set(body["error"]) == {"what", "cause", "todo"}
+
+        # nothing written: parent byte-for-byte unchanged, still active
+        assert parent_path.read_text(encoding="utf-8") == original_text
+        assert "status: active" in original_text
+        folder = vault / "02-Musings"
+        assert [p.name for p in folder.glob("*.md")] == [parent_path.name]
+
+        # no commit was made
+        log = subprocess.run(
+            ["git", "-C", str(vault), "log", "--format=%s"],
+            capture_output=True, text=True).stdout.strip().splitlines()
+        assert not any(line.startswith("api: split ") for line in log)
+
+        # the proposal is still pending — a rejected split does NOT supersede it
+        code, body = s.req("GET", "/api/review")
+        assert len(body["split_proposals"]) == 1
+
+
+def test_split_rejected_when_segments_empty(env):
+    """A corrupted events row with zero segments must not archive the parent
+    and create nothing while still reporting success."""
+    root, vault, _, _ = env
+    _seed_proposal(root / "events.db", segments=[])
+    parent_path = _write_parent_note(vault)
+    original_text = parent_path.read_text(encoding="utf-8")
+
+    with Server(root) as s:
+        code, body = s.req("POST", f"/api/review/split/{PARENT_ID}", {"decision": "split"})
+        assert code == 409
+        assert parent_path.read_text(encoding="utf-8") == original_text
+        folder = vault / "02-Musings"
+        assert [p.name for p in folder.glob("*.md")] == [parent_path.name]
+
+
 def test_unknown_proposal_id_404s(env):
     root, _, _, _ = env
     with Server(root) as s:
@@ -177,3 +253,72 @@ def test_invalid_decision_400s(env):
         code, body = s.req("POST", f"/api/review/split/{PARENT_ID}", {"decision": "sideways"})
         assert code == 400
         assert set(body["error"]) == {"what", "cause", "todo"}
+
+
+# ---- watcher → notes.py JSON contract ----------------------------------------
+
+def test_watcher_split_event_keys_match_notes_parser(tmp_path):
+    """Nothing else in this suite exercises the REAL pipeline/watcher.py
+    Stage 4c write path — every test above hand-seeds JSON with keys that
+    happen to already match list_split_proposals'/find_pending_split's
+    parsing, so a key rename on either side would pass silently. This runs
+    the actual watcher.process_file (via run_once) against a real
+    events.db, then reads that SAME db back through the real
+    api.notes functions — no hand-rolled JSON anywhere in this test."""
+    from pipeline import watcher
+    from pipeline.config import Config
+    from pipeline.events import EventLog
+    from pipeline.transcribe import Transcriber
+    from api import notes as notes_mod
+
+    vault = tmp_path / "vault"
+    inbox = tmp_path / "inbox"
+    archive = tmp_path / "archive"
+    failed = tmp_path / "failed"
+    for d in (vault, inbox, archive, failed):
+        d.mkdir()
+
+    # >200 words, no URL, no capture tag — a plain journal/musing capture
+    body_text = " ".join(["word"] * 220)
+    (inbox / "2026-06-28-0700 sunday-morning-notes.txt").write_text(
+        body_text, encoding="utf-8")
+
+    config = Config(vault_path=vault, inbox_path=inbox, archive_path=archive, failed_path=failed)
+    db_path = tmp_path / "events.db"
+    events = EventLog(db_path, config.vault_path)
+
+    def stub_classifier(_transcript, _config):
+        return {"type": "musing", "categories": [], "subjects": [], "tags": [],
+                "confidence": 0.9, "title": "sunday-morning-notes"}
+
+    watcher_segments = [
+        {"title": "Topic one", "start_line": 1, "end_line": 1},
+        {"title": "Topic two", "start_line": 2, "end_line": 2},
+    ]
+
+    def stub_split_llm(_body, _config):
+        return {"multi_topic": True, "confidence": 0.85, "segments": watcher_segments}
+
+    class DummyTranscriber(Transcriber):
+        def transcribe(self, audio_path):  # pragma: no cover — no audio in this test
+            raise AssertionError("no audio in this test")
+
+    deps = watcher.Deps(transcriber=DummyTranscriber(), classifier_fn=stub_classifier,
+                        split_llm=stub_split_llm)
+    try:
+        results = watcher.run_once(config, events, deps)
+    finally:
+        events.close()
+
+    assert len(results) == 1
+    assert results[0].status != "failed", results[0].error
+
+    proposals = notes_mod.list_split_proposals(db_path)
+    assert len(proposals) == 1
+    assert proposals[0]["title"] == "sunday-morning-notes"
+    assert proposals[0]["confidence"] == 0.85
+    assert proposals[0]["segment_titles"] == ["Topic one", "Topic two"]
+
+    file_key, parsed_segments = notes_mod.find_pending_split(db_path, proposals[0]["id"])
+    assert file_key is not None
+    assert parsed_segments == watcher_segments
