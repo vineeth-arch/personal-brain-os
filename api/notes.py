@@ -1068,3 +1068,149 @@ def search_vault(vault: Path, q: str, limit: int = SEARCH_DEFAULT_LIMIT) -> list
         }))
     hits.sort(key=lambda h: (h[0], h[1]))
     return [h[2] for h in hits[:limit]]
+
+
+# ---- multi-topic split (Pass E, Task E1) ------------------------------------
+# Review-gated: pipeline/split.py only ever LOGS a proposal to events.db — the
+# note itself is untouched until a human taps [Split] in Triage, which lands
+# here. GET /api/review's split_proposals list is a pure events.db read (the
+# design note in the task brief: the proposing LLM call already has the full
+# segment breakdown in hand, so it's logged whole as JSON — no vault scan
+# needed to list proposals). Only execute_split touches a real note file.
+
+def _find_note_by_id(vault: Path, note_id: str) -> Path | None:
+    """Vault-wide id lookup — only used by execute_split, since that's the
+    only place that needs to touch a REAL note file. Mirrors search_vault's
+    exclusion conventions (raw/, _System/, dotted paths)."""
+    for p in sorted(vault.rglob("*.md")):
+        rel_parts = p.relative_to(vault).parts
+        if not rel_parts or rel_parts[0] in ("raw", "_System"):
+            continue
+        if any(part.startswith(".") for part in rel_parts):
+            continue
+        text = read_note(p)
+        if text is None:
+            continue
+        fm, _ = parse_frontmatter(text)
+        if fm.get("id") == note_id:
+            return p
+    return None
+
+
+_SPLIT_PENDING_QUERY = (
+    "SELECT e.file, e.message FROM events e "
+    "JOIN (SELECT file, MAX(id) AS mid FROM events WHERE stage='split' GROUP BY file) m "
+    "ON e.id = m.mid WHERE e.stage='split' AND e.status='needs_review'"
+)
+
+
+def _split_pending_rows(db_path: Path) -> list[tuple[str, str]]:
+    """Every (file, message) whose LATEST split-stage event is still an
+    undecided proposal — a decision (stage='split' status='ok') supersedes
+    it and drops it from this list, same latest-event-per-file shape as
+    api/service.py's failed_items join."""
+    if not db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            return conn.execute(_SPLIT_PENDING_QUERY).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        log.exception("split proposal query failed")
+        return []
+
+
+def list_split_proposals(db_path: Path) -> list[dict]:
+    out = []
+    for _file, message in _split_pending_rows(db_path):
+        try:
+            data = json.loads(message)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        out.append({
+            "id": data.get("note_id", ""),
+            "title": data.get("title", ""),
+            "segment_titles": [s.get("title", "") for s in data.get("segments", [])],
+            "confidence": data.get("confidence", 0),
+        })
+    return out
+
+
+def find_pending_split(db_path: Path, note_id: str) -> tuple[str | None, list[dict] | None]:
+    """(file_key, segments) for the pending proposal matching note_id, or
+    (None, None) if there isn't one — used by the decision route both to
+    supersede the RIGHT events row (same file key) and to get the segments
+    execute_split needs without re-deriving them."""
+    for file_key, message in _split_pending_rows(db_path):
+        try:
+            data = json.loads(message)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if data.get("note_id") == note_id:
+            return file_key, data.get("segments") or []
+    return None, None
+
+
+def execute_split(vault: Path, note_id: str, segments: list[dict]) -> list[str]:
+    """One child note per segment — every child's body concatenated back
+    together reconstructs the parent's body exactly (verbatim line ranges,
+    nothing paraphrased). The parent is archived IN PLACE, never deleted —
+    its full original text stays on disk, just status: archived. One commit
+    for the whole batch. Returns the new child ids."""
+    path = _find_note_by_id(vault, note_id)
+    if path is None:
+        raise LookupError(note_id)
+    text = read_note(path)
+    if text is None:
+        raise LookupError(note_id)
+    fm, body = parse_frontmatter(text)
+    # parse_frontmatter's body carries the single blank line every note
+    # writer (route.route, build_frontmatter's callers) puts between the
+    # closing "---" fence and the content — "---\n\n<content>". Segment
+    # start_line/end_line are 1-indexed against split.propose()'s prompt,
+    # which numbers the pipeline's raw transcript text (no such leading
+    # blank line), so it must be stripped here or every segment would be
+    # off by one line — verified by the body-reconstruction test.
+    lines = body.lstrip("\n").splitlines()
+    note_type = fm.get("type", "musing")
+    dest_dir = vault / route.TYPE_FOLDER.get(note_type, route.INBOX_FOLDER)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    child_ids: list[str] = []
+    for i, seg in enumerate(segments, start=1):
+        child_id = f"{note_id}{i}"
+        while child_id in child_ids:  # pathological collision guard
+            child_id += "x"
+        child_ids.append(child_id)
+        seg_body = "\n".join(lines[seg["start_line"] - 1:seg["end_line"]]).rstrip()
+        title = seg.get("title") or f"part {i}"
+        fm_lines = [
+            "---",
+            f"id: {child_id}",
+            f"type: {note_type}",
+            f"created: {fm.get('created', '')}",
+            f"source: {fm.get('source', 'manual')}",
+            "origin: ai",
+            f"status: {fm.get('status', 'active')}",
+            "categories: []",
+            "subjects: []",
+            "tags: []",
+            "---",
+        ]
+        child_text = (
+            "\n".join(fm_lines) + "\n\n" + seg_body + "\n\n"
+            f"- derived-from:: [[{note_id}]] (split from a multi-topic capture)\n"
+        )
+        base = f"{fm.get('created', '')}-{route._kebab(title)}"
+        child_path = dest_dir / f"{base}.md"
+        j = 1
+        while child_path.exists():
+            j += 1
+            child_path = dest_dir / f"{base}-{j}.md"
+        child_path.write_text(child_text, encoding="utf-8")
+
+    path.write_text(_restamp(text, note_type, "archived"), encoding="utf-8")
+    git_commit_vault(vault, f"api: split {note_id} into {len(segments)} notes")
+    return child_ids

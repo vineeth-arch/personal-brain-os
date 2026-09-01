@@ -234,6 +234,10 @@ class BreakdownBody(BaseModel):
     feel: int
 
 
+class SplitDecisionBody(BaseModel):
+    decision: str
+
+
 # ---- micro-step breakdown (B10): prompt + validator, mirroring
 # classify.py's build_prompt/validate_classification split ----------------
 
@@ -386,6 +390,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
             "queue_total": len(items),
             "accuracy": service.accuracy(db_path),
             "trust": service.trust(db_path),
+            "split_proposals": notes.list_split_proposals(db_path),
         }
 
     @app.get("/api/failed")
@@ -582,6 +587,36 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         finally:
             events.close()
         return {"ok": True, "moved_to": moved_to}
+
+    @app.post("/api/review/split/{note_id}")
+    def review_split_decision(note_id: str, body: SplitDecisionBody, config=Depends(require_token)):
+        if body.decision not in ("keep", "split"):
+            raise Envelope(
+                400, "That's not a split decision the server understands.",
+                f"'{body.decision}' isn't keep or split.",
+                "Tap Keep as one or Split.")
+        proposal_file, segments = notes.find_pending_split(db_path, note_id)
+        if proposal_file is None:
+            raise Envelope(
+                404, "That split proposal isn't waiting anymore.",
+                "It was already decided, or the id is unknown.",
+                "Refresh the triage screen.")
+        events = EventLog(db_path, Path(config.vault_path))
+        try:
+            child_ids: list[str] = []
+            if body.decision == "split":
+                try:
+                    child_ids = notes.execute_split(config.vault_path, note_id, segments or [])
+                except LookupError:
+                    raise Envelope(
+                        404, "That note isn't in the vault anymore.",
+                        "It may have been moved, renamed, or deleted since the proposal was made.",
+                        "Refresh the triage screen.")
+            events.log(proposal_file, "split", "ok",
+                      message=f"id={note_id} decision={body.decision}")
+        finally:
+            events.close()
+        return {"ok": True, "decision": body.decision, "child_ids": child_ids}
 
     @app.post("/api/capture", status_code=201)
     def capture(request: Request, body: CaptureBody, config=Depends(require_token)):
