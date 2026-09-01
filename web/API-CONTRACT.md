@@ -215,6 +215,13 @@ like one), when the tag isn't a capture tag, or when the photo arrives empty.
 `413` when the upload passes the server's 15 MB limit — nothing partial (image
 or sidecar) is left in the inbox in any of those cases.
 
+**Idempotency** (Task F3): all three capture routes above accept an optional
+`X-Capture-Key: <client-generated uuid>` request header. Repeating an
+identical request with the same key returns the SAME `id` from the original
+successful capture, writing nothing new — safe for a client to retry after a
+dropped connection or timeout without risking a duplicate note. Omitting the
+header preserves today's behavior exactly (every POST creates a new note).
+
 **What the pipeline does with it** (Pass V3): the photo moves into the
 vault's own `attachments/` folder (its permanent home — unlike audio/text,
 an image IS vault content, embedded straight into its note). With no capture

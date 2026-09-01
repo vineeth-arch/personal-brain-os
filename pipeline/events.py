@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS resurface (
     shows INTEGER NOT NULL DEFAULT 0,
     response TEXT                    -- NULL | connected | acted | archived
 );
+CREATE TABLE IF NOT EXISTS capture_keys (
+    key TEXT PRIMARY KEY,
+    note_id TEXT NOT NULL,
+    created TEXT NOT NULL
+);
 """
 
 
@@ -94,6 +99,22 @@ class EventLog:
         self.conn.execute(
             "INSERT OR IGNORE INTO reminders (key, fired_at) VALUES (?, ?)",
             (key, datetime.now().isoformat(timespec="seconds")))
+        self.conn.commit()
+
+    def capture_key_seen(self, key: str) -> str | None:
+        """The note_id already captured under this idempotency key, or None
+        if this key is new. A capture_keys row is disposable bookkeeping
+        (CLAUDE.md §1) — losing events.db just means a retry after that
+        point could (harmlessly) create a second, distinct note instead of
+        being recognized as a repeat; no data is ever lost either way."""
+        cur = self.conn.execute("SELECT note_id FROM capture_keys WHERE key = ?", (key,))
+        row = cur.fetchone()
+        return row[0] if row else None
+
+    def mark_capture_key(self, key: str, note_id: str) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO capture_keys (key, note_id, created) VALUES (?, ?, ?)",
+            (key, note_id, datetime.now().isoformat(timespec="seconds")))
         self.conn.commit()
 
     def heartbeat(self, path: Path) -> None:

@@ -69,12 +69,14 @@ class Server:
         self.server.should_exit = True
         self.thread.join(timeout=5)
 
-    def req(self, method: str, path: str, body=None, token=TOKEN):
+    def req(self, method: str, path: str, body=None, token=TOKEN, extra_headers: dict | None = None):
         url = f"http://127.0.0.1:{self.port}{path}"
         data = json.dumps(body).encode() if body is not None else None
         headers = {"Content-Type": "application/json"} if data else {}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        if extra_headers:
+            headers.update(extra_headers)
         r = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(r) as resp:
@@ -83,12 +85,15 @@ class Server:
             raw = e.read()
             return e.code, json.loads(raw) if raw else None
 
-    def raw(self, method: str, path: str, data: bytes, content_type: str, token=TOKEN):
+    def raw(self, method: str, path: str, data: bytes, content_type: str, token=TOKEN,
+            extra_headers: dict | None = None):
         """Post a raw (non-JSON) body — how the mic button uploads a recording."""
         url = f"http://127.0.0.1:{self.port}{path}"
         headers = {"Content-Type": content_type}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        if extra_headers:
+            headers.update(extra_headers)
         r = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(r) as resp:
@@ -418,6 +423,51 @@ def test_capture_same_minute_collision(env):
         assert all(i.tag == "todo" for i in intake.poll(inbox))
 
 
+def test_capture_idempotency_key_same_key_twice(env):
+    """Task F3: a retried text capture with the same X-Capture-Key returns the
+    same id and writes nothing new — the whole point of a client-safe retry."""
+    root, _, inbox, _ = env
+    with Server(root) as s:
+        code1, body1 = s.req("POST", "/api/capture", {"text": "call the plumber", "tag": "todo"},
+                             extra_headers={"X-Capture-Key": "abc"})
+        assert code1 == 201
+        names_after_first = sorted(p.name for p in inbox.glob("*.md"))
+        assert len(names_after_first) == 1
+
+        code2, body2 = s.req("POST", "/api/capture", {"text": "call the plumber", "tag": "todo"},
+                             extra_headers={"X-Capture-Key": "abc"})
+        assert code2 == 201
+        assert body2["id"] == body1["id"]
+        # the duplicate-key path wrote nothing — same file set, not just same id
+        names_after_second = sorted(p.name for p in inbox.glob("*.md"))
+        assert names_after_second == names_after_first
+
+
+def test_capture_idempotency_key_different_keys(env):
+    root, _, inbox, _ = env
+    with Server(root) as s:
+        code1, body1 = s.req("POST", "/api/capture", {"text": "buy milk", "tag": "todo"},
+                             extra_headers={"X-Capture-Key": "key-one"})
+        code2, body2 = s.req("POST", "/api/capture", {"text": "buy milk", "tag": "todo"},
+                             extra_headers={"X-Capture-Key": "key-two"})
+        assert code1 == 201 and code2 == 201
+        # ids are minute-precision (same predicted id for both, as with any
+        # same-minute capture) — what proves two DISTINCT captures happened
+        # is two files in the inbox, not a different id
+        assert len(list(inbox.glob("*.md"))) == 2
+
+
+def test_capture_no_key_preserves_legacy_behavior(env):
+    """Omitting X-Capture-Key entirely must be a true no-op: today's existing
+    behavior (every POST creates a new note) is unchanged."""
+    root, _, inbox, _ = env
+    with Server(root) as s:
+        code1, body1 = s.req("POST", "/api/capture", {"text": "walk the dog", "tag": "todo"})
+        code2, body2 = s.req("POST", "/api/capture", {"text": "walk the dog", "tag": "todo"})
+        assert code1 == 201 and code2 == 201
+        assert len(list(inbox.glob("*.md"))) == 2
+
+
 def test_capture_audio_roundtrip(env):
     root, _, inbox, _ = env
     from pipeline import intake
@@ -534,6 +584,50 @@ def test_capture_audio_same_minute_collision(env):
     names = sorted(p.name for p in inbox.glob("*.webm"))
     assert len(names) == 2 and any("-2 #todo" in n for n in names)
     assert all(i.tag == "todo" for i in intake.poll(inbox))
+
+
+def test_capture_audio_idempotency_key_same_key_twice(env):
+    root, _, inbox, _ = env
+    with Server(root) as s:
+        code1, body1 = s.raw("POST", "/api/capture/audio", b"\x1aE\xdf\xa3fake webm bytes",
+                             "audio/webm", extra_headers={"X-Capture-Key": "audio-key-1"})
+        assert code1 == 201
+        assert len(list(inbox.glob("*.webm"))) == 1
+
+        code2, body2 = s.raw("POST", "/api/capture/audio", b"\x1aE\xdf\xa3fake webm bytes",
+                             "audio/webm", extra_headers={"X-Capture-Key": "audio-key-1"})
+        assert code2 == 201
+        assert body2["id"] == body1["id"]
+        assert len(list(inbox.glob("*.webm"))) == 1
+
+
+def test_capture_audio_idempotency_key_different_keys(env):
+    root, _, inbox, _ = env
+    with Server(root) as s:
+        code1, body1 = s.raw("POST", "/api/capture/audio", b"one", "audio/webm",
+                             extra_headers={"X-Capture-Key": "audio-key-a"})
+        code2, body2 = s.raw("POST", "/api/capture/audio", b"two", "audio/webm",
+                             extra_headers={"X-Capture-Key": "audio-key-b"})
+        assert code1 == 201 and code2 == 201
+        # ids are minute-precision (same for both, as with any same-minute
+        # capture) — two files in the inbox is what proves two distinct
+        # captures happened
+        assert len(list(inbox.glob("*.webm"))) == 2
+
+
+def test_capture_image_idempotency_key_same_key_twice(env):
+    root, _, inbox, _ = env
+    with Server(root) as s:
+        code1, body1 = s.raw("POST", "/api/capture/image", b"\xff\xd8\xff fake jpeg bytes",
+                             "image/jpeg", extra_headers={"X-Capture-Key": "image-key-1"})
+        assert code1 == 201
+        assert len(list(inbox.glob("*.jpg"))) == 1
+
+        code2, body2 = s.raw("POST", "/api/capture/image", b"\xff\xd8\xff fake jpeg bytes",
+                             "image/jpeg", extra_headers={"X-Capture-Key": "image-key-1"})
+        assert code2 == 201
+        assert body2["id"] == body1["id"]
+        assert len(list(inbox.glob("*.jpg"))) == 1
 
 
 def test_search_endpoint(env):

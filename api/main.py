@@ -580,7 +580,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         return {"ok": True, "moved_to": moved_to}
 
     @app.post("/api/capture", status_code=201)
-    def capture(body: CaptureBody, config=Depends(require_token)):
+    def capture(request: Request, body: CaptureBody, config=Depends(require_token)):
         # Two shapes, same route (Pass S): {text} is the quick-capture box;
         # {url, insight?} is a share (the "→ Brain Cloud" Shortcut, or a
         # future in-app share button) — the insight rides ALONGSIDE the URL
@@ -606,10 +606,24 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 400, "That's not a capture tag the pipeline knows.",
                 f"'{body.tag}' isn't one of the 8 capture tags in SCHEMA-REFERENCE.md.",
                 "Pick one of the tag chips, or send no tag and let the classifier decide.")
-        # the inbox is outside the vault — nothing to git-commit here; the
-        # watcher's processing (and any approve) is where vault history is made
-        note_id = notes.capture(Path(config.inbox_path), text, body.tag)
-        return {"id": note_id, "status": "captured"}
+        # Task F3 (outbox idempotency): a client that couldn't tell whether
+        # its first attempt landed can safely resend with the same
+        # X-Capture-Key and get back the same note id, writing nothing new.
+        capture_key = request.headers.get("X-Capture-Key") or None
+        events = EventLog(db_path, Path(config.vault_path))
+        try:
+            if capture_key:
+                existing = events.capture_key_seen(capture_key)
+                if existing:
+                    return {"id": existing, "status": "captured"}
+            # the inbox is outside the vault — nothing to git-commit here; the
+            # watcher's processing (and any approve) is where vault history is made
+            note_id = notes.capture(Path(config.inbox_path), text, body.tag)
+            if capture_key:
+                events.mark_capture_key(capture_key, note_id)
+            return {"id": note_id, "status": "captured"}
+        finally:
+            events.close()
 
     @app.post("/api/capture/audio", status_code=201)
     async def capture_audio(request: Request, config=Depends(require_token)):
@@ -629,37 +643,52 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 f"'{tag}' isn't one of the 8 capture tags in SCHEMA-REFERENCE.md.",
                 "Pick one of the tag chips, or send no tag and let the classifier decide.")
 
-        inbox = Path(config.inbox_path)
-        path, note_id = notes.audio_capture_path(inbox, ext, request.query_params.get("name"), tag)
-        fd, tmp = tempfile.mkstemp(dir=inbox, prefix=".capture-", suffix=".tmp")
-        written = 0
+        # Task F3 (outbox idempotency): checked BEFORE reserving a filename
+        # or touching request.stream() — on a duplicate key, the handler
+        # returns without reading the request body at all.
+        capture_key = request.headers.get("X-Capture-Key") or None
+        events = EventLog(db_path, Path(config.vault_path))
         try:
-            with os.fdopen(fd, "wb") as f:
-                async for chunk in request.stream():
-                    written += len(chunk)
-                    if written > notes.MAX_AUDIO_BYTES:
-                        raise Envelope(
-                            413, "That recording is too large to upload.",
-                            f"The upload passed the {notes.MAX_AUDIO_BYTES // (1024 * 1024)} MB limit "
-                            "this server accepts.",
-                            "Record in shorter takes, or copy the file straight into the inbox folder "
-                            "— the watcher picks it up from there with no size limit.")
-                    f.write(chunk)
-            if written == 0:
-                raise Envelope(
-                    400, "There was nothing to capture.",
-                    "The recording arrived empty — the mic may have been blocked mid-recording.",
-                    "Check the microphone permission, then record again.")
-            os.replace(tmp, path)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            raise
-        # a streamed .webm/.mp4 has no duration in its header — a best-effort
-        # stream-copy remux writes one, so duration_min isn't silently absent
-        # on every mic capture (D7); never blocks the response either way
-        notes.remux_for_duration(path)
-        # the inbox is outside the vault — nothing to git-commit here
-        return {"id": note_id, "status": "captured"}
+            if capture_key:
+                existing = events.capture_key_seen(capture_key)
+                if existing:
+                    return {"id": existing, "status": "captured"}
+
+            inbox = Path(config.inbox_path)
+            path, note_id = notes.audio_capture_path(inbox, ext, request.query_params.get("name"), tag)
+            fd, tmp = tempfile.mkstemp(dir=inbox, prefix=".capture-", suffix=".tmp")
+            written = 0
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    async for chunk in request.stream():
+                        written += len(chunk)
+                        if written > notes.MAX_AUDIO_BYTES:
+                            raise Envelope(
+                                413, "That recording is too large to upload.",
+                                f"The upload passed the {notes.MAX_AUDIO_BYTES // (1024 * 1024)} MB limit "
+                                "this server accepts.",
+                                "Record in shorter takes, or copy the file straight into the inbox folder "
+                                "— the watcher picks it up from there with no size limit.")
+                        f.write(chunk)
+                if written == 0:
+                    raise Envelope(
+                        400, "There was nothing to capture.",
+                        "The recording arrived empty — the mic may have been blocked mid-recording.",
+                        "Check the microphone permission, then record again.")
+                os.replace(tmp, path)
+            except BaseException:
+                Path(tmp).unlink(missing_ok=True)
+                raise
+            # a streamed .webm/.mp4 has no duration in its header — a best-effort
+            # stream-copy remux writes one, so duration_min isn't silently absent
+            # on every mic capture (D7); never blocks the response either way
+            notes.remux_for_duration(path)
+            if capture_key:
+                events.mark_capture_key(capture_key, note_id)
+            # the inbox is outside the vault — nothing to git-commit here
+            return {"id": note_id, "status": "captured"}
+        finally:
+            events.close()
 
     @app.post("/api/capture/image", status_code=201)
     async def capture_image(request: Request, config=Depends(require_token)):
@@ -686,43 +715,58 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 f"'{tag}' isn't one of the 8 capture tags in SCHEMA-REFERENCE.md.",
                 "Pick one of the tag chips, or send no tag and let it become a resource.")
 
-        inbox = Path(config.inbox_path)
-        path, note_id = notes.image_capture_path(
-            inbox, ext, request.query_params.get("name"), tag)
-        fd, tmp = tempfile.mkstemp(dir=inbox, prefix=".capture-", suffix=".tmp")
-        written = 0
+        # Task F3 (outbox idempotency): checked BEFORE reserving a filename
+        # or touching request.stream() — on a duplicate key, the handler
+        # returns without reading the request body at all.
+        capture_key = request.headers.get("X-Capture-Key") or None
+        events = EventLog(db_path, Path(config.vault_path))
         try:
-            with os.fdopen(fd, "wb") as f:
-                async for chunk in request.stream():
-                    written += len(chunk)
-                    if written > notes.MAX_IMAGE_BYTES:
-                        raise Envelope(
-                            413, "That photo is too large to upload.",
-                            f"The upload passed the {notes.MAX_IMAGE_BYTES // (1024 * 1024)} MB "
-                            "limit this server accepts.",
-                            "Resize on the device first — the Shortcut and the cockpit's photo "
-                            "button both do this automatically before sending.")
-                    f.write(chunk)
-            if written == 0:
-                raise Envelope(
-                    400, "There was nothing to capture.",
-                    "The upload arrived empty.",
-                    "Try sharing the photo again.")
-            # the insight sidecar (if any) is written BEFORE the image is
-            # renamed into place, so the watcher — which ignores dotfiles —
-            # never sees the image without it
-            insight = request.query_params.get("insight") or ""
-            if insight.strip():
-                notes.image_insight_sidecar(path).write_text(insight.strip(), encoding="utf-8")
-            os.replace(tmp, path)
-        except BaseException:
-            Path(tmp).unlink(missing_ok=True)
-            sidecar = notes.image_insight_sidecar(path)
-            if sidecar.exists():
-                sidecar.unlink(missing_ok=True)
-            raise
-        # the inbox is outside the vault — nothing to git-commit here
-        return {"id": note_id, "status": "captured"}
+            if capture_key:
+                existing = events.capture_key_seen(capture_key)
+                if existing:
+                    return {"id": existing, "status": "captured"}
+
+            inbox = Path(config.inbox_path)
+            path, note_id = notes.image_capture_path(
+                inbox, ext, request.query_params.get("name"), tag)
+            fd, tmp = tempfile.mkstemp(dir=inbox, prefix=".capture-", suffix=".tmp")
+            written = 0
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    async for chunk in request.stream():
+                        written += len(chunk)
+                        if written > notes.MAX_IMAGE_BYTES:
+                            raise Envelope(
+                                413, "That photo is too large to upload.",
+                                f"The upload passed the {notes.MAX_IMAGE_BYTES // (1024 * 1024)} MB "
+                                "limit this server accepts.",
+                                "Resize on the device first — the Shortcut and the cockpit's photo "
+                                "button both do this automatically before sending.")
+                        f.write(chunk)
+                if written == 0:
+                    raise Envelope(
+                        400, "There was nothing to capture.",
+                        "The upload arrived empty.",
+                        "Try sharing the photo again.")
+                # the insight sidecar (if any) is written BEFORE the image is
+                # renamed into place, so the watcher — which ignores dotfiles —
+                # never sees the image without it
+                insight = request.query_params.get("insight") or ""
+                if insight.strip():
+                    notes.image_insight_sidecar(path).write_text(insight.strip(), encoding="utf-8")
+                os.replace(tmp, path)
+            except BaseException:
+                Path(tmp).unlink(missing_ok=True)
+                sidecar = notes.image_insight_sidecar(path)
+                if sidecar.exists():
+                    sidecar.unlink(missing_ok=True)
+                raise
+            if capture_key:
+                events.mark_capture_key(capture_key, note_id)
+            # the inbox is outside the vault — nothing to git-commit here
+            return {"id": note_id, "status": "captured"}
+        finally:
+            events.close()
 
     # ---- people (Relationship OS) --------------------------------------------
 
