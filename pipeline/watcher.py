@@ -22,8 +22,8 @@ from datetime import date
 from pathlib import Path
 
 from . import (archive, classify as classify_mod, config as config_mod, echo as echo_mod,
-               enrich, errors, extract, ingest, intake, plaud, related, relationships, route,
-               split as split_mod, todos, transliterate, vaultsync, vision as vision_mod)
+               enrich, errors, extract, gmailpull, ingest, intake, plaud, related, relationships,
+               route, split as split_mod, todos, transliterate, vaultsync, vision as vision_mod)
 from .events import EventLog
 from . import transcribe as transcribe_mod
 from .transcribe import Transcriber, build_transcriber
@@ -541,6 +541,7 @@ def run_loop(config, events, deps) -> None:
                 print(f"Processed {len(results)} file(s).")
             todos.tick(config, events)              # reminders + optional digest
             drain_tick(config, events)                # Pass A: anti-guilt drain — best-guess filing
+            gmailpull.gmail_tick(config, events)    # Pass E: pull "brain"-labeled Gmail into 04-Resources
             enrich.retry_pending(config, events)    # one re-attempt for stale enriched:false notes
             intake.sweep_orphaned_sidecars(config.inbox_path)  # abandoned photo-insight dotfiles
             sync_vault(config, events)               # push/pull the vault's own git history

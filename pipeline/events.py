@@ -4,7 +4,9 @@ plus the human-readable vault artifacts (capture_log, PIPELINE-STATUS, heartbeat
 Every table here is disposable state (CLAUDE.md §1) — including `resurface`
 (Pass R, B6): it only tracks which notes have been shown and when, so the
 hybrid picker's cooldown works. Losing events.db just means every note
-becomes eligible to resurface again; nothing durable is lost."""
+becomes eligible to resurface again; nothing durable is lost. Same for
+`capture_keys` (idempotency) and `gmail_ingested` (Pass E, E4) — both are
+disposable dedupe bookkeeping, never the note content itself."""
 from __future__ import annotations
 
 import sqlite3
@@ -43,6 +45,10 @@ CREATE TABLE IF NOT EXISTS capture_keys (
     key TEXT PRIMARY KEY,
     note_id TEXT NOT NULL,
     created TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS gmail_ingested (
+    message_id TEXT PRIMARY KEY,
+    ingested_at TEXT NOT NULL
 );
 """
 
@@ -115,6 +121,20 @@ class EventLog:
         self.conn.execute(
             "INSERT OR IGNORE INTO capture_keys (key, note_id, created) VALUES (?, ?, ?)",
             (key, note_id, datetime.now().isoformat(timespec="seconds")))
+        self.conn.commit()
+
+    def gmail_ingested(self, message_id: str) -> bool:
+        """Has this Gmail message already been filed as a note? Disposable
+        bookkeeping (CLAUDE.md §1) — losing events.db just means a message
+        could be re-filed as a second note on the next pull; the vault note
+        itself is never lost either way."""
+        cur = self.conn.execute("SELECT 1 FROM gmail_ingested WHERE message_id = ?", (message_id,))
+        return cur.fetchone() is not None
+
+    def mark_gmail_ingested(self, message_id: str) -> None:
+        self.conn.execute(
+            "INSERT OR IGNORE INTO gmail_ingested (message_id, ingested_at) VALUES (?, ?)",
+            (message_id, datetime.now().isoformat(timespec="seconds")))
         self.conn.commit()
 
     def heartbeat(self, path: Path) -> None:

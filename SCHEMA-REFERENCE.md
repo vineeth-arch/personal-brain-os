@@ -1,6 +1,6 @@
 # **SCHEMA-REFERENCE — the canonical schema (lock before note \#1)**
 
-**This is the single source of truth for structure.** Every note, every script, every AI routing pass reads from here. These conventions are **migrations if changed late** — they're locked at Phase 0.4, before note \#1. Features can change; this should not. Version: 1.3 · 2026-08-31
+**This is the single source of truth for structure.** Every note, every script, every AI routing pass reads from here. These conventions are **migrations if changed late** — they're locked at Phase 0.4, before note \#1. Features can change; this should not. Version: 1.4 · 2026-09-01
 
 ---
 
@@ -17,7 +17,7 @@ yaml
 id: 20260605143000        \# immutable timestamp YYYYMMDDHHmmss — links point here  
 type: musing              \# see type list below  
 created: 2026-06-05  
-source: voice             \# voice | plaud | share | web-clipper | dex | manual | ai-compiled | handshake  
+source: voice             \# voice | plaud | share | web-clipper | dex | manual | ai-compiled | handshake | gmail  
 origin: human             \# human | ai  (provenance firewall)  
 status: active            \# lifecycle per type (section 6\)  
 categories: \[\]            \# what it IS    — as \[\[links\]\] (Kepano model), not flat tags  
