@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ApiError, api } from "../api/client";
+import { ApiError, api, coverSrc } from "../api/client";
 import type { Resource, ResourceDetail, ResourceStatus, SampleScope } from "../api/types";
 import { RESOURCE_STATUSES } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
@@ -163,7 +163,7 @@ function ResourceCard({ item, onOpen }: { item: Resource; onOpen: (r: Resource) 
       <div className="bg-subtle border-subtle relative aspect-[5/7] overflow-hidden rounded-xl border">
         {showImage ? (
           <img
-            src={item.cover!}
+            src={coverSrc(item.cover)!}
             alt={item.title}
             loading="lazy"
             onError={() => setFailed(true)}
@@ -314,7 +314,7 @@ function Drawer({
           <div className="bg-subtle border-subtle h-40 w-28 shrink-0 overflow-hidden rounded-xl border">
             {showCover ? (
               <img
-                src={current.cover!}
+                src={coverSrc(current.cover)!}
                 alt={current.title}
                 onError={() => setCoverFailed(true)}
                 className="h-full w-full object-cover"

@@ -11,7 +11,10 @@ Errors: every non-2xx body is {"error": {what, cause, todo}} in plain English
 """
 from __future__ import annotations
 
+import hashlib
+import hmac
 import logging
+import mimetypes
 import os
 import re
 import secrets
@@ -25,7 +28,7 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -60,6 +63,31 @@ class Envelope(Exception):
         self.status = status
         self.body = {"error": {"what": what, "cause": cause, "todo": todo}}
         super().__init__(what)
+
+
+# ---- attachments (Pass F): signed, time-limited URLs for vault files -------
+# A plain <img src> can't send an Authorization header, so covers stored in
+# the vault's attachments/ folder need a different auth mechanism than every
+# other route's bearer token — an HMAC-signed, expiring query string, keyed
+# by the SAME api.auth_token everything else uses (no new secret).
+
+ATTACHMENT_TTL_SECONDS = 600
+_ATTACHMENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]*$")
+
+
+def sign_attachment(name: str, token: str, *, now: int | None = None,
+                    ttl: int = ATTACHMENT_TTL_SECONDS) -> str:
+    exp = (now or int(time.time())) + ttl
+    sig = hmac.new(token.encode(), f"{name}:{exp}".encode(), hashlib.sha256).hexdigest()
+    return f"/api/att/{name}?exp={exp}&sig={sig}"
+
+
+def _signed_cover(cover: str | None, token: str) -> str | None:
+    """Mint a signed /api/att/ URL for a local attachments/... cover; absolute
+    URLs (picsum, YouTube thumbnails) pass through untouched."""
+    if not cover or not cover.startswith("attachments/"):
+        return cover
+    return sign_attachment(cover.removeprefix("attachments/"), token)
 
 
 def _google_page(title: str, body: str) -> str:
@@ -961,9 +989,13 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 400, "That's not a sort the resource list knows.",
                 f"'{sort}' isn't one of created, oldest, title.",
                 "Use one of the three sort values, or omit it for newest-first.")
-        return {"items": notes.list_resources(
+        token = str((config.raw.get("api") or {}).get("auth_token") or "")
+        items = notes.list_resources(
             config.vault_path, category=category, status=status, q=q,
-            has_insight=has_insight, sort=sort)}
+            has_insight=has_insight, sort=sort)
+        for item in items:
+            item["cover"] = _signed_cover(item["cover"], token)
+        return {"items": items}
 
     @app.get("/api/search")
     def search(q: str = "", limit: int = notes.SEARCH_DEFAULT_LIMIT, config=Depends(require_token)):
@@ -1022,6 +1054,8 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 404, "That resource isn't in the vault.",
                 "No resource note in 04-Resources has that id.",
                 "Refresh the resource list.")
+        token = str((config.raw.get("api") or {}).get("auth_token") or "")
+        detail["cover"] = _signed_cover(detail["cover"], token)
         return detail
 
     @app.post("/api/resources/{note_id}/status")
@@ -1049,6 +1083,44 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 404, "That resource isn't in the vault.",
                 "No resource note in 04-Resources has that id.",
                 "Refresh the resource list.")
+
+    # No Depends(require_token) here, deliberately — same reasoning as
+    # GET /api/health (must answer before a token can even be entered) and
+    # GET /api/google/callback (a browser redirect that can't carry a bearer
+    # header): a plain <img src> can never send an Authorization header
+    # either, so the signed, time-limited exp/sig query params ARE this
+    # route's auth, not a workaround for lacking one.
+    @app.get("/api/att/{name}")
+    def serve_attachment(name: str, exp: int, sig: str):
+        config = load_config()
+        token = str((config.raw.get("api") or {}).get("auth_token") or "")
+        # Same envelope for a malformed name, an expired signature, and a bad
+        # signature — deliberately indistinguishable so probing this endpoint
+        # never tells an attacker which of the three failed.
+        invalid = Envelope(
+            403, "That attachment link isn't valid.",
+            "The name or signature doesn't check out — it may be old or tampered with.",
+            "Reload the screen to get a fresh link.")
+        if not token or not _ATTACHMENT_NAME_RE.fullmatch(name):
+            raise invalid
+        if exp < int(time.time()):
+            raise invalid
+        expected_sig = hmac.new(token.encode(), f"{name}:{exp}".encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected_sig):
+            raise invalid
+        # Only now — after authenticity is proven — does the filesystem get
+        # touched, so a forged/expired request never learns whether a file
+        # of that name exists.
+        attachments_dir = (Path(config.vault_path) / "attachments").resolve()
+        target = (attachments_dir / name).resolve()
+        if not target.is_relative_to(attachments_dir) or not target.is_file():
+            raise Envelope(
+                404, "That attachment isn't in the vault.",
+                "It may have been moved or deleted.",
+                "Reload the screen.")
+        content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
+        return FileResponse(target, media_type=content_type,
+                            headers={"Cache-Control": "private, max-age=600"})
 
     # ---- config (safe subset only — key values never leave the server) --------------
 

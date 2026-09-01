@@ -1092,6 +1092,34 @@ away, then commits again after if anything was removed.
              "never touched, and the vault was git-committed first." }
 ```
 
+## Attachments (Pass F)
+
+### `GET /api/att/{name}?exp=<unix>&sig=<hex>`
+
+Serves a file from the vault's `attachments/` folder. **Not** bearer-token-
+protected — a plain `<img src>` can't send an `Authorization` header, so the
+signed, time-limited query params are the auth instead. Minted server-side by
+`GET /api/resources` and `GET /api/resources/{id}` whenever a resource's
+`cover` frontmatter value is a local `attachments/...` path; an absolute URL
+(picsum, a YouTube thumbnail) passes through unsigned and unchanged — nothing
+outside the vault is ever minted a signed URL.
+
+Signature: HMAC-SHA256 over `{name}:{exp}`, keyed by the same `api.auth_token`
+as every other route. Anyone who could steal a signed URL already had the
+bearer token needed to forge one, so this scheme doesn't introduce a new
+secret — it lets one already-trusted value work over a URL instead of a
+header.
+
+Expiry: 10 minutes. A cover on a long-open screen can outlive its signed URL
+— the frontend doesn't refresh it proactively. The existing `onError →`
+category-initial fallback tile degrades gracefully, and the next natural
+`usePolling` refetch of `/api/resources` re-mints a fresh one.
+
+Errors: 403 for a malformed name, an expired signature, or a bad signature
+(deliberately the identical envelope for all three — no oracle for probing
+which check failed); 404 only after the signature is already proven valid,
+when the named file genuinely isn't in `attachments/`.
+
 ## Search (Pass Q)
 
 ### `GET /api/search?q=&limit=`

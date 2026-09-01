@@ -86,6 +86,14 @@ export function isOffline(): boolean {
 export function getApiBase(): string {
   return localStorage.getItem(BASE_KEY) || DEFAULT_API_BASE;
 }
+// Resource covers (Pass F): a local vault cover comes back as a signed
+// /api/att/... path (server-relative, no auth header possible on an <img>),
+// while picsum/YouTube covers are already-absolute URLs the server never
+// touches — this just prefixes the former with the configured API base.
+export function coverSrc(cover: string | null): string | null {
+  if (!cover) return null;
+  return cover.startsWith("/api/") ? getApiBase() + cover : cover;
+}
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }

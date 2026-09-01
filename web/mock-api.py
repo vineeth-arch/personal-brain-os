@@ -615,7 +615,26 @@ RESOURCE_ITEMS = [] if MODE_EMPTY else [
      "author": None, "where_to_watch": None, "runtime": None, "ingredients": None,
      "steps": None, "tools_mentioned": "Obsidian, Bases", "transcript": None,
      "map_url": None, "best_time": None, "sections": []},
+    # Pass F: demonstrates the signed-attachment cover shape (a local vault
+    # file, minted as /api/att/...) alongside the two absolute-URL fixtures
+    # above, which real signing correctly never touches.
+    {"id": "20260731080000", "title": "Studio wall sketch", "category": "photo",
+     "status": "inbox", "cover": "/api/att/sample.jpg?exp=9999999999&sig=mock",
+     "url": None, "created": "2026-07-31", "sample": False,
+     "file": f"{TYPE_FOLDER['resource']}/2026-07-31-studio-wall-sketch.md",
+     "has_insight": False, "insight": None,
+     "description": "Snapshot of the studio wall layout.", "rating": None,
+     "author": None, "where_to_watch": None, "runtime": None, "ingredients": None,
+     "steps": None, "tools_mentioned": None, "transcript": None,
+     "map_url": None, "best_time": None, "sections": []},
 ]
+
+# A minimal, byte-verified 1x1 RGB PNG (IHDR/IDAT/IEND CRCs checked) — the
+# mock's stand-in for whatever a real attachment file's bytes would be.
+_ONE_PX_PNG = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010802000000907753de"
+    "0000000c4944415478da63f8cfd00000038101809c50452d0000000049454e44ae426082"
+)
 
 # Google fixture data (Pass 12) — served to the live Gmail/Calendar cards.
 GMAIL_MESSAGES = [
@@ -848,6 +867,16 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_bytes(self, code: int, body: bytes, content_type: str) -> None:
+        self.send_response(code)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, OPTIONS")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _json_body(self) -> dict:
         raw = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
         try:
@@ -866,6 +895,13 @@ class Handler(BaseHTTPRequestHandler):
         global ENGINE, NTFY_TESTED, VAULT_SYNCED
         if path == "/api/health":
             return self._send(200, {"ok": True})
+        # Pass F: /api/att/{name} is deliberately unauthenticated in the real
+        # API (signed query params are its auth, not a bearer header) — the
+        # mock mirrors that by answering before the _authed() gate below.
+        # No signature check here: this is a shape reference, not a security
+        # boundary (see API-CONTRACT.md's Attachments section).
+        if path.startswith("/api/att/"):
+            return self._send_bytes(200, _ONE_PX_PNG, "image/png")
         if not self._authed():
             return self._send(
                 401,
