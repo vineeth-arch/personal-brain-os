@@ -1,6 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { api, getTriageTimerEnabled, trustLine } from "../api/client";
-import type { NoteType, ReviewItem, ReviewTrust, SuggestedAttendee } from "../api/types";
+import type {
+  NoteType,
+  ReviewItem,
+  ReviewTrust,
+  SplitProposal,
+  SuggestedAttendee,
+} from "../api/types";
 import { NOTE_TYPES } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
 import { StreakDots } from "../components/StreakDots";
@@ -227,6 +233,59 @@ function PieTimer({ onExpire }: { onExpire: () => void }) {
   );
 }
 
+// A split proposal tracks a DIFFERENT population than the review queue above
+// — an already-filed journal/musing note, not an inbox item — so it renders
+// as its own section, always tonal (Triage's one accent stays on the top
+// review card's Approve button).
+function SplitProposalCard({
+  proposal,
+  onDecide,
+}: {
+  proposal: SplitProposal;
+  onDecide: (id: string, decision: "keep" | "split") => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const decide = async (decision: "keep" | "split") => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.reviewSplitDecision(proposal.id, decision);
+      onDecide(proposal.id, decision);
+      toast(decision === "split" ? "Split into separate notes." : "Kept as one.");
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(envelope ? `${envelope.what} ${envelope.todo}` : "That didn't reach the server.", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <article className="bg-subtle border-subtle rounded-xl border p-5">
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+        {proposal.title}
+      </p>
+      <h3 className="font-cal text-emphasis mt-2 text-xl font-bold leading-tight -tracking-[0.01em]">
+        This sounds like {proposal.segment_titles.length} topics — split it?
+      </h3>
+      <ul className="text-default mt-2 space-y-1 text-sm">
+        {proposal.segment_titles.map((t, i) => (
+          <li key={i}>• {t}</li>
+        ))}
+      </ul>
+      <div className="mt-4 flex gap-2">
+        <button type="button" disabled={busy} onClick={() => decide("keep")}
+          className="border-subtle text-subtle hover:border-emphasis min-h-11 flex-1 rounded-xl border text-sm font-bold disabled:opacity-60">
+          Keep as one
+        </button>
+        <button type="button" disabled={busy} onClick={() => decide("split")}
+          className="border-subtle text-subtle hover:border-emphasis min-h-11 flex-1 rounded-xl border text-sm font-bold disabled:opacity-60">
+          Split
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function EmptyState({ trust }: { trust: ReviewTrust | undefined }) {
   const streak = usePolling(api.streak);
   return (
@@ -257,6 +316,13 @@ export function Triage() {
   // while the POST is still in flight.
   const decided = useRef<Set<string>>(new Set());
 
+  // Split proposals track a DIFFERENT population (already-filed notes, not
+  // the review queue) — same optimistic-removal shape as `items`/`decided`
+  // above, kept separate so a decided proposal disappears immediately
+  // without waiting for the next poll, regardless of queue state.
+  const [proposals, setProposals] = useState<SplitProposal[] | null>(null);
+  const decidedProposals = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     if (review.data) {
       // Oldest first: the note that has waited longest is the one to decide.
@@ -265,8 +331,16 @@ export function Triage() {
           .filter((i) => !decided.current.has(i.id))
           .sort((a, b) => a.created.localeCompare(b.created)),
       );
+      setProposals(
+        review.data.split_proposals.filter((p) => !decidedProposals.current.has(p.id)),
+      );
     }
   }, [review.data]);
+
+  const decideProposal = (id: string, _decision: "keep" | "split") => {
+    decidedProposals.current.add(id);
+    setProposals((cur) => (cur ? cur.filter((p) => p.id !== id) : cur));
+  };
 
   const decide = async (item: ReviewItem, type: NoteType, attendeeIds: string[] = []) => {
     // One tap = one decision. Animate out (instant under reduced motion), then POST.
@@ -319,7 +393,20 @@ export function Triage() {
   }
 
   const queue = items ?? [];
-  if (queue.length === 0) return <EmptyState trust={review.data?.trust} />;
+  const splitProposals = proposals ?? [];
+  // Split proposals track an already-filed note, a completely different
+  // population from the needs-review queue above — so they render below the
+  // queue's own empty state too, not only when there's something to triage.
+  if (queue.length === 0) {
+    return (
+      <div className="space-y-4">
+        <EmptyState trust={review.data?.trust} />
+        {splitProposals.map((p) => (
+          <SplitProposalCard key={p.id} proposal={p} onDecide={decideProposal} />
+        ))}
+      </div>
+    );
+  }
 
   // visibleCount outruns the queue as items are decided — the count on screen
   // and the [n more] label both work off what is actually left.
@@ -364,6 +451,9 @@ export function Triage() {
           {Math.min(PAGE, rest)} more
         </button>
       )}
+      {splitProposals.map((p) => (
+        <SplitProposalCard key={p.id} proposal={p} onDecide={decideProposal} />
+      ))}
     </div>
   );
 }

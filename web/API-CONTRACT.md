@@ -81,7 +81,13 @@ apart from "bad token".
   } ],
   "queue_total": 1,
   "accuracy": { "unchanged": 47, "total": 50 },
-  "trust": { "gated_month": 41, "drained_month": 0 }
+  "trust": { "gated_month": 41, "drained_month": 0 },
+  "split_proposals": [ {
+    "id": "20260628070000",
+    "title": "sunday-morning-notes",
+    "segment_titles": ["The client call went sideways", "Grocery run for the week"],
+    "confidence": 0.82
+  } ]
 }
 ```
 
@@ -125,6 +131,15 @@ frontmatter completely untouched and simply stops appearing in `items` here.
 Parked notes are not deleted — a human can still find and re-file them by
 hand — they're just out of the daily queue.
 
+`split_proposals` (Pass E, Task E1) — a DIFFERENT population from `items`
+above: an already-filed journal/musing note (routed straight through, no
+review gate) that the pipeline's post-route LLM check thinks covers more than
+one topic. Each entry is `{id, title, segment_titles, confidence}` — a pure
+events.db read (no vault scan), since the proposing call already logged the
+full segment breakdown as JSON at classify/route time. Rendered as its own
+section below the review queue, uncounted by the 5-item pagination. See
+`POST /api/review/split/{id}` for the decision.
+
 ### `POST /api/review/{id}/approve`
 
 Request `{"type": "learning", "attendees": []}` — `type` is one of the 13 note
@@ -141,6 +156,28 @@ confirmed person gets `attendees:` filled in on the moved note (as
 a human confirmation does (CLAUDE.md §3).
 
 `200 {"ok": true, "moved_to": "03-Learnings/2026-07-03-note-title.md"}`
+
+### `POST /api/review/split/{id}`
+
+Decide a pending split proposal from `GET /api/review`'s `split_proposals`.
+Request `{"decision": "keep" | "split"}`.
+
+Review-gated by design: the note is NEVER split without this explicit human
+decision — `propose()` in the pipeline only ever logs a suggestion. On
+`decision: "keep"` the proposal is dismissed (a `stage=split status=ok`
+events row supersedes the pending one) and nothing in the vault changes —
+`child_ids` is always `[]`. On `decision: "split"` the parent note is
+archived in place (`status: archived`, full original text intact, never
+deleted) and one child note per segment is written — full frontmatter from
+the parent, `origin: ai`, body = that segment's lines verbatim plus a trailing
+`- derived-from:: [[<parent_id>]] (split from a multi-topic capture)` edge
+line. Every child body concatenated back together reproduces the parent's
+original body exactly. One vault commit for the whole batch.
+
+`200 {"ok": true, "decision": "split", "child_ids": ["202607030700001", "202607030700002"]}`
+
+A second decision call on an already-decided proposal 404s — it's no longer
+pending. Unknown id → 404; a `decision` that isn't `keep`/`split` → 400.
 
 ### `POST /api/capture`
 

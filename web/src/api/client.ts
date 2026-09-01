@@ -224,6 +224,13 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ type, attendees }),
     }),
+  // Pass E (Task E1): decide a pending multi-topic split proposal. The note
+  // is never split without this explicit human decision.
+  reviewSplitDecision: (id: string, decision: "keep" | "split") =>
+    request<{ ok: boolean; decision: string; child_ids: string[] }>(
+      `/api/review/split/${encodeURIComponent(id)}`,
+      { method: "POST", body: JSON.stringify({ decision }) },
+    ),
   capture: (text: string, tag: CaptureTag | null, captureKey?: string) =>
     request<{ id: string; status: string }>("/api/capture", {
       method: "POST",

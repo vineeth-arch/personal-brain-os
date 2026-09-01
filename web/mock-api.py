@@ -351,6 +351,26 @@ REVIEW_ITEMS = [
 ACCURACY = None if MODE_EMPTY else {"unchanged": 47, "total": 50}
 TRUST = {"gated_month": 0 if MODE_EMPTY else 41, "drained_month": 0 if MODE_EMPTY else 7}
 
+# Pass E (Task E1): a pending multi-topic split proposal — an already-filed
+# journal/musing note the pipeline thinks covers more than one topic. Shown
+# below the review queue, uncounted by its 5-item pagination.
+SPLIT_PROPOSALS = (
+    []
+    if MODE_EMPTY
+    else [
+        {
+            "id": "20260628070000",
+            "title": "sunday-morning-notes",
+            "segment_titles": [
+                "The client call went sideways",
+                "Grocery run and meal prep for the week",
+                "An idea for the onboarding flow",
+            ],
+            "confidence": 0.82,
+        },
+    ]
+)
+
 FAILED_ITEMS = (
     []
     if FAILED_COUNT == 0
@@ -956,6 +976,7 @@ class Handler(BaseHTTPRequestHandler):
                     "queue_total": len(REVIEW_ITEMS),
                     "accuracy": ACCURACY,
                     "trust": TRUST,
+                    "split_proposals": SPLIT_PROPOSALS,
                 })
             if path == "/api/failed":
                 return self._send(200, {"items": FAILED_ITEMS})
@@ -1470,6 +1491,31 @@ class Handler(BaseHTTPRequestHandler):
                     if item["id"] == note_id:
                         REVIEW_ITEMS.remove(item)
                 return self._send(200, {"ok": True, "moved_to": f"{folder}/approved-note.md"})
+            if path.startswith("/api/review/split/"):
+                note_id = path.split("/")[4]
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                print("SPLIT DECISION", note_id, raw)
+                try:
+                    decision = json.loads(raw or b"{}").get("decision")
+                except json.JSONDecodeError:
+                    decision = None
+                if decision not in ("keep", "split"):
+                    return self._send(400, {"error": {
+                        "what": "That's not a split decision the server understands.",
+                        "cause": f"'{decision}' isn't keep or split.",
+                        "todo": "Tap Keep as one or Split."}})
+                proposal = next((p for p in SPLIT_PROPOSALS if p["id"] == note_id), None)
+                if proposal is None:
+                    return self._send(404, {"error": {
+                        "what": "That split proposal isn't waiting anymore.",
+                        "cause": "It was already decided, or the id is unknown.",
+                        "todo": "Refresh the triage screen."}})
+                SPLIT_PROPOSALS.remove(proposal)
+                child_ids = (
+                    [f"{note_id}{i}" for i in range(1, len(proposal["segment_titles"]) + 1)]
+                    if decision == "split" else []
+                )
+                return self._send(200, {"ok": True, "decision": decision, "child_ids": child_ids})
             if path.startswith("/api/failed/") and path.endswith("/retry"):
                 print("RETRY", path.split("/")[3])
                 FAILED_ITEMS.clear()

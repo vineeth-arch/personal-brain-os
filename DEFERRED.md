@@ -1,6 +1,6 @@
 # Logged for after the 30-day test
 
-- Multi-topic splitter: auto-split a genuinely multi-topic journal/musing recording into multiple notes (needs an LLM topic-segmenter; route.py has the SPLITTABLE seam).
+- ~~Multi-topic splitter: auto-split a genuinely multi-topic journal/musing recording into multiple notes (needs an LLM topic-segmenter; route.py has the SPLITTABLE seam).~~ — SHIPPED in Pass E (Task E1), review-gated rather than auto-split: `pipeline/split.py` proposes a split (never executes it) as a pure events.db suggestion; a human taps [Keep as one]/[Split] on Triage's proposal card, which calls `api/notes.py::execute_split` — the note itself is never touched without that explicit decision.
 - Custom PWA install prompt/button (browser default install affordance is used for now).
 - Settings: edit server *paths* (vault/inbox/archive/failed) from the cockpit — engine, threshold, and ntfy became editable in Pass 4; paths stay server-side.
 - ~~Capture confirmation echoes the first line of what was heard (transcript echo) — research B1.~~ — SHIPPED in Pass A: the toast/capture_log/ntfy echo the first ~10 words heard/seen (`pipeline/echo.py`).

@@ -95,11 +95,22 @@ export interface ReviewTrust {
   drained_month: number;
 }
 
+// A pending multi-topic split proposal (Pass E, Task E1) — an already-filed
+// journal/musing note the pipeline thinks covers more than one topic. Pure
+// events.db bookkeeping: the note itself is untouched until a human decides.
+export interface SplitProposal {
+  id: string;
+  title: string;
+  segment_titles: string[];
+  confidence: number;
+}
+
 export interface ReviewResponse {
   items: ReviewItem[];
   queue_total: number;
   accuracy: ReviewAccuracy | null;
   trust: ReviewTrust;
+  split_proposals: SplitProposal[];
 }
 
 export interface FailedItem {
