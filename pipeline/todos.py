@@ -17,6 +17,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from . import errors, morning
+from . import resurface as resurface_mod
 
 TZ = ZoneInfo("Asia/Kolkata")
 TODOS_FOLDER = "06-Todos"
@@ -195,6 +196,9 @@ def _tick(config, events, now: datetime) -> None:
         lines.append(" · ".join(summary))
     if drain_filed:
         lines.append(f"{drain_filed} old items filed at best guess — one command undoes it.")
+    picked = resurface_mod.pick(Path(config.vault_path), events.db_path, k=1, now=now.date())
+    if picked:
+        lines.append(f"Resurfaced: {picked[0]['title']}")
     if overdue:
         lines.append("Overdue:")
         lines += [f"• {t.task} (was {t.due})" for t in overdue]

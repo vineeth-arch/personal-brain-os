@@ -191,6 +191,13 @@ class NewPersonBody(BaseModel):
     channel: ChannelBody
 
 
+class ResurfacedResponseBody(BaseModel):
+    action: str
+    # the card's own title, sent by the client rather than looked up
+    # server-side — see the route below for why
+    title: str = ""
+
+
 def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAPI:
     root = Path(root or DEFAULT_ROOT)          # state: config, db, heartbeat, backups
     app_root = Path(app_root or APP_ROOT)      # code: web/dist, checks.json, probes
@@ -337,7 +344,29 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
 
     @app.get("/api/resurfaced")
     def resurfaced(config=Depends(require_token)):
-        return {"note": notes.resurface(config.vault_path)}
+        notes_list = notes.resurface(config.vault_path, db_path, k=2)
+        return {"note": notes_list[0] if notes_list else None, "notes": notes_list}
+
+    @app.post("/api/resurfaced/{note_id}/response")
+    def resurfaced_response(note_id: str, body: ResurfacedResponseBody,
+                            config=Depends(require_token)):
+        if body.action not in ("connect", "act", "archive"):
+            raise Envelope(
+                400, "That's not a response this screen understands.",
+                f"'{body.action}' isn't connect, act, or archive.",
+                "Use one of the three resurfaced-note buttons.")
+        # title is needed for the todo line's text on "act". A server-side
+        # re-pick (pipeline.resurface.pick again) would NOT reliably find this
+        # note: pick() stamps last_shown/shows on every call it makes,
+        # including the GET that put this card on screen — so by the time the
+        # user taps a button, the note is already inside its OWN cooldown
+        # window and a fresh pick() call would exclude it. The client already
+        # has the title (it's rendering the card), so it rides along in the
+        # request body instead — simpler and doesn't depend on picker timing.
+        title = body.title.strip() or note_id
+        todo_block = notes.resurface_respond(config.vault_path, db_path, note_id,
+                                             body.action, title)
+        return {"ok": True, "todo_block": todo_block}
 
     TODO_RANGES = ("today", "tomorrow", "week", "overdue")
 

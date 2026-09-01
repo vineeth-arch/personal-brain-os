@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import random
 import re
 import shutil
 import sqlite3
@@ -21,6 +20,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from pipeline import classify, relationships, route
+from pipeline import resurface as resurface_mod
 from pipeline.enrich import insight_text as _insight_text
 from pipeline.events import EventLog
 
@@ -604,35 +604,49 @@ def image_insight_sidecar(image_path: Path) -> Path:
     return image_path.with_name(f".{image_path.stem}{INSIGHT_SIDECAR_SUFFIX}")
 
 
-# ---- resurface ----------------------------------------------------------------
+# ---- resurface (Pass R, B6) --------------------------------------------------
+# The candidate scan, cooldown/weight algorithm, and events.db bookkeeping all
+# live in pipeline/resurface.py — pure, self-contained, no api/ imports (this
+# package's binding design ruling). The two functions below are the thin
+# api/-facing surface: the vault write (todo-file append) `act` needs, and a
+# delegation wrapper so main.py's `notes.*` import surface doesn't change shape.
 
-def resurface(vault: Path) -> dict | None:
-    """One deterministic pick per day from the knowledge folders (musing →
-    02-Musings, learning → 03-Learnings, insight → wiki/, per
-    route.TYPE_FOLDER). The merged candidate list is sorted folder-then-date
-    (not globally date-interleaved) — stable and deterministic, which is all
-    the daily pick needs."""
-    folders = [vault / route.TYPE_FOLDER[t] for t in ("musing", "learning", "insight")]
-    candidates = sorted(
-        p
-        for folder in folders
-        if folder.is_dir()
-        for p in folder.glob("*.md")
-        if (read_note(p) or "").startswith("---\n")
-    )
-    if not candidates:
+def resurface(vault: Path, db_path: Path, k: int = 1) -> list[dict]:
+    """The notes.py-facing entry point GET /api/resurfaced calls — thin
+    delegation to pipeline.resurface.pick, kept here so main.py's import
+    surface for `notes.*` doesn't change shape."""
+    return resurface_mod.pick(vault, db_path, k)
+
+
+def resurface_respond(vault: Path, db_path: Path, note_id: str, action: str,
+                      title: str) -> str | None:
+    """Handle a Connect/Act/Archive tap from the Today screen. Returns the
+    todo block id when `action == "act"` wrote one, else None. `connect` and
+    `archive` only touch events.db (no vault write, no commit needed) —
+    only `act` writes to the vault."""
+    if action != "act":
+        resurface_mod.record_response(db_path, note_id, action)
         return None
-    pick = random.Random(date.today().toordinal()).choice(candidates)
-    fm, body = parse_frontmatter(read_note(pick) or "")
-    paragraph = next((p.strip() for p in body.split("\n\n") if p.strip()), "")
-    return {
-        "id": fm.get("id", ""),
-        "title": _DATE_PREFIX_RE.sub("", pick.stem),
-        "file": str(pick.relative_to(vault)),
-        "excerpt": paragraph[:EXCERPT_CHARS],
-        "type": fm.get("type", "musing"),
-        "created": fm.get("created", ""),
-    }
+
+    todos_dir = vault / "06-Todos"
+    todos_dir.mkdir(parents=True, exist_ok=True)
+    today_file = todos_dir / f"{date.today().isoformat()}.md"
+    i = 1
+    existing = today_file.read_text(encoding="utf-8") if today_file.exists() else ""
+    while f"^{note_id}-r{i}" in existing:
+        i += 1
+    block_id = f"{note_id}-r{i}"
+    line = f"- [ ] Follow up: {title} (from [[{note_id}]]) ^{block_id}"
+
+    if not today_file.exists() or today_file.stat().st_size == 0:
+        today_file.write_text(f"# Todos — {date.today().isoformat()}\n\n{line}\n", encoding="utf-8")
+    else:
+        with today_file.open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+
+    resurface_mod.record_response(db_path, note_id, action)
+    git_commit_vault(vault, f"api: resurfaced {note_id} → todo")
+    return f"^{block_id}"
 
 
 # ---- resources (Pass 6) -----------------------------------------------------

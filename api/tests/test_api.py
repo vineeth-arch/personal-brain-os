@@ -587,11 +587,14 @@ def test_streak_totals_and_window(env):
         assert body["last7"] == 7
 
 
-def test_resurfaced_deterministic_and_null(env):
+def test_resurfaced_notes_list_and_backcompat_note(env):
+    """Pass R (B6): GET /api/resurfaced returns both the plural `notes` list
+    (up to 2, for Today) and `note` as a back-compat alias for notes[0]."""
     root, vault, _, _ = env
     with Server(root) as s:
-        assert s.req("GET", "/api/resurfaced")[1]["note"] is None  # nothing to resurface
-        # one note in each of the three knowledge folders — resurface() must
+        code, body = s.req("GET", "/api/resurfaced")
+        assert code == 200 and body["note"] is None and body["notes"] == []
+        # one note in each of the three knowledge folders — the picker must
         # glob across all three, not just one
         _note(vault / "wiki" / "2026-02-14-idea.md", "20260214093000", "insight", "active",
               "First paragraph here.\n\nSecond.")
@@ -599,11 +602,65 @@ def test_resurfaced_deterministic_and_null(env):
               "A musing.")
         _note(vault / "03-Learnings" / "2026-02-16-fact.md", "20260216093000", "learning", "active",
               "A learning.")
+        code, body = s.req("GET", "/api/resurfaced")
+        all_ids = {"20260214093000", "20260215093000", "20260216093000"}
+        assert code == 200
+        assert 1 <= len(body["notes"]) <= 2
+        assert {n["id"] for n in body["notes"]} <= all_ids
+        assert body["note"] == body["notes"][0]  # back-compat alias, not a separate pick
+
+
+def test_resurfaced_response_invalid_action(env):
+    root, _, _, _ = env
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/resurfaced/some-id/response", {"action": "nope"})
+        assert code == 400 and set(body["error"]) == {"what", "cause", "todo"}
+
+
+def test_resurfaced_response_archive_excludes_from_later_gets(env):
+    root, vault, _, _ = env
+    _note(vault / "wiki" / "2026-02-14-idea.md", "20260214093000", "insight", "active",
+          "Only candidate.")
+    with Server(root) as s:
         first = s.req("GET", "/api/resurfaced")[1]["note"]
-        assert first["id"] in {"20260214093000", "20260215093000", "20260216093000"}
-        assert s.req("GET", "/api/resurfaced")[1]["note"]["id"] == first["id"]  # stable within a day
-        # the pick can come from any of the three folders (deterministic per day)
-        assert first["file"].split("/")[0] in {"wiki", "02-Musings", "03-Learnings"}
+        assert first["id"] == "20260214093000"
+        code, body = s.req(
+            "POST", "/api/resurfaced/20260214093000/response",
+            {"action": "archive", "title": first["title"]})
+        assert code == 200 and body == {"ok": True, "todo_block": None}
+        code, body = s.req("GET", "/api/resurfaced")
+        assert code == 200 and body["note"] is None and body["notes"] == []
+
+
+def test_resurfaced_response_connect_no_todo_written(env):
+    root, vault, _, _ = env
+    with Server(root) as s:
+        code, body = s.req(
+            "POST", "/api/resurfaced/some-id/response",
+            {"action": "connect", "title": "Some Title"})
+        assert code == 200 and body == {"ok": True, "todo_block": None}
+    assert not (vault / "06-Todos").exists() or not list((vault / "06-Todos").glob("*.md"))
+
+
+def test_resurfaced_response_act_writes_todo_with_collision_suffix(env):
+    root, vault, _, _ = env
+    note_id = "20260214093000"
+    with Server(root) as s:
+        code, body = s.req(
+            "POST", f"/api/resurfaced/{note_id}/response",
+            {"action": "act", "title": "Constraints beat aspirations"})
+        assert code == 200 and body["todo_block"] == f"^{note_id}-r1"
+        # a second "act" on the SAME note the same day must not collide —
+        # -r1 is taken, so it gets -r2
+        code, body = s.req(
+            "POST", f"/api/resurfaced/{note_id}/response",
+            {"action": "act", "title": "Constraints beat aspirations"})
+        assert code == 200 and body["todo_block"] == f"^{note_id}-r2"
+    today_file = vault / "06-Todos" / f"{date.today().isoformat()}.md"
+    text = today_file.read_text(encoding="utf-8")
+    assert f"^{note_id}-r1" in text and f"^{note_id}-r2" in text
+    assert text.count("Follow up: Constraints beat aspirations") == 2
+    assert f"(from [[{note_id}]])" in text
 
 
 def test_run_conflict(env, monkeypatch):
