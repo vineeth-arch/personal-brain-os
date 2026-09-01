@@ -31,8 +31,8 @@ and the mock in the same commit.
   (`datetime.now().isoformat(timespec="seconds")`). Dates are `YYYY-MM-DD`.
 - **Vocabularies** — two distinct lists (never conflate; see
   `pipeline/classify.py`):
-  - note **types** (11): `musing learning todo journal project person resource
-    decision principle insight reflection`
+  - note **types** (13): `musing learning todo journal project person resource
+    decision principle insight reflection company conversation`
   - capture **tags** (8): `todo idea journal learning person resource decision
     project`
 
@@ -66,16 +66,22 @@ apart from "bad token".
 ### `GET /api/review`
 
 ```json
-{ "items": [ {
-  "id": "20260703054000",
-  "file": "00-Inbox/2026-07-03-note.md",
-  "title": "note-title",
-  "excerpt": "first ~300 chars of the note body",
-  "suggested_type": "learning",
-  "confidence": 0.7,
-  "created": "2026-07-03",
-  "suggested_attendees": []
-} ] }
+{
+  "items": [ {
+    "id": "20260703054000",
+    "file": "00-Inbox/2026-07-03-note.md",
+    "title": "note-title",
+    "excerpt": "first ~300 chars of the note body",
+    "suggested_type": "learning",
+    "confidence": 0.7,
+    "evidence": "mentions 'remind me' and a date",
+    "created": "2026-07-03",
+    "suggested_attendees": []
+  } ],
+  "queue_total": 1,
+  "accuracy": { "unchanged": 47, "total": 50 },
+  "trust": { "gated_month": 41, "drained_month": 0 }
+}
 ```
 
 Notes whose classification fell below the confidence threshold, PLUS every
@@ -90,6 +96,15 @@ suggest. For a conversation, each entry is
 — a SUGGESTION only (`pipeline.plaud.match_people`, conservative: it never
 guesses between two people sharing a name). Nothing is written to the note or
 to a person until confirmed via approve's `attendees` list below.
+
+`queue_total` is the full count of items in `items` (informational — a future
+pass may slice the array itself, this field lets the client show "N total"
+regardless). `accuracy` is `null` until at least 10 approve decisions exist,
+otherwise `{"unchanged": ..., "total": ...}` over the last 50 approve
+decisions — how many needed no correction from the human. `trust.gated_month`
+and `trust.drained_month` count this calendar month's approve / drain events
+respectively (`drained_month` is always `0` until a later pass adds the drain
+job — documented here now so the contract doesn't need a second edit then).
 
 ### `POST /api/review/{id}/approve`
 

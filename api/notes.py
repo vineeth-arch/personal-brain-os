@@ -22,6 +22,7 @@ from pathlib import Path
 
 from pipeline import classify, relationships, route
 from pipeline.enrich import insight_text as _insight_text
+from pipeline.events import EventLog
 
 log = logging.getLogger("api")
 
@@ -248,7 +249,8 @@ def count_review(vault: Path) -> int:
 
 
 def approve(vault: Path, note_id: str, new_type: str,
-           attendees: list[str] | None = None) -> str:
+           attendees: list[str] | None = None, *,
+           events: EventLog | None = None) -> str:
     """Restamp type/status and move the note to its folder. Returns the
     vault-relative destination. Raises LookupError if the id isn't in review.
 
@@ -259,9 +261,14 @@ def approve(vault: Path, note_id: str, new_type: str,
     same relationships.log_contact the People screen uses (CLAUDE.md §3 — no
     AI bulk-write reaches a person note unreviewed). An id that doesn't
     resolve to a real person is skipped rather than failing the whole
-    approve — a stale suggestion should not block filing the note."""
+    approve — a stale suggestion should not block filing the note.
+
+    `events` — optional; when given, logs an "approve" event recording what
+    the classifier suggested vs. what the human chose (accuracy tracking,
+    B3). Omitted by callers that don't care about the event log."""
     inbox_dir = vault / route.INBOX_FOLDER
     target: Path | None = None
+    found_fm: dict = {}
     text = ""
     if inbox_dir.is_dir():
         for path in inbox_dir.glob("*.md"):
@@ -272,9 +279,11 @@ def approve(vault: Path, note_id: str, new_type: str,
             fm, _ = parse_frontmatter(text)
             if fm.get("id") == note_id and fm.get("status") == "needs-review":
                 target = path
+                found_fm = fm
                 break
     if target is None:
         raise LookupError(note_id)
+    suggested = found_fm.get("type") or "none"
 
     new_status = route.STATUS_INITIAL.get(new_type, "active")
     dest_dir = vault / route.TYPE_FOLDER[new_type]
@@ -324,6 +333,10 @@ def approve(vault: Path, note_id: str, new_type: str,
             dest.write_text(
                 route.stamp_list_field(fm_block, "attendees", confirmed_ids) + sep + body,
                 encoding="utf-8")
+
+    if events is not None:
+        events.log(str(target), "approve", "ok",
+                   message=f"id={note_id} suggested={suggested} chosen={new_type}")
 
     commit_msg = f"api: filed {note_id} as {new_type}"
     if confirmed_names:

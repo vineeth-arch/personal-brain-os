@@ -62,6 +62,7 @@ REVIEW_ITEMS = [
         ),
         "suggested_type": "learning",
         "confidence": 0.70,
+        "evidence": "mentions the Dubai project by name",
         "created": "2026-07-03",
     },
     {
@@ -74,6 +75,7 @@ REVIEW_ITEMS = [
         ),
         "suggested_type": "musing",
         "confidence": 0.55,
+        "evidence": None,
         "created": "2026-07-02",
     },
     {
@@ -87,9 +89,13 @@ REVIEW_ITEMS = [
         ),
         "suggested_type": "resource",
         "confidence": 0.62,
+        "evidence": "mentions a book title and an author",
         "created": "2026-07-02",
     },
 ][: NEEDS_REVIEW]
+
+ACCURACY = None if MODE_EMPTY else {"unchanged": 47, "total": 50}
+TRUST = {"gated_month": 0 if MODE_EMPTY else 41, "drained_month": 0 if MODE_EMPTY else 7}
 
 FAILED_ITEMS = (
     []
@@ -630,7 +636,12 @@ class Handler(BaseHTTPRequestHandler):
                     },
                 })
             if path == "/api/review":
-                return self._send(200, {"items": REVIEW_ITEMS})
+                return self._send(200, {
+                    "items": REVIEW_ITEMS,
+                    "queue_total": len(REVIEW_ITEMS),
+                    "accuracy": ACCURACY,
+                    "trust": TRUST,
+                })
             if path == "/api/failed":
                 return self._send(200, {"items": FAILED_ITEMS})
             if path == "/api/events":

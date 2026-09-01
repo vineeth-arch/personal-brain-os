@@ -31,7 +31,7 @@ import type {
   PushResult,
   PushTarget,
   ResurfacedNote,
-  ReviewItem,
+  ReviewResponse,
   Resource,
   ResourceDetail,
   ResourceStatus,
@@ -178,7 +178,7 @@ export const api = {
     ),
   health: (base: string) => fetch(`${base.replace(/\/+$/, "")}/api/health`, { cache: "no-store" }),
   status: () => request<Status>("/api/status"),
-  review: () => request<{ items: ReviewItem[] }>("/api/review"),
+  review: () => request<ReviewResponse>("/api/review"),
   // attendees: confirmed 07-People ids from the triage screen's chips — the
   // pipeline only ever SUGGESTS them; this is what actually writes them
   // (CLAUDE.md §3). Ignored server-side for anything but type: conversation.

@@ -77,10 +77,28 @@ export interface ReviewItem {
   excerpt: string;
   suggested_type: NoteType;
   confidence: number;
+  evidence: string | null;
   created: string;
   // always present ([] when there is nothing to suggest — never only on
   // type: conversation), so the client never has to special-case a missing key
   suggested_attendees: SuggestedAttendee[];
+}
+
+export interface ReviewAccuracy {
+  unchanged: number;
+  total: number;
+}
+
+export interface ReviewTrust {
+  gated_month: number;
+  drained_month: number;
+}
+
+export interface ReviewResponse {
+  items: ReviewItem[];
+  queue_total: number;
+  accuracy: ReviewAccuracy | null;
+  trust: ReviewTrust;
 }
 
 export interface FailedItem {

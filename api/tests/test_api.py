@@ -223,6 +223,79 @@ def test_approve_write_path(env):
         assert s.req("POST", "/api/review/20260701090001/approve", {"type": "nope"})[0] == 400
 
 
+def test_approve_logs_accuracy_event(env):
+    root, vault, _, _ = env
+    _note(vault / "00-Inbox" / "2026-07-01-walk.md", "20260701090000", "musing", "needs-review",
+          "the note body")
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/review/20260701090000/approve", {"type": "learning"})
+        assert code == 200
+
+        conn = sqlite3.connect(root / "events.db")
+        rows = conn.execute(
+            "SELECT message FROM events WHERE stage='approve' AND status='ok'").fetchall()
+        conn.close()
+        assert len(rows) == 1
+        assert rows[0][0] == "id=20260701090000 suggested=musing chosen=learning"
+
+        # only 1 approval so far — below the 10-approval floor for accuracy
+        code, body = s.req("GET", "/api/review")
+        assert code == 200
+        assert body["accuracy"] is None
+
+
+def test_accuracy_math(env):
+    root, _, _, _ = env
+    rows = [
+        {"timestamp": "2026-07-01T09:00:00", "file": "/in/a.md", "stage": "approve",
+         "status": "ok", "message": f"id={i} suggested=learning chosen=learning"}
+        for i in range(47)
+    ] + [
+        {"timestamp": "2026-07-01T09:00:00", "file": "/in/b.md", "stage": "approve",
+         "status": "ok", "message": f"id={i} suggested=musing chosen=journal"}
+        for i in range(3)
+    ]
+    _seed_events(root / "events.db", rows)
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/review")
+        assert code == 200
+        assert body["accuracy"] == {"unchanged": 47, "total": 50}
+
+
+def test_accuracy_null_below_ten(env):
+    root, _, _, _ = env
+    rows = [
+        {"timestamp": "2026-07-01T09:00:00", "file": "/in/a.md", "stage": "approve",
+         "status": "ok", "message": f"id={i} suggested=learning chosen=learning"}
+        for i in range(9)
+    ]
+    _seed_events(root / "events.db", rows)
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/review")
+        assert code == 200
+        assert body["accuracy"] is None
+
+
+def test_trust_month_counts(env):
+    root, _, _, _ = env
+    this_month = date.today().isoformat()[:7]
+    last_month_date = date.today().replace(day=1) - timedelta(days=1)
+    rows = [
+        {"timestamp": f"{this_month}-01T09:00:00", "file": "/in/a.md", "stage": "approve",
+         "status": "ok", "message": "id=1 suggested=learning chosen=learning"},
+        {"timestamp": f"{this_month}-02T09:00:00", "file": "/in/b.md", "stage": "approve",
+         "status": "ok", "message": "id=2 suggested=learning chosen=learning"},
+        {"timestamp": f"{last_month_date.isoformat()}T09:00:00", "file": "/in/c.md",
+         "stage": "approve", "status": "ok",
+         "message": "id=3 suggested=learning chosen=learning"},
+    ]
+    _seed_events(root / "events.db", rows)
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/review")
+        assert code == 200
+        assert body["trust"] == {"gated_month": 2, "drained_month": 0}
+
+
 def test_capture_roundtrip(env):
     root, _, inbox, _ = env
     from pipeline import intake

@@ -314,7 +314,13 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
 
     @app.get("/api/review")
     def review(config=Depends(require_token)):
-        return {"items": notes.list_review(config.vault_path, db_path)}
+        items = notes.list_review(config.vault_path, db_path)
+        return {
+            "items": items,
+            "queue_total": len(items),
+            "accuracy": service.accuracy(db_path),
+            "trust": service.trust(db_path),
+        }
 
     @app.get("/api/failed")
     def failed(config=Depends(require_token)):
@@ -435,15 +441,19 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         if body.type not in classify.NOTE_TYPES:
             raise Envelope(
                 400, "That's not a note type the vault knows.",
-                f"'{body.type}' isn't one of the 11 types in SCHEMA-REFERENCE.md.",
+                f"'{body.type}' isn't one of the 13 types in SCHEMA-REFERENCE.md.",
                 "Pick one of the type chips and try again.")
+        events = EventLog(db_path, Path(config.vault_path))
         try:
-            moved_to = notes.approve(config.vault_path, note_id, body.type, body.attendees)
+            moved_to = notes.approve(config.vault_path, note_id, body.type, body.attendees,
+                                     events=events)
         except LookupError:
             raise Envelope(
                 404, "That note isn't waiting for review anymore.",
                 "It was already approved (possibly from another device), or the id is unknown.",
                 "Refresh the triage queue.")
+        finally:
+            events.close()
         return {"ok": True, "moved_to": moved_to}
 
     @app.post("/api/capture", status_code=201)

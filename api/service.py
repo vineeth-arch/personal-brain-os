@@ -4,6 +4,7 @@ and never create the db as a side effect."""
 from __future__ import annotations
 
 import logging
+import re
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
@@ -107,6 +108,55 @@ def streak(db_path: Path) -> dict:
         current += 1
         cursor -= timedelta(days=1)
     return {"current": current, "days": days}
+
+
+def accuracy(db_path: Path) -> dict | None:
+    """Of the last 50 approve decisions, how many needed no correction —
+    the classifier suggested type X and the human picked X. None when
+    fewer than 10 approvals exist yet — not enough signal to show a
+    percentage without it reading as noise."""
+    rows = _rows(
+        db_path,
+        "SELECT message FROM events WHERE stage='approve' AND status='ok' "
+        "ORDER BY id DESC LIMIT 50",
+    )
+    if len(rows) < 10:
+        return None
+    unchanged = 0
+    total = 0
+    for (message,) in rows:
+        m = re.search(r"suggested=(\S+) chosen=(\S+)", message or "")
+        if not m:
+            continue
+        total += 1
+        if m.group(1) != "none" and m.group(1) == m.group(2):
+            unchanged += 1
+    return {"unchanged": unchanged, "total": total}
+
+
+def trust(db_path: Path) -> dict:
+    """This-calendar-month counts for the Triage/Settings trust line:
+    how many notes were gated through a human decision (approve events)
+    vs. filed automatically at best guess (drain events, once Task A5
+    exists — 0 until then, this function is written now so A5 only has
+    to add one more WHERE clause, not a new function)."""
+    month_prefix = date.today().isoformat()[:7]  # "YYYY-MM"
+    gated = _rows(
+        db_path,
+        "SELECT COUNT(*) FROM events WHERE stage='approve' AND status='ok' "
+        "AND timestamp LIKE ?",
+        (month_prefix + "%",),
+    )
+    drained = _rows(
+        db_path,
+        "SELECT COUNT(*) FROM events WHERE stage='drain' AND status='ok' "
+        "AND timestamp LIKE ?",
+        (month_prefix + "%",),
+    )
+    return {
+        "gated_month": gated[0][0] if gated else 0,
+        "drained_month": drained[0][0] if drained else 0,
+    }
 
 
 def parse_plain_error(plain: str) -> dict:
