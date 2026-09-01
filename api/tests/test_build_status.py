@@ -12,8 +12,9 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 
+from api import build_status
 from api.build_status import (_PROBES, _probe_binary_runs, _probe_config_field_contains,
-                              _probe_file_contains, _probe_file_exists,
+                              _probe_file_contains, _probe_file_exists, _probe_url_ok,
                               _probe_vault_sync_configured, _probe_whisper_model_present)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -134,6 +135,7 @@ def test_every_manifest_item_carries_the_fields_its_probe_needs():
         "file_contains": lambda i: i.get("path") and i.get("needle"),
         "config_field_set": lambda i: i.get("field"),
         "config_field_contains": lambda i: i.get("field") and i.get("needle"),
+        "url_ok": lambda i: True,
         "binary_runs": lambda i: i.get("binary") or i.get("config_field"),
         "env_var_set": lambda i: i.get("name") or i.get("any_of"),
         "git_log_contains": lambda i: i.get("needle"),
@@ -196,6 +198,58 @@ def test_whisper_model_path_unset():
     config = SimpleNamespace(whispercpp_model="")
     ok, detail = _probe_whisper_model_present(REPO_ROOT, {}, config, None)
     assert ok is False and "empty" in detail.lower()
+
+
+# ---- Task I3: url_ok --------------------------------------------------------
+
+class _FakeResponse:
+    def __init__(self, status):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def test_url_ok_success(monkeypatch):
+    monkeypatch.setattr(build_status.urllib.request, "urlopen",
+                        lambda url, timeout=None: _FakeResponse(200))
+    config = SimpleNamespace(raw={"deploy": {"public_url": "https://cockpit.example.com"}})
+    ok, detail = _probe_url_ok(REPO_ROOT, {}, config, None)
+    assert ok is True and "answered" in detail
+    assert "cockpit.example.com/api/health" in detail
+
+
+def test_url_ok_connection_failure(monkeypatch):
+    def boom(url, timeout=None):
+        raise OSError("connection refused")
+    monkeypatch.setattr(build_status.urllib.request, "urlopen", boom)
+    config = SimpleNamespace(raw={"deploy": {"public_url": "https://cockpit.example.com"}})
+    ok, detail = _probe_url_ok(REPO_ROOT, {}, config, None)
+    assert ok is False and "didn't answer" in detail
+
+
+def test_url_ok_non_2xx(monkeypatch):
+    monkeypatch.setattr(build_status.urllib.request, "urlopen",
+                        lambda url, timeout=None: _FakeResponse(503))
+    config = SimpleNamespace(raw={"deploy": {"public_url": "https://cockpit.example.com"}})
+    ok, detail = _probe_url_ok(REPO_ROOT, {}, config, None)
+    assert ok is False and "status 503" in detail
+
+
+def test_url_ok_no_public_url_set_makes_no_network_call(monkeypatch):
+    def boom(*a, **kw):
+        raise AssertionError("url_ok must not open a connection with no public_url set")
+    monkeypatch.setattr(build_status.urllib.request, "urlopen", boom)
+    ok, detail = _probe_url_ok(REPO_ROOT, {}, SimpleNamespace(raw={}), None)
+    assert ok is False and "deploy.public_url isn't set" in detail
+
+
+def test_url_ok_no_config_at_all():
+    ok, detail = _probe_url_ok(REPO_ROOT, {}, None, None)
+    assert ok is False and "config.json doesn't exist" in detail
 
 
 def test_the_shipped_passes_actually_probe_true():

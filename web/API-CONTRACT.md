@@ -930,6 +930,13 @@ checklist — no manual checkboxes exist. Probe types: `file_exists`,
 `next` = the first unfinished item in manifest order (null when all done);
 every unfinished item carries one plain-English `next_action`.
 
+On a cold server start (empty in-memory cache) with a `.build-snapshot.json`
+already on disk from a previous run, the route answers instantly from that
+snapshot instead of paying the full probe cost inline, and kicks off a
+background refresh: `stale: true` and `cached_at` (the snapshot's own
+`generated_at`) are added to the payload. Both are absent on every normal
+(non-cold-start) response.
+
 ### `GET /api/providers`
 
 Aggregates the router's per-attempt `stage='llm'` events:

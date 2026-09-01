@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 import sqlite3
 import subprocess
 import tempfile
@@ -78,9 +79,28 @@ def safe_config(config) -> dict:
     }
 
 
+def backup_config(config_path: Path, *, now: datetime | None = None) -> None:
+    """Copy config.json to config.json.bak-<timestamp> before an in-place
+    write, then prune to the last 5 backups. A .bak file is pure disposable
+    safety margin (CLAUDE.md §1 spirit — this isn't vault content, but the
+    same "delete it and lose nothing important" principle applies): nothing
+    in this app ever reads one back. A missing config.json (first-ever
+    write, or an already-broken deploy) is a no-op, not an error — there's
+    nothing to back up yet."""
+    if not config_path.exists():
+        return
+    stamp = (now or datetime.now()).strftime("%Y%m%d%H%M%S")
+    backup_path = config_path.with_name(f"{config_path.name}.bak-{stamp}")
+    shutil.copy2(config_path, backup_path)
+    existing = sorted(config_path.parent.glob(f"{config_path.name}.bak-*"))
+    for stale in existing[:-5]:
+        stale.unlink(missing_ok=True)
+
+
 def write_config(config_path: Path, config, changes: dict) -> None:
     """Atomic, validated update of the safe settings. Unknown keys in
     config.json (links, api, paths) survive untouched."""
+    backup_config(config_path)
     engine = changes.get("engine")
     if engine is not None and engine not in ENGINES:
         raise ConfigError(

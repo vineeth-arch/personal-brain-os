@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import mimetypes
 import os
@@ -284,6 +285,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
     app.state.google_states = {}   # pending OAuth CSRF states → (expiry, redirect_uri)
     app.state.google_tokens = {}   # in-memory access-token cache — never persisted
     app.state.build_cache = {}
+    app.state.build_refresh_lock = threading.Lock()
 
     config_path = root / "config.json"
     # by NAME, not by the watcher's resolved path — the watcher anchors those to
@@ -511,16 +513,13 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
             "children": [{"id": c.block_id, "task": c.task, "done": c.done} for c in updated.children],
         }
 
-    @app.get("/api/build")
-    def build(fresh: int = 0, config=Depends(require_token)):
-        cache = app.state.build_cache
-        now = time.monotonic()
-        if not fresh and cache.get("payload") and now - cache.get("ts", 0) < 60:
-            return cache["payload"]
-        try:
-            items = build_status.run_probes(app_root, config, db_path)
-        except build_status.ManifestError as e:
-            raise Envelope(500, **e.envelope)
+    def _run_probes_and_cache(config) -> dict:
+        """Runs the real probes and updates BOTH caches (in-memory + disk).
+        Raises build_status.ManifestError on a broken checks.json — the
+        synchronous foreground caller (the route itself) turns that into a
+        500 envelope; a background refresh catches and logs it instead,
+        since a background thread has no HTTP response to raise into."""
+        items = build_status.run_probes(app_root, config, db_path)
         unfinished = next((i for i in items if not i["done"]), None)
         payload = {
             "generated_at": datetime.now().isoformat(timespec="seconds"),
@@ -528,9 +527,44 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                      if unfinished else None),
             "items": items,
         }
-        cache["ts"] = now
-        cache["payload"] = payload
+        app.state.build_cache["ts"] = time.monotonic()
+        app.state.build_cache["payload"] = payload
+        try:
+            (root / ".build-snapshot.json").write_text(json.dumps(payload), encoding="utf-8")
+        except OSError:
+            log.exception("could not write the build snapshot to disk")
         return payload
+
+    @app.get("/api/build")
+    def build(fresh: int = 0, config=Depends(require_token)):
+        cache = app.state.build_cache
+        now = time.monotonic()
+        if not fresh and cache.get("payload") and now - cache.get("ts", 0) < 60:
+            return cache["payload"]
+
+        if not fresh and not cache.get("payload"):
+            snapshot_path = root / ".build-snapshot.json"
+            if snapshot_path.exists():
+                try:
+                    snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    snapshot = None
+                if snapshot is not None:
+                    if app.state.build_refresh_lock.acquire(blocking=False):
+                        def _refresh():
+                            try:
+                                _run_probes_and_cache(config)
+                            except Exception:
+                                log.exception("background build snapshot refresh failed")
+                            finally:
+                                app.state.build_refresh_lock.release()
+                        threading.Thread(target=_refresh, daemon=True).start()
+                    return {**snapshot, "stale": True, "cached_at": snapshot.get("generated_at")}
+
+        try:
+            return _run_probes_and_cache(config)
+        except build_status.ManifestError as e:
+            raise Envelope(500, **e.envelope)
 
     @app.get("/api/providers")
     def providers(config=Depends(require_token)):

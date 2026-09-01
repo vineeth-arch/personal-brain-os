@@ -11,6 +11,8 @@ import logging
 import os
 import sqlite3
 import subprocess
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 log = logging.getLogger("api")
@@ -93,6 +95,22 @@ def _probe_config_field_set(app_root: Path, item: dict, config, _db):
     value = _dotted(config.raw, item["field"])
     ok = bool(value)
     return ok, (f"{item['field']} is set." if ok else f"{item['field']} is empty in config.json.")
+
+
+def _probe_url_ok(app_root: Path, item: dict, config, _db):
+    if config is None:
+        return False, "config.json doesn't exist yet."
+    public_url = _dotted(config.raw, item.get("field", "deploy.public_url")) or ""
+    if not public_url:
+        return False, "deploy.public_url isn't set in config.json yet."
+    url = public_url.rstrip("/") + "/api/health"
+    try:
+        with urllib.request.urlopen(url, timeout=PROBE_TIMEOUT) as resp:
+            ok = 200 <= resp.status < 300
+            return ok, (f"{url} answered." if ok
+                        else f"{url} answered with status {resp.status}.")
+    except Exception as e:
+        return False, f"{url} didn't answer ({e})."
 
 
 def _probe_binary_runs(app_root: Path, item: dict, config, _db):
@@ -226,6 +244,7 @@ _PROBES = {
     "endpoint_ok": _probe_endpoint_ok,
     "config_field_set": _probe_config_field_set,
     "config_field_contains": _probe_config_field_contains,
+    "url_ok": _probe_url_ok,
     "binary_runs": _probe_binary_runs,
     "env_var_set": _probe_env_var_set,
     "git_log_contains": _probe_git_log_contains,

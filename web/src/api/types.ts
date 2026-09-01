@@ -261,6 +261,10 @@ export interface BuildResponse {
   generated_at: string;
   next: { label: string; next_action: string } | null;
   items: BuildItem[];
+  // present (and true) only on a cold-start response served from the disk
+  // snapshot while a background refresh runs; absent on a normal response.
+  stale?: boolean;
+  cached_at?: string;
 }
 
 // Model router stats (Pass B).

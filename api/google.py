@@ -119,6 +119,11 @@ def begin_connect(states: dict, redirect_uri: str) -> str:
 def finish_connect(states: dict, config_path: Path, state: str, code: str) -> None:
     """Callback half: validate state, trade the code for tokens, persist the
     refresh token into config.json (atomic, everything else untouched)."""
+    # local import: api.integrations imports this module at its own top
+    # level (for _google_cards), so a top-level import here would be
+    # circular — deferred to call time, when both modules are fully loaded.
+    from .integrations import backup_config
+
     expiry, redirect_uri = states.pop(state, (0, "")) if state else (0, "")
     if expiry < time.monotonic():
         raise GoogleError(
@@ -137,6 +142,7 @@ def finish_connect(states: dict, config_path: Path, state: str, code: str) -> No
             "The token response had no refresh token (the client may be misconfigured).",
             "Remove the app at myaccount.google.com/permissions, then Connect Google again.")
 
+    backup_config(config_path)
     raw = json.loads(config_path.read_text(encoding="utf-8"))
     raw.setdefault("google", {})["refresh_token"] = refresh
     # What Google ACTUALLY granted, so "do we have the contacts permission?"
@@ -155,6 +161,9 @@ def finish_connect(states: dict, config_path: Path, state: str, code: str) -> No
 
 
 def disconnect(config_path: Path, token_cache: dict) -> None:
+    from .integrations import backup_config
+
+    backup_config(config_path)
     raw = json.loads(config_path.read_text(encoding="utf-8"))
     raw.pop("google", None)
     fd, tmp = tempfile.mkstemp(dir=config_path.parent, prefix=".config-", suffix=".tmp")

@@ -124,9 +124,9 @@
     { "id": "deploy-mcp", "phase": "Deployment", "label": "Claude Desktop MCP connected",
       "type": "config_field_set", "field": "deploy.mcp_connected",
       "next_action": "Add the brain-cockpit block from the Operating Manual (§MCP) to your Claude Desktop config with COCKPIT_URL and COCKPIT_TOKEN, restart Claude Desktop, ask it for your cockpit status — then set deploy.mcp_connected to true in config.json. Only Claude Desktop can prove this, which is why it's manual." },
-    { "id": "deploy-reachable", "phase": "Deployment", "label": "Reachable from the internet (manual check)",
-      "type": "config_field_set", "field": "deploy.public_url",
-      "next_action": "From a phone on mobile data, open https://<your-hostname>/api/health through the Access login; when it answers, record the URL in config.json → deploy.public_url. Only a device outside your LAN can prove this — that's why it's manual." },
+    { "id": "deploy-reachable", "phase": "Deployment", "label": "Reachable from the internet",
+      "type": "url_ok", "field": "deploy.public_url",
+      "next_action": "Set deploy.public_url in config.json to your public hostname, then make sure /api/health answers from outside your LAN (e.g. over mobile data with the Access login)." },
 
     { "id": "wire-backlog-ritual", "phase": "Going live", "label": "Backlog ritual run",
       "type": "git_log_contains", "needle": "pre-backlog batch",

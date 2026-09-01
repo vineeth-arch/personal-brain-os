@@ -105,6 +105,23 @@ def test_youtube_transcript_prefers_english_or_hindi_track(vault):
     assert enr.transcript == "नमस्ते"
 
 
+def test_youtube_transcript_falls_back_to_first_track_when_no_preferred_lang(vault):
+    def fetch(url, data=None, timeout=10, headers=None):
+        if "oembed" in url:
+            return YT_OEMBED
+        if url == enrich._INNERTUBE_URL:
+            return json.dumps({
+                "captions": {"playerCaptionsTracklistRenderer": {"captionTracks": [
+                    {"languageCode": "fr", "baseUrl": "https://yt.example/fr"},
+                ]}},
+            }).encode()
+        if url == "https://yt.example/fr&fmt=json3":
+            return json.dumps({"events": [{"segs": [{"utf8": "Bonjour."}]}]}).encode()
+        raise AssertionError(f"unexpected fetch: {url}")
+    enr = enrich.enrich_url("https://youtu.be/abc12345678", config(vault), fetch=fetch)
+    assert enr.transcript == "Bonjour."
+
+
 def test_youtube_transcript_falls_back_to_xml_shape(vault):
     def fetch(url, data=None, timeout=10, headers=None):
         if "oembed" in url:

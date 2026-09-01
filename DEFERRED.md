@@ -14,17 +14,17 @@
 - ~~Daily ntfy digest: status + resurfaced note + queue count (the system visits you) — research B9.~~ — SHIPPED in Pass R: drain/triage-count/resurfaced lines added to the morning digest.
 - ~~Optional Goblin-style micro-step breakdown for extracted todos with a "how hard does it feel?" dial — research B10.~~ — SHIPPED in Pass R: indented child checkboxes + 🎚 feel marker + LLM breakdown route.
 - ~~Surface the trust boundary in the UI ("nothing entered your vault without you — N notes gated this month") — research B11.~~ — SHIPPED in Pass A: `trustLine()` on Triage's empty state + Settings.
-- Integrations: keep a rolling backup copy of config.json on every write (the write is already atomic + key-validated since Pass 2/4).
+- ~~Integrations: keep a rolling backup copy of config.json on every write (the write is already atomic + key-validated since Pass 2/4).~~ — SHIPPED in Task I3: `integrations.backup_config()` copies config.json to `config.json.bak-<timestamp>` ahead of all three write sites, pruned to the last 5.
 - Integrations: true per-card SSE streaming instead of one cached GET /integrations, if health checks ever grow slow.
 - Integrations: per-integration retry/backoff + a real round-trip ntfy delivery receipt (test push is best-effort send, not confirmed receipt).
 - Integrations: edit the links section from the cockpit (ties into the deferred config-write settings item).
-- Integrations: cache the last successful health snapshot to disk so a cold API start renders last-known state instantly.
+- Integrations: cache the last successful health snapshot to disk so a cold API start renders last-known state instantly. (Task I3 shipped an equivalent disk snapshot for the separate `GET /api/build` tracker, but the Integrations health cards' own cache is still in-memory only — this item is still open.)
 - Pass L: per-platform enrichment backoff tuning + more than one auto-retry before giving up.
-- Pass L: YouTube transcript language selection beyond lang=en (auto-detect / multi-lang).
+- ~~Pass L: YouTube transcript language selection beyond lang=en (auto-detect / multi-lang).~~ — Actually already delivered in an earlier pass (D12's innertube fix, `pipeline/enrich.py::_fetch_youtube_transcript`): `_PREFERRED_CAPTION_LANGS = ("en", "hi")` falls back to the first available caption track when neither is present. This line was just never struck at the time. Task I3 only added the missing test (`test_youtube_transcript_falls_back_to_first_track_when_no_preferred_lang`) proving the no-preferred-lang fallback path actually fires — no production code changed.
 - Pass L: richer web enrichment (readability extraction / oEmbed discovery) beyond <title>+og:image.
 - Pass B: surface provider stats as a small sparkline over time, not just cumulative counts.
 - Pass T: recurring todos (weekly/daily) — current model is one-shot due dates only.
-- Pass 10: a live `url_ok` probe type for the reachable-from-internet milestone (GET deploy.public_url from the server) — manual config-field check for now, per the pass spec.
+- ~~Pass 10: a live `url_ok` probe type for the reachable-from-internet milestone (GET deploy.public_url from the server) — manual config-field check for now, per the pass spec.~~ — SHIPPED in Task I3: `_probe_url_ok` GETs `deploy.public_url + /api/health`; `checks.json`'s `deploy-reachable` item now uses it instead of the manual `config_field_set` check.
 - ~~Pass 6: resource rating (schema `rating` 1–7) capture + display in the drawer — status lifecycle and insight shipped, rating not surfaced this pass.~~ — SHIPPED in Pass F: 1-7 dot rating control in the drawer.
 - ~~Pass 6: real cover images via `attachments/` (book covers / posters) — seed uses remote picsum placeholders; the card already falls back to a category-initial tile.~~ — SHIPPED in Pass F: F1 (signed URLs) + F2 (download at enrich time).
 - Pass 6: editing the type-extras from the cockpit (they render in the drawer since the per-type schema pass, but are written by the seed/pipeline only — no UI to change ingredients, runtime, etc.).
