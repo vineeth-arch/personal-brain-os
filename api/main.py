@@ -450,7 +450,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 404, "That todo isn't in the daily notes anymore.",
                 "Its line was edited or removed in Obsidian, or the id is unknown.",
                 "Refresh the agenda.")
-        if existing.children:
+        if existing.children or existing.feel is not None:
             raise Envelope(
                 409, "This todo's already broken down.",
                 "It has steps under it already — breaking it down twice would duplicate them.",

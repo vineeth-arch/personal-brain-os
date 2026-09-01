@@ -938,6 +938,25 @@ def test_todos_breakdown_step_with_newline_rejected_and_file_unmutated(env, monk
         assert todos_file.read_text(encoding="utf-8") == original_text
 
 
+def test_todos_breakdown_pre_existing_feel_marker_409(env):
+    """A todo with a pre-existing feel marker (but no children) must return 409,
+    not 500. The route pre-check catches this before calling add_breakdown()."""
+    root, vault, _, _ = env
+    from pipeline.todos import today_kolkata
+    today = today_kolkata()
+    todos_file = vault / "06-Todos" / f"{today.isoformat()}.md"
+    todos_file.parent.mkdir(exist_ok=True)
+    # Write a todo with a feel marker but no children (the corruption case)
+    todos_file.write_text("- [ ] plan the offsite ^20260901100000-1 🎚4\n", encoding="utf-8")
+
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/todos/20260901100000-1/breakdown", {"feel": 3})
+        # Route pre-check sees the feel marker and returns 409 Conflict
+        assert code == 409
+        assert set(body["error"]) == {"what", "cause", "todo"}
+        assert "already" in body["error"]["cause"].lower()
+
+
 def test_todos_breakdown_all_providers_fail_503_and_leaves_file_unmutated(env, monkeypatch):
     root, vault, _, _ = env
     todos_file = _seed_one_todo(vault)

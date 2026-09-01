@@ -157,8 +157,9 @@ def _rollup_parent(parent: Todo, flipped_child: Todo, flipped_child_new_done: bo
 def add_breakdown(vault: Path, block_id: str, feel: int, steps: list[str]) -> Todo:
     """Insert 2-4 child checkbox lines under the todo carrying ^block_id, and
     stamp the feel-dial marker on the parent line. Raises LookupError if the
-    id is unknown, ValueError if it already has children (never overwrite an
-    existing breakdown — the route this backs returns 409 for that case)."""
+    id is unknown, ValueError if it already has children or a feel marker
+    (never overwrite an existing breakdown — the route this backs returns 409
+    for that case)."""
     todos = scan(vault)
     parent = next((t for t in todos if t.block_id == block_id), None)
     if parent is None:
