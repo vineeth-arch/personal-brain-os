@@ -366,6 +366,7 @@ function AgendaRow({
               )}
             </p>
           )}
+          {item.recur && <p className="text-subtle text-xs">🔁 {item.recur}</p>}
         </div>
         {item.children.length === 0 &&
           (dialOpen ? (

@@ -583,15 +583,20 @@ BUILD_ITEMS = [
 TODO_ITEMS = [] if MODE_EMPTY else [
     {"id": "20260703140000-1", "task": "call the dentist", "due": date.today().isoformat(),
      "time": "14:00", "done": False, "overdue": False,
-     "file": f"06-Todos/{date.today().isoformat()}.md", "feel": None, "children": []},
+     "file": f"06-Todos/{date.today().isoformat()}.md", "feel": None, "recur": None, "children": []},
     # already broken down, to demonstrate the rendered-children state (B10)
     {"id": "20260703140000-2", "task": "plan the offsite", "due": date.today().isoformat(),
      "time": None, "done": False, "overdue": False,
-     "file": f"06-Todos/{date.today().isoformat()}.md", "feel": 4,
+     "file": f"06-Todos/{date.today().isoformat()}.md", "feel": 4, "recur": None,
      "children": [
          {"id": "20260703140000-2a", "task": "book the room", "done": False},
          {"id": "20260703140000-2b", "task": "draft the agenda", "done": False},
      ]},
+    # recurring, to demonstrate the 🔁 glyph (E2)
+    {"id": "20260703140000-3", "task": "water plants", "due": date.today().isoformat(),
+     "time": None, "done": False, "overdue": False,
+     "file": f"06-Todos/{date.today().isoformat()}.md", "feel": None, "recur": "daily",
+     "children": []},
 ]
 
 # Search fixtures (Pass Q) — a static set standing in for a real whole-vault

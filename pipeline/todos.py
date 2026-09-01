@@ -18,6 +18,13 @@ Completing a todo flips "- [ ]" to "- [x]" IN PLACE — lines are never deleted.
 The reminder tick runs inside the watcher's --loop (no new process) and fires
 each reminder exactly once via the reminders table in events.db. The user's
 timezone is Asia/Kolkata for everything date-shaped.
+
+A todo may recur (E2): a 🔁 daily/weekly marker right after the task text
+(parent lines only, never children):
+    - [ ] water plants 🔁 daily 📅 2026-09-01 ^id-1
+Completing a recurring todo — directly, or via a child-rollup completion —
+appends the next occurrence (due date advanced 1 or 7 days, block id suffixed
+`r2`, `r3`, ...) to that day's file; the just-completed line is never touched.
 """
 from __future__ import annotations
 
@@ -39,6 +46,7 @@ _DRAIN_FILED_RE = re.compile(r"filed=(\d+)")
 
 _LINE_RE = re.compile(
     r"^(?P<indent>    )?- \[(?P<done>[ x])\] (?P<task>.*?)"
+    r"(?: 🔁 (?P<recur>daily|weekly))?"
     r"(?: 📅 (?P<due>\d{4}-\d{2}-\d{2}))?"
     r"(?: ⏰ (?P<time>\d{2}:\d{2}))?"
     r"(?: \^(?P<block>[\w-]+))?"
@@ -56,6 +64,7 @@ class Todo:
     time: str | None       # HH:MM — presence means "remind me at this time"
     block_id: str | None
     feel: int | None = None            # 1-5 "how hard does it feel" dial (parent only)
+    recur: str | None = None           # "daily" | "weekly" | None (E2, parent only)
     children: list["Todo"] = field(default_factory=list)  # micro-steps, one level deep
 
 
@@ -76,13 +85,13 @@ def format_child_line(task: str, block_id: str) -> str:
     return f"    - [ ] {task} ^{block_id}"
 
 
-def parse_line(line: str) -> tuple[str, bool, str | None, str | None, str | None, bool, int | None] | None:
+def parse_line(line: str) -> tuple[str, bool, str | None, str | None, str | None, bool, int | None, str | None] | None:
     m = _LINE_RE.match(line.rstrip())
     if not m:
         return None
     task = _FROM_RE.sub("", m["task"].strip())  # provenance stays in the file, not the UI
     feel = int(m["feel"]) if m["feel"] else None
-    return (task, m["done"] == "x", m["due"], m["time"], m["block"], bool(m["indent"]), feel)
+    return (task, m["done"] == "x", m["due"], m["time"], m["block"], bool(m["indent"]), feel, m["recur"])
 
 
 def scan(vault: Path) -> list[Todo]:
@@ -101,18 +110,18 @@ def scan(vault: Path) -> list[Todo]:
             if parsed is None or parsed[5]:  # not a line, or an orphaned child (no parent above it) — skip
                 i += 1
                 continue
-            task, done, due, time, block, _indent, feel = parsed
+            task, done, due, time, block, _indent, feel, recur = parsed
             children: list[Todo] = []
             j = i + 1
             while j < len(lines):
                 child_parsed = parse_line(lines[j])
                 if child_parsed is not None and child_parsed[5]:
-                    c_task, c_done, c_due, c_time, c_block, _, _ = child_parsed
+                    c_task, c_done, c_due, c_time, c_block, _, _, _ = child_parsed
                     children.append(Todo(path, j, c_task, c_done, c_due, c_time, c_block))
                     j += 1
                 else:
                     break
-            out.append(Todo(path, i, task, done, due, time, block, feel=feel, children=children))
+            out.append(Todo(path, i, task, done, due, time, block, feel=feel, recur=recur, children=children))
             i = j
     return out
 
@@ -125,11 +134,16 @@ def toggle(vault: Path, block_id: str) -> bool:
     Toggling a parent directly never cascades down to its children."""
     for todo in scan(vault):
         if todo.block_id == block_id:
-            return _flip_line(todo.file, todo.line_no, todo.done)
+            new_done = _flip_line(todo.file, todo.line_no, todo.done)
+            if new_done and todo.recur:
+                _spawn_next_occurrence(vault, todo)
+            return new_done
         for child in todo.children:
             if child.block_id == block_id:
                 new_done = _flip_line(child.file, child.line_no, child.done)
-                _rollup_parent(todo, child, new_done)
+                parent_became_done = _rollup_parent(todo, child, new_done)
+                if parent_became_done and todo.recur:
+                    _spawn_next_occurrence(vault, todo)
                 return new_done
     raise LookupError(block_id)
 
@@ -143,15 +157,65 @@ def _flip_line(file: Path, line_no: int, was_done: bool) -> bool:
     return not was_done
 
 
-def _rollup_parent(parent: Todo, flipped_child: Todo, flipped_child_new_done: bool) -> None:
+def _rollup_parent(parent: Todo, flipped_child: Todo, flipped_child_new_done: bool) -> bool:
+    """Returns True only when this call is what flipped the parent open→done
+    (never on a no-op, never on the reverse reopen direction) — the signal
+    toggle() needs to know whether to spawn a recurring parent's next
+    occurrence."""
     all_done = all(
         flipped_child_new_done if c.line_no == flipped_child.line_no else c.done
         for c in parent.children
     )
     if all_done and not parent.done:
         _flip_line(parent.file, parent.line_no, was_done=False)
+        return True
     elif not all_done and parent.done:
         _flip_line(parent.file, parent.line_no, was_done=True)
+    return False
+
+
+_RECUR_DAYS = {"daily": 1, "weekly": 7}
+
+
+def _next_recur_block_id(vault: Path, block_id: str) -> str:
+    """{block_id}r2, then r3, ... A respawned occurrence can land in ANY
+    future day's file (not just tomorrow's — a weekly todo jumps 7 days), so
+    the collision check has to look at the WHOLE vault's 06-Todos folder, not
+    just one file."""
+    existing = {t.block_id for t in scan(vault)}
+    existing |= {c.block_id for t in scan(vault) for c in t.children}
+    n = 2
+    while f"{block_id}r{n}" in existing:
+        n += 1
+    return f"{block_id}r{n}"
+
+
+def _spawn_next_occurrence(vault: Path, todo: Todo) -> None:
+    """Append the next occurrence of a recurring todo, `_RECUR_DAYS[todo.recur]`
+    days out. Never touches the just-completed line — todos.py's law, lines
+    are never deleted or edited once written, only flipped in place."""
+    if todo.recur not in _RECUR_DAYS or not todo.due:
+        return
+    try:
+        next_due = date.fromisoformat(todo.due) + timedelta(days=_RECUR_DAYS[todo.recur])
+    except ValueError:
+        return
+    next_block_id = _next_recur_block_id(vault, todo.block_id) if todo.block_id else None
+    parts = [f"- [ ] {todo.task}", f"🔁 {todo.recur}", f"📅 {next_due.isoformat()}"]
+    if todo.time:
+        parts.append(f"⏰ {todo.time}")
+    if next_block_id:
+        parts.append(f"^{next_block_id}")
+    line = " ".join(parts)
+
+    todos_dir = Path(vault) / TODOS_FOLDER
+    todos_dir.mkdir(parents=True, exist_ok=True)
+    day = next_due.isoformat()
+    target = todos_dir / f"{day}.md"
+    with target.open("a", encoding="utf-8") as f:
+        if target.stat().st_size == 0:
+            f.write(f"# Todos — {day}\n\n")
+        f.write(line + "\n")
 
 
 def add_breakdown(vault: Path, block_id: str, feel: int, steps: list[str]) -> Todo:

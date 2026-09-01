@@ -451,6 +451,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 "overdue": ptodos.in_range(t, "overdue"),
                 "file": str(t.file.relative_to(config.vault_path)),
                 "feel": t.feel,
+                "recur": t.recur,
                 "children": [{"id": c.block_id, "task": c.task, "done": c.done} for c in t.children],
             }
             for t in ptodos.scan(config.vault_path)

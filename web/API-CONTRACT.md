@@ -871,14 +871,18 @@ never deleted. All date ranges are **Asia/Kolkata**.
 ```json
 { "items": [ { "id": "20260703140000-1", "task": "call the dentist",
   "due": "2026-07-05", "time": "14:00", "done": false, "overdue": false,
-  "file": "06-Todos/2026-07-03.md", "feel": null, "children": [] } ] }
+  "file": "06-Todos/2026-07-03.md", "feel": null, "recur": null, "children": [] } ] }
 ```
 
 Only lines with a due date and a block id appear (undated todos live in the
 daily note). `week` = the day after tomorrow through +7 days. Unknown range →
 400 envelope. `feel` is the 1-5 "how hard does it feel" dial (null until a
 breakdown is made); `children` are the todo's micro-steps, each
-`{id, task, done}` — empty until broken down.
+`{id, task, done}` — empty until broken down. `recur` is `"daily"`,
+`"weekly"`, or `null` — a recurring todo respawns its next occurrence (📅
+advanced by 1 or 7 days) the moment it's marked done; the completed line
+itself is never deleted or edited, matching every other todo line in this
+system.
 
 ### `POST /api/todos/{block_id}/toggle`
 

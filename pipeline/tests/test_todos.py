@@ -377,3 +377,174 @@ def test_digest_fires_when_triage_count_is_the_only_signal(vault, tmp_path, monk
     assert len(pushes) == 1
     assert "1 waiting in triage." in pushes[0]
     events.close()
+
+
+# ---- Task E2: recurring todos ------------------------------------------------
+
+def _write_todos_file(vault_path, name: str, text: str):
+    todos_dir = vault_path / todos.TODOS_FOLDER
+    todos_dir.mkdir(parents=True, exist_ok=True)
+    (todos_dir / name).write_text(text, encoding="utf-8")
+
+
+def test_recur_marker_parses_and_coexists_with_other_markers(vault):
+    daily = todos.parse_line("- [ ] water plants 🔁 daily 📅 2026-09-01 ^id-1")
+    assert daily[7] == "daily"
+    weekly = todos.parse_line("- [ ] water plants 🔁 weekly 📅 2026-09-01 ^id-1")
+    assert weekly[7] == "weekly"
+    plain = todos.parse_line("- [ ] water plants 📅 2026-09-01 ^id-1")
+    assert plain[7] is None
+    # every other marker still parses correctly with 🔁 present too
+    full = todos.parse_line("- [ ] water plants 🔁 daily 📅 2026-09-01 ⏰ 09:00 ^id-1 🎚3")
+    task, done, due, time, block, indent, feel, recur = full
+    assert task == "water plants"
+    assert done is False
+    assert due == "2026-09-01"
+    assert time == "09:00"
+    assert block == "id-1"
+    assert indent is False
+    assert feel == 3
+    assert recur == "daily"
+
+
+def test_daily_spawn_math(vault):
+    config = make_config(vault)
+    _write_todos_file(config.vault_path, "2026-07-05.md",
+                       "- [ ] water plants 🔁 daily 📅 2026-07-05 ^id-1\n")
+
+    assert todos.toggle(config.vault_path, "id-1") is True
+
+    spawned_file = config.vault_path / todos.TODOS_FOLDER / "2026-07-06.md"
+    assert spawned_file.exists()
+    text = spawned_file.read_text(encoding="utf-8")
+    assert "- [ ] water plants 🔁 daily 📅 2026-07-06 ^id-1r2" in text
+    assert text.startswith("# Todos — 2026-07-06\n\n")
+
+
+def test_weekly_spawn_math(vault):
+    config = make_config(vault)
+    _write_todos_file(config.vault_path, "2026-07-05.md",
+                       "- [ ] water plants 🔁 weekly 📅 2026-07-05 ^id-1\n")
+
+    assert todos.toggle(config.vault_path, "id-1") is True
+
+    spawned_file = config.vault_path / todos.TODOS_FOLDER / "2026-07-12.md"
+    assert spawned_file.exists()
+    text = spawned_file.read_text(encoding="utf-8")
+    assert "- [ ] water plants 🔁 weekly 📅 2026-07-12 ^id-1r2" in text
+
+
+def test_month_boundary_spawn_math(vault):
+    config = make_config(vault)
+    _write_todos_file(config.vault_path, "2026-07-28.md",
+                       "- [ ] water plants 🔁 daily 📅 2026-07-28 ^id-daily\n")
+    todos.toggle(config.vault_path, "id-daily")
+    daily_next = config.vault_path / todos.TODOS_FOLDER / "2026-07-29.md"
+    assert daily_next.exists()
+    assert "📅 2026-07-29" in daily_next.read_text(encoding="utf-8")
+
+    _write_todos_file(config.vault_path, "2026-07-30.md",
+                       "- [ ] pay rent 🔁 weekly 📅 2026-07-30 ^id-weekly\n")
+    todos.toggle(config.vault_path, "id-weekly")
+    weekly_next = config.vault_path / todos.TODOS_FOLDER / "2026-08-06.md"  # crosses into August
+    assert weekly_next.exists()
+    assert "📅 2026-08-06" in weekly_next.read_text(encoding="utf-8")
+
+
+def test_double_toggle_spawns_once_and_never_deletes_spawned_line(vault):
+    config = make_config(vault)
+    _write_todos_file(config.vault_path, "2026-07-05.md",
+                       "- [ ] water plants 🔁 daily 📅 2026-07-05 ^id-1\n")
+    r2_file = config.vault_path / todos.TODOS_FOLDER / "2026-07-06.md"
+
+    assert todos.toggle(config.vault_path, "id-1") is True   # open -> done: spawns r2
+    assert "^id-1r2" in r2_file.read_text(encoding="utf-8")
+
+    assert todos.toggle(config.vault_path, "id-1") is False  # done -> open: no delete, no spawn
+    assert "^id-1r2" in r2_file.read_text(encoding="utf-8")  # r2 line still there, untouched
+    ids_after_reopen = {t.block_id for t in todos.scan(config.vault_path)}
+    assert "id-1r3" not in ids_after_reopen
+
+    assert todos.toggle(config.vault_path, "id-1") is True   # open -> done again: spawns r3, not a dup r2
+    assert r2_file.read_text(encoding="utf-8").count("^id-1r2") == 1
+    ids_after_recomplete = {t.block_id for t in todos.scan(config.vault_path)}
+    assert "id-1r3" in ids_after_recomplete
+
+
+def test_nonrecurring_todo_toggle_spawns_nothing(vault):
+    config = make_config(vault)
+    _write_todos_file(config.vault_path, "2026-07-05.md",
+                       "- [ ] call the dentist 📅 2026-07-05 ^id-1\n")
+    before = {p.name for p in (config.vault_path / todos.TODOS_FOLDER).glob("*.md")}
+
+    assert todos.toggle(config.vault_path, "id-1") is True
+    assert todos.toggle(config.vault_path, "id-1") is False
+
+    after = {p.name for p in (config.vault_path / todos.TODOS_FOLDER).glob("*.md")}
+    assert after == before  # no new file anywhere
+
+
+def test_recurring_todo_with_no_due_date_does_not_crash_or_spawn(vault):
+    config = make_config(vault)
+    # hand-edited/malformed line: 🔁 present, 📅 absent
+    _write_todos_file(config.vault_path, "2026-07-05.md",
+                       "- [ ] water plants 🔁 daily ^id-1\n")
+    before = {p.name for p in (config.vault_path / todos.TODOS_FOLDER).glob("*.md")}
+
+    assert todos.toggle(config.vault_path, "id-1") is True  # no crash
+
+    after = {p.name for p in (config.vault_path / todos.TODOS_FOLDER).glob("*.md")}
+    assert after == before  # no spawn
+
+
+def test_rollup_completion_of_recurring_parent_spawns_next_occurrence(vault):
+    config = make_config(vault)
+    _write_todos_file(config.vault_path, "2026-07-05.md",
+                       "- [ ] plan the offsite 🔁 weekly 📅 2026-07-05 ^id-1\n"
+                       "    - [ ] book the room ^id-1a\n"
+                       "    - [ ] draft the agenda ^id-1b\n")
+    spawned_dir = config.vault_path / todos.TODOS_FOLDER
+
+    todos.toggle(config.vault_path, "id-1a")  # one sibling still open — parent not done yet
+    assert not (spawned_dir / "2026-07-12.md").exists()
+
+    todos.toggle(config.vault_path, "id-1b")  # both siblings done -> parent rolls up to done
+    parent = next(t for t in todos.scan(config.vault_path) if t.block_id == "id-1")
+    assert parent.done is True
+    assert (spawned_dir / "2026-07-12.md").exists()
+    assert "^id-1r2" in (spawned_dir / "2026-07-12.md").read_text(encoding="utf-8")
+
+
+def test_rollup_parent_returns_true_only_on_open_to_done_transition(vault):
+    config = make_config(vault)
+    _write_todos_file(config.vault_path, "2026-07-05.md",
+                       "- [ ] plan the offsite 📅 2026-07-05 ^id-1\n"
+                       "    - [ ] book the room ^id-1a\n"
+                       "    - [ ] draft the agenda ^id-1b\n")
+
+    def rescan_parent():
+        return next(t for t in todos.scan(config.vault_path) if t.block_id == "id-1")
+
+    # flip 1a done: one sibling still open -> not a transition
+    parent = rescan_parent()
+    child_a = next(c for c in parent.children if c.block_id == "id-1a")
+    new_done = todos._flip_line(child_a.file, child_a.line_no, child_a.done)
+    assert todos._rollup_parent(parent, child_a, new_done) is False
+
+    # flip 1b done: both now done -> genuine open -> done transition
+    parent = rescan_parent()
+    child_b = next(c for c in parent.children if c.block_id == "id-1b")
+    new_done = todos._flip_line(child_b.file, child_b.line_no, child_b.done)
+    assert todos._rollup_parent(parent, child_b, new_done) is True
+
+    # calling again with the parent already done and all children done: no-op
+    parent = rescan_parent()
+    child_b = next(c for c in parent.children if c.block_id == "id-1b")
+    assert todos._rollup_parent(parent, child_b, True) is False
+
+    # reopen 1b: parent un-marks (reverse direction), must never return True
+    parent = rescan_parent()
+    child_b = next(c for c in parent.children if c.block_id == "id-1b")
+    new_done = todos._flip_line(child_b.file, child_b.line_no, child_b.done)
+    assert new_done is False
+    assert todos._rollup_parent(parent, child_b, new_done) is False

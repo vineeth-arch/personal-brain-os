@@ -243,6 +243,7 @@ export interface TodoItem {
   overdue: boolean;
   file: string;
   feel: number | null; // 1-5 "how hard does it feel" dial — null until broken down
+  recur: "daily" | "weekly" | null;
   children: TodoChild[];
 }
 

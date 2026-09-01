@@ -25,7 +25,7 @@ def test_child_line_round_trip():
     line = todos.format_child_line("book the room", "20260901100000-1a")
     parsed = todos.parse_line(line)
     assert parsed is not None
-    task, done, due, time, block, indent, feel = parsed
+    task, done, due, time, block, indent, feel, recur = parsed
     assert task == "book the room"
     assert done is False
     assert block == "20260901100000-1a"
