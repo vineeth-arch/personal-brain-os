@@ -523,6 +523,7 @@ export interface PushQueueItem extends Person {
 // ---- Search (Pass Q) --------------------------------------------------------
 
 export type SearchMatchedIn = "title" | "frontmatter" | "body";
+export type SearchMatch = "text" | "semantic";
 
 export interface SearchHit {
   id: string;
@@ -532,4 +533,5 @@ export interface SearchHit {
   folder: string; // top-level vault folder — e.g. "04-Resources"
   excerpt: string;
   matched_in: SearchMatchedIn;
+  match: SearchMatch;
 }

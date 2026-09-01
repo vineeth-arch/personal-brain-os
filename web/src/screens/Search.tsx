@@ -53,6 +53,7 @@ function ResultRow({ hit, vault, q }: { hit: SearchHit; vault: string | null; q:
     <li className="bg-subtle border-subtle rounded-xl border p-4">
       <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
         {typeLabel(hit.type)}
+        {hit.match === "semantic" ? " · semantic" : ""}
       </p>
       <h3 className="font-cal text-emphasis mt-1 text-lg font-bold leading-tight -tracking-[0.01em]">
         <Highlighted text={hit.title} q={q} />

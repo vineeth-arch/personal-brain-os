@@ -1089,14 +1089,18 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
     @app.get("/api/search")
     def search(q: str = "", limit: int = notes.SEARCH_DEFAULT_LIMIT, config=Depends(require_token)):
         """Pass Q: whole-vault search — a filesystem scan, never a SQLite
-        index of note content (CLAUDE.md §1)."""
+        index of note content (CLAUDE.md §1). Pass I: hybrid — substring hits
+        first, semantic fills the rest when OPENAI_API_KEY is set (CLAUDE.md
+        §1: the embeddings index is disposable cache, never the source of
+        truth)."""
         if len(q.strip()) < notes.SEARCH_MIN_QUERY_LEN:
             raise Envelope(
                 400, "That search is too short to be useful.",
                 f"Search needs at least {notes.SEARCH_MIN_QUERY_LEN} characters.",
                 "Type a bit more, then search again.")
         capped = max(1, min(limit, notes.SEARCH_MAX_LIMIT))
-        return {"items": notes.search_vault(config.vault_path, q.strip(), limit=capped)}
+        embeddings_db = db_path.with_name("embeddings.db")
+        return {"items": notes.hybrid_search(config.vault_path, embeddings_db, q.strip(), capped)}
 
     # 'sample' routes are declared before '/{note_id}' so the literal path wins.
     @app.get("/api/resources/sample/count")

@@ -22,8 +22,9 @@ from datetime import date
 from pathlib import Path
 
 from . import (archive, classify as classify_mod, config as config_mod, echo as echo_mod,
-               enrich, errors, extract, gmailpull, ingest, intake, plaud, related, relationships,
-               route, split as split_mod, todos, transliterate, vaultsync, vision as vision_mod)
+               embeddings, enrich, errors, extract, gmailpull, ingest, intake, plaud, related,
+               relationships, route, split as split_mod, todos, transliterate, vaultsync,
+               vision as vision_mod)
 from .events import EventLog
 from . import transcribe as transcribe_mod
 from .transcribe import Transcriber, build_transcriber
@@ -331,7 +332,9 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
             # own meta_origin (already set by build_frontmatter from
             # cls.routed_by) — no separate origin field needed for one link.
             t0 = time.monotonic()
-            match = related.find(config.vault_path, cls.title, body, note_id)
+            match = related.find(
+                config.vault_path, cls.title, body, note_id,
+                embeddings_db=events.db_path.with_name("embeddings.db"))
             if match:
                 dest = paths[0]
                 fm_block, sep, rest = dest.read_text(encoding="utf-8").partition("\n---\n")
@@ -541,6 +544,7 @@ def run_loop(config, events, deps) -> None:
                 print(f"Processed {len(results)} file(s).")
             todos.tick(config, events)              # reminders + optional digest
             drain_tick(config, events)                # Pass A: anti-guilt drain — best-guess filing
+            embeddings.embeddings_tick(config, events)  # Pass I: incremental semantic index refresh
             gmailpull.gmail_tick(config, events)    # Pass E: pull "brain"-labeled Gmail into 04-Resources
             enrich.retry_pending(config, events)    # one re-attempt for stale enriched:false notes
             intake.sweep_orphaned_sidecars(config.inbox_path)  # abandoned photo-insight dotfiles

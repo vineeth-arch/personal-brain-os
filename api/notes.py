@@ -19,7 +19,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from pipeline import classify, relationships, route
+from pipeline import classify, embeddings, relationships, route
 from pipeline import resurface as resurface_mod
 from pipeline.enrich import insight_text as _insight_text
 from pipeline.events import EventLog
@@ -1065,9 +1065,62 @@ def search_vault(vault: Path, q: str, limit: int = SEARCH_DEFAULT_LIMIT) -> list
             "folder": rel_parts[0],
             "excerpt": excerpt,
             "matched_in": matched_in,
+            "match": "text",
         }))
     hits.sort(key=lambda h: (h[0], h[1]))
     return [h[2] for h in hits[:limit]]
+
+
+def _semantic_hit(path: Path, vault: Path, hit_id: str, hit_title: str) -> dict | None:
+    """Build a SearchHit-shaped dict for one embeddings.db hit, reading the
+    note fresh off disk (the embeddings table only stores id/path/title/
+    vector, never body content — CLAUDE.md §1). None if the file behind an
+    embeddings row no longer exists or isn't readable; embeddings.db can
+    legitimately drift a little stale between reindex runs and the current
+    vault state, and a hybrid search silently skipping one stale row is the
+    right degrade, not a 500."""
+    text = read_note(path)
+    if text is None:
+        return None
+    fm, body = parse_frontmatter(text)
+    if not fm:
+        return None
+    rel_parts = path.relative_to(vault).parts
+    excerpt = body.strip()[:160]
+    return {
+        "id": hit_id, "type": fm.get("type", ""), "title": hit_title,
+        "file": "/".join(rel_parts), "folder": rel_parts[0] if rel_parts else "",
+        "excerpt": excerpt, "matched_in": "body", "match": "semantic",
+    }
+
+
+def hybrid_search(vault: Path, embeddings_db: Path, q: str, limit: int) -> list[dict]:
+    """Substring hits first (search_vault, ranking unchanged), then semantic
+    fills any remaining slots up to `limit` — a note search_vault already
+    found is never duplicated as a semantic result. Keyless, no
+    embeddings.db, or an empty index all fall back to substring-only,
+    silently — embeddings.embed_text/embeddings.query both degrade to
+    "nothing" rather than raising, so there's no separate keyless branch
+    needed here."""
+    text_hits = search_vault(vault, q, limit=limit)
+    remaining = limit - len(text_hits)
+    if remaining <= 0:
+        return text_hits
+    vector = embeddings.embed_text(q)
+    if vector is None:
+        return text_hits
+    seen_ids = {h["id"] for h in text_hits}
+    out = list(text_hits)
+    for hit_id, hit_title, hit_path, _score in embeddings.query(embeddings_db, vector, remaining + len(seen_ids)):
+        if len(out) - len(text_hits) >= remaining:
+            break
+        if hit_id in seen_ids:
+            continue
+        hit = _semantic_hit(Path(hit_path), vault, hit_id, hit_title)
+        if hit is not None:
+            out.append(hit)
+            seen_ids.add(hit_id)
+    return out
 
 
 # ---- multi-topic split (Pass E, Task E1) ------------------------------------

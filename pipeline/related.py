@@ -2,12 +2,20 @@
 time (Pass R, B7). Self-contained substring scan, same reasoning as
 pipeline/resurface.py: this package never imports from api/, so this
 duplicates a minimal frontmatter reader rather than reusing api/notes.py's.
-The `embedder` parameter is an unused seam for Pass I's semantic upgrade —
-always None today, so behavior is unchanged until that pass wires it up."""
+
+Pass I: `embeddings_db`, when given, tries a semantic match first via
+pipeline/embeddings.py — embed title+body, cosine-query embeddings.db, take
+the best hit that isn't `exclude_id` — and only falls through to the
+substring scan below when that comes up empty (no key, no embeddings.db rows
+yet, or every semantic hit was excluded). On a cockpit with no
+OPENAI_API_KEY set, embed_text degrades to None silently, so this is
+identical to the substring-only behavior from Pass R."""
 from __future__ import annotations
 
 import re
 from pathlib import Path
+
+from . import embeddings
 
 _EXCLUDED_FOLDERS = {"raw", "_System"}
 _MIN_WORD_LEN = 4
@@ -40,11 +48,27 @@ def _parse_frontmatter(text: str) -> tuple[dict[str, str], str]:
 
 
 def find(vault: Path, title: str, body: str, exclude_id: str, *,
-        embedder=None) -> dict | None:
+        embeddings_db: Path | None = None) -> dict | None:
     """One prior note whose title, frontmatter, or body shares a significant
     (>=4 char) word with `title` — ranked title-match > frontmatter-match >
     body-match, same philosophy as api/notes.py::search_vault. Deterministic:
-    ties broken by file path order (the vault walk is always sorted)."""
+    ties broken by file path order (the vault walk is always sorted).
+
+    When `embeddings_db` is given, tries a semantic match first (embeds
+    title+body, cosine-queries embeddings.db, takes the best hit that isn't
+    `exclude_id`) and only falls through to the substring scan below when
+    that comes up empty — no key, no embeddings.db rows yet, or every
+    semantic hit was excluded. This keeps behavior identical to before this
+    task on a cockpit with no OPENAI_API_KEY set: embed_text and query both
+    degrade to "nothing found" silently, so the substring path underneath
+    is untouched and still runs exactly as it did in Pass R."""
+    if embeddings_db is not None:
+        vector = embeddings.embed_text(f"{title}\n\n{body[:1500]}")
+        if vector is not None:
+            for hit_id, hit_title, _path, _score in embeddings.query(embeddings_db, vector, k=5):
+                if hit_id != exclude_id:
+                    return {"id": hit_id, "title": hit_title}
+
     words = {w.lower() for w in _WORD_RE.findall(title) if len(w) >= _MIN_WORD_LEN}
     if not words:
         return None

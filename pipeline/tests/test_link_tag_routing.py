@@ -31,6 +31,7 @@ class _Config:
 class _Events:
     def __init__(self):
         self.rows = []
+        self.db_path = Path("events.db")   # Stage 4b derives embeddings.db from this
 
     def log(self, *a, **kw):
         self.rows.append((a, kw))

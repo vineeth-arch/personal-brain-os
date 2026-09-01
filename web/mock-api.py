@@ -605,15 +605,15 @@ TODO_ITEMS = [] if MODE_EMPTY else [
 SEARCH_ITEMS = [] if MODE_EMPTY else [
     {"id": "20260703140000", "type": "resource", "title": "Weeknight dal",
      "file": "04-Resources/2026-07-03-weeknight-dal.md", "folder": "04-Resources",
-     "excerpt": "Weeknight dal", "matched_in": "title"},
+     "excerpt": "Weeknight dal", "matched_in": "title", "match": "text"},
     {"id": "20260701090000", "type": "person", "title": "Priya Raman",
      "file": "07-People/2026-07-01-priya-raman.md", "folder": "07-People",
      "excerpt": "- 2026-06-01 — coffee at Alserkal, talked about the studio residency",
-     "matched_in": "body"},
+     "matched_in": "body", "match": "text"},
     {"id": "20260620090000", "type": "learning", "title": "Spaced repetition retrieval",
      "file": "03-Learnings/2026-06-20-spaced-repetition.md", "folder": "03-Learnings",
      "excerpt": "…the trellis pattern maps neatly onto retrieval practice…",
-     "matched_in": "body"},
+     "matched_in": "body", "match": "text"},
 ]
 
 # Resource OS fixtures (Pass 6, mocked in Pass H) — the six /api/resources*

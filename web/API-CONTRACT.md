@@ -1193,6 +1193,16 @@ pipeline never reads it either) and `_System/` (logs, not knowledge) — the
 same boundary the pipeline itself respects. A file without frontmatter isn't
 a note the pipeline wrote and is skipped rather than guessed at.
 
+Pass I: hybrid search. Substring hits (as above) are returned first; if
+`limit` isn't filled, semantic hits fill the remaining slots — cosine
+similarity against `embeddings.db`, an incrementally-updated vector index
+computed only when `OPENAI_API_KEY` is set on the server. A note the
+substring scan already found is never duplicated as a semantic result. Every
+item carries `match: "text" | "semantic"` telling the client which path
+found it. With no key set, or before `embeddings.db` has any rows yet, the
+semantic fill is silently skipped and the response is substring-only — same
+as before this pass, never an error.
+
 `q` is matched case-insensitively as a substring against the title
 (frontmatter `title:`, falling back to the filename), every frontmatter value
 except `id`, and the full body — in that priority order. Results are ranked
@@ -1204,11 +1214,15 @@ to 50.
 { "items": [ {
   "id": "20260703140000", "type": "resource", "title": "Weeknight dal",
   "file": "04-Resources/2026-07-03-weeknight-dal.md", "folder": "04-Resources",
-  "excerpt": "Weeknight dal", "matched_in": "title"
+  "excerpt": "Weeknight dal", "matched_in": "title", "match": "text"
 } ] }
 ```
 
 `excerpt` is the matched line (frontmatter: `key: value`; body: the matched
 line trimmed to roughly 160 characters centered on the match), never the
-whole note. `matched_in` is one of `title | frontmatter | body`. `q` under 2
-characters → 400 envelope ("too short to be useful").
+whole note — for a semantic hit, `excerpt` is instead the note's first 160
+characters of body (there's no literal match position to center on).
+`matched_in` is one of `title | frontmatter | body` (a semantic hit is always
+`body` here — it's the schema-consistent default, not a literal match
+reason; `match` is the field that actually says how the hit was found). `q`
+under 2 characters → 400 envelope ("too short to be useful").
