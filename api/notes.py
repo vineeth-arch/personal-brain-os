@@ -636,7 +636,10 @@ def resurface_respond(vault: Path, db_path: Path, note_id: str, action: str,
     while f"^{note_id}-r{i}" in existing:
         i += 1
     block_id = f"{note_id}-r{i}"
-    line = f"- [ ] Follow up: {title} (from [[{note_id}]]) ^{block_id}"
+    # a title with an embedded newline could otherwise inject extra todo
+    # lines into the file — one line in, one line out
+    safe_title = title.splitlines()[0] if title.splitlines() else title
+    line = f"- [ ] Follow up: {safe_title} (from [[{note_id}]]) ^{block_id}"
 
     if not today_file.exists() or today_file.stat().st_size == 0:
         today_file.write_text(f"# Todos — {date.today().isoformat()}\n\n{line}\n", encoding="utf-8")

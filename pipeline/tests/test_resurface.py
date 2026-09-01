@@ -135,6 +135,38 @@ def test_k2_picks_two_different_notes(tmp_path):
     assert picked[0]["id"] != picked[1]["id"]
 
 
+# ---- same-day idempotency (review fix) -----------------------------------------
+# GET /api/resurfaced is polled on window focus by usePolling — including the
+# focus round-trip the "Open in Obsidian" button itself triggers — so pick()
+# must not re-roll new notes on every same-day call: the SET a repeated call
+# returns must stay stable, or the primary CTA destroys the very card it's on.
+
+def test_repeated_same_day_pick_returns_a_stable_set(tmp_path):
+    vault = tmp_path / "vault"
+    _candidate(vault, "02-Musings", "n1", "one", "2026-01-01")
+    _candidate(vault, "03-Learnings", "n2", "two", "2026-01-05")
+    _candidate(vault, "wiki", "n3", "three", "2026-01-10")
+    db = tmp_path / "events.db"
+    rng = random.Random(3)
+    first = resurface.pick(vault, db, k=2, now=TODAY, rng=rng)
+    second = resurface.pick(vault, db, k=2, now=TODAY, rng=rng)
+    assert {n["id"] for n in first} == {n["id"] for n in second}
+
+
+def test_archive_breaks_same_day_stability_immediately(tmp_path):
+    """The one case where a same-day repeat call must NOT stay stable: an
+    archive response on a just-shown card has to stick right away, not wait
+    for tomorrow's cooldown reset."""
+    vault = tmp_path / "vault"
+    _candidate(vault, "02-Musings", "n1", "only", "2026-01-01")
+    db = tmp_path / "events.db"
+    first = resurface.pick(vault, db, k=1, now=TODAY, rng=random.Random(1))
+    assert [n["id"] for n in first] == ["n1"]
+    resurface.record_response(db, "n1", "archive")
+    second = resurface.pick(vault, db, k=1, now=TODAY, rng=random.Random(1))
+    assert second == []
+
+
 # ---- record_response ---------------------------------------------------------
 
 def test_record_response_archive_inserts_when_no_prior_row(tmp_path):

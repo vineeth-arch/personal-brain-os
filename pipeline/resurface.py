@@ -11,7 +11,7 @@ from __future__ import annotations
 import random
 import re
 import sqlite3
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 
 from . import route
@@ -79,9 +79,17 @@ def pick(vault: Path, db_path: Path, k: int = 1, *,
     """Up to k candidates, weighted toward older notes, respecting a
     spaced-repetition cooldown that widens each time a note is shown again.
     Never picks a note whose response is 'archived'. Records last_shown/shows
-    for whatever it picks — a repeat call the same moment would see updated
-    cooldown state, by design (this is what prevents the SAME call from
-    picking a note twice when k>1)."""
+    for whatever it NEWLY picks — this is what prevents a SINGLE call from
+    picking a note twice when k>1.
+
+    Idempotent within a calendar day: a note already stamped last_shown==now
+    (by an earlier call today — GET /api/resurfaced is polled on window focus
+    by the client, and the primary "Open in Obsidian" button itself triggers
+    a focus round-trip) is returned as-is, WITHOUT re-stamping or re-rolling
+    the random draw, ahead of any new picks. That makes repeated same-day
+    calls return a stable set instead of replacing the cards out from under
+    the user and burning through the eligible pool. Only a genuinely new pick
+    (one not already shown today) advances state."""
     now = now or date.today()
     rng = rng or random.Random()
     candidates = _candidates(vault)
@@ -99,8 +107,28 @@ def pick(vault: Path, db_path: Path, k: int = 1, *,
             for row in conn.execute("SELECT note_id, last_shown, shows, response FROM resurface")
         }
 
+        # Notes already shown today go first, unchanged — archived still wins
+        # even over "already shown today" (an archive tap on a displayed card
+        # must stick immediately, not wait for tomorrow's cooldown reset).
+        today_iso = now.isoformat()
+        already_today_ids = {
+            note_id for note_id, state in rows.items()
+            if state["last_shown"] == today_iso and state["response"] != "archived"
+        }
+        # candidates is already in a deterministic scan order (folder, then
+        # filename) — filter through it rather than iterating the set
+        # directly, so which ones get kept when there are more than k is
+        # stable rather than hash-order dependent
+        picked: list[dict] = [c for c in candidates if c["id"] in already_today_ids][:k]
+
+        remaining_k = k - len(picked)
+        if remaining_k <= 0:
+            return picked
+
         eligible = []
         for c in candidates:
+            if c["id"] in already_today_ids:
+                continue  # already in `picked` above
             state = rows.get(c["id"], {"last_shown": None, "shows": 0, "response": None})
             if state["response"] == "archived":
                 continue
@@ -116,11 +144,10 @@ def pick(vault: Path, db_path: Path, k: int = 1, *,
             eligible.append((c, state, age_days))
 
         if not eligible:
-            return []
+            return picked
 
-        picked: list[dict] = []
         pool = list(eligible)
-        for _ in range(min(k, len(pool))):
+        for _ in range(min(remaining_k, len(pool))):
             weights = [age for _, _, age in pool]
             chosen = rng.choices(pool, weights=weights, k=1)[0]
             pool.remove(chosen)

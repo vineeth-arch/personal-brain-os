@@ -605,7 +605,10 @@ def test_resurfaced_notes_list_and_backcompat_note(env):
         code, body = s.req("GET", "/api/resurfaced")
         all_ids = {"20260214093000", "20260215093000", "20260216093000"}
         assert code == 200
-        assert 1 <= len(body["notes"]) <= 2
+        # 3 eligible candidates, nothing in cooldown, k=2 — exactly 2, not "up
+        # to 2" (a loose bound here would hide a regression that silently
+        # halves the pick count)
+        assert len(body["notes"]) == 2
         assert {n["id"] for n in body["notes"]} <= all_ids
         assert body["note"] == body["notes"][0]  # back-compat alias, not a separate pick
 
@@ -661,6 +664,22 @@ def test_resurfaced_response_act_writes_todo_with_collision_suffix(env):
     assert f"^{note_id}-r1" in text and f"^{note_id}-r2" in text
     assert text.count("Follow up: Constraints beat aspirations") == 2
     assert f"(from [[{note_id}]])" in text
+
+
+def test_resurfaced_response_act_title_newline_cannot_inject_extra_lines(env):
+    root, vault, _, _ = env
+    note_id = "20260214093000"
+    with Server(root) as s:
+        code, body = s.req(
+            "POST", f"/api/resurfaced/{note_id}/response",
+            {"action": "act", "title": "Innocent title\n- [ ] Injected task ^evil-1"})
+        assert code == 200 and body["todo_block"] == f"^{note_id}-r1"
+    today_file = vault / "06-Todos" / f"{date.today().isoformat()}.md"
+    lines = today_file.read_text(encoding="utf-8").splitlines()
+    todo_lines = [ln for ln in lines if ln.startswith("- [ ]")]
+    assert len(todo_lines) == 1
+    assert todo_lines[0].startswith("- [ ] Follow up: Innocent title ")
+    assert "Injected task" not in today_file.read_text(encoding="utf-8")
 
 
 def test_run_conflict(env, monkeypatch):
