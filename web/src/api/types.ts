@@ -128,6 +128,8 @@ export interface StreakDay {
 export interface Streak {
   current: number;
   days: StreakDay[];
+  total_captures: number;
+  last7: number;
 }
 
 export interface ResurfacedNote {

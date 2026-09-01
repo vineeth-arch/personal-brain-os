@@ -15,11 +15,12 @@ export function StreakDots({ streak }: { streak: Streak }) {
           {streak.current}
         </span>
         <span className="text-subtle text-sm font-semibold">
-          day{streak.current === 1 ? "" : "s"}
+          {streak.total_captures} capture{streak.total_captures === 1 ? "" : "s"} · {streak.last7} of last 7 days
         </span>
       </div>
       <p className="sr-only">
-        {streak.current}-day streak. Captured on {capturedCount} of the last 30 days.
+        {streak.current}-day streak. {streak.total_captures} total captures, {streak.last7} of the last 7 days,{" "}
+        {capturedCount} of the last 30 days.
       </p>
       <div aria-hidden="true" className="mt-4 flex flex-wrap gap-2.5">
         {streak.days.map((d) => (

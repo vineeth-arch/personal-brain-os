@@ -107,7 +107,18 @@ def streak(db_path: Path) -> dict:
     while cursor.isoformat() in captured_days:
         current += 1
         cursor -= timedelta(days=1)
-    return {"current": current, "days": days}
+
+    total_captures = _rows(
+        db_path,
+        "SELECT COUNT(DISTINCT file) FROM events WHERE stage='archive' AND status='ok'",
+    )
+    last7 = sum(1 for d in days[-7:] if d["captured"])
+    return {
+        "current": current,
+        "days": days,
+        "total_captures": total_captures[0][0] if total_captures else 0,
+        "last7": last7,
+    }
 
 
 def accuracy(db_path: Path) -> dict | None:

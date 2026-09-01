@@ -264,12 +264,16 @@ if a run is already in flight.
 
 ```json
 { "current": 12,
+  "total_captures": 217,
+  "last7": 5,
   "days": [ { "date": "2026-06-04", "captured": true } ] }
 ```
 
 `days` = exactly 30 entries, oldest → newest, ending today. A day counts as
 captured if any file completed the archive stage ok that day (same source as
-`processed_today`).
+`processed_today`). `total_captures` is the all-time distinct-file count of
+archive-ok events. `last7` is how many of the trailing 7 entries in `days`
+have `captured: true` — the same definition, just windowed.
 
 ### `GET /api/resurfaced`
 

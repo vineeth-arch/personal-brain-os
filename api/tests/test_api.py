@@ -561,6 +561,32 @@ def test_streak_rule(env):
         assert len(body["days"]) == 30 and body["days"][-1]["date"] == today.isoformat()
 
 
+def test_streak_totals_and_window(env):
+    root, _, _, _ = env
+    today = date.today()
+    rows = []
+    # Last 7 days (offsets 0-6), 7 distinct files → captured, inside the last7 window.
+    for i in range(7):
+        d = today - timedelta(days=i)
+        rows.append({"timestamp": f"{d.isoformat()}T09:00:00", "file": f"/in/capD{i}.m4a",
+                     "stage": "archive", "status": "ok"})
+    # Same file archived ok on two different days further back than 7 days —
+    # proves total_captures counts DISTINCT files, not events, and that these
+    # far-back days don't leak into the last7 window.
+    for offset in (10, 20):
+        d = today - timedelta(days=offset)
+        rows.append({"timestamp": f"{d.isoformat()}T09:00:00", "file": "/in/capShared.m4a",
+                     "stage": "archive", "status": "ok"})
+    _seed_events(root / "events.db", rows)
+    with Server(root) as s:
+        _, body = s.req("GET", "/api/streak")
+        # 7 distinct files in the last 7 days + 1 distinct shared file (2 events, 1 file) = 8.
+        assert body["total_captures"] == 8
+        # Only the trailing-7 days are captured; the two far-back captures (offset 10, 20)
+        # fall outside the window and must not be counted.
+        assert body["last7"] == 7
+
+
 def test_resurfaced_deterministic_and_null(env):
     root, vault, _, _ = env
     with Server(root) as s:

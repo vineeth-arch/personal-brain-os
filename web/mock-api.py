@@ -389,6 +389,8 @@ for day in reversed(STREAK_DAYS):
         CURRENT_STREAK += 1
     else:
         break
+TOTAL_CAPTURES = 0 if MODE_EMPTY else 217  # a plausible all-time number, not derived from STREAK_DAYS
+LAST7 = sum(1 for d in STREAK_DAYS[-7:] if d["captured"])
 
 RESURFACED = (
     None
@@ -883,7 +885,12 @@ class Handler(BaseHTTPRequestHandler):
                     events = [e for e in events if e["status"] == params["status"]]
                 return self._send(200, {"events": events[: int(params.get("limit", 100))]})
             if path == "/api/streak":
-                return self._send(200, {"current": CURRENT_STREAK, "days": STREAK_DAYS})
+                return self._send(200, {
+                    "current": CURRENT_STREAK,
+                    "days": STREAK_DAYS,
+                    "total_captures": TOTAL_CAPTURES,
+                    "last7": LAST7,
+                })
             if path == "/api/resurfaced":
                 return self._send(200, {"note": RESURFACED})
             if path == "/api/integrations":
