@@ -12,6 +12,7 @@ node_modules/
 
 # Local config & secrets (never commit)
 config.json
+config.json.bak-*
 .env
 
 # Pipeline database (SQLite = events/logs only, disposable)
@@ -28,3 +29,6 @@ web/brain-cockpit/
 
 # Manual backups (events.db copies — disposable, vault is the truth)
 backups/
+
+# /api/build disk snapshot (disposable, regenerated on demand)
+.build-snapshot.json

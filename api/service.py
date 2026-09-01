@@ -131,8 +131,6 @@ def accuracy(db_path: Path) -> dict | None:
         "SELECT message FROM events WHERE stage='approve' AND status='ok' "
         "ORDER BY id DESC LIMIT 50",
     )
-    if len(rows) < 10:
-        return None
     unchanged = 0
     total = 0
     for (message,) in rows:
@@ -142,15 +140,15 @@ def accuracy(db_path: Path) -> dict | None:
         total += 1
         if m.group(1) != "none" and m.group(1) == m.group(2):
             unchanged += 1
+    if total < 10:
+        return None
     return {"unchanged": unchanged, "total": total}
 
 
 def trust(db_path: Path) -> dict:
     """This-calendar-month counts for the Triage/Settings trust line:
     how many notes were gated through a human decision (approve events)
-    vs. filed automatically at best guess (drain events, once Task A5
-    exists — 0 until then, this function is written now so A5 only has
-    to add one more WHERE clause, not a new function)."""
+    vs. filed automatically at best guess (drain events, Task A5)."""
     month_prefix = date.today().isoformat()[:7]  # "YYYY-MM"
     gated = _rows(
         db_path,

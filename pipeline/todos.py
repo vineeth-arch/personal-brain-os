@@ -182,8 +182,8 @@ def _next_recur_block_id(vault: Path, block_id: str) -> str:
     future day's file (not just tomorrow's — a weekly todo jumps 7 days), so
     the collision check has to look at the WHOLE vault's 06-Todos folder, not
     just one file."""
-    existing = {t.block_id for t in scan(vault)}
-    existing |= {c.block_id for t in scan(vault) for c in t.children}
+    todos = scan(vault)
+    existing = {t.block_id for t in todos} | {c.block_id for t in todos for c in t.children}
     n = 2
     while f"{block_id}r{n}" in existing:
         n += 1

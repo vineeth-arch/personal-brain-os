@@ -22,6 +22,15 @@ _MIN_WORD_LEN = 4
 _WORD_RE = re.compile(r"[A-Za-z]+")
 _DATE_PREFIX_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-")
 
+# Below this cosine score, two notes are more likely coincidentally nearby
+# in embedding space than genuinely related — matches this cockpit's other
+# confidence-floor precedent (api/notes.py::drain_review's classify floor,
+# also 0.5). Without a floor, the semantic path always returns SOME hit
+# (embeddings.query never comes back empty once there are >=2 notes
+# indexed), so every classified note would get a "Past-you thought this
+# too" stamp even when the nearest neighbor isn't meaningfully related.
+_MIN_SEMANTIC_SIMILARITY = 0.5
+
 
 def _read_note(path: Path) -> str | None:
     try:
@@ -56,17 +65,19 @@ def find(vault: Path, title: str, body: str, exclude_id: str, *,
 
     When `embeddings_db` is given, tries a semantic match first (embeds
     title+body, cosine-queries embeddings.db, takes the best hit that isn't
-    `exclude_id`) and only falls through to the substring scan below when
-    that comes up empty — no key, no embeddings.db rows yet, or every
-    semantic hit was excluded. This keeps behavior identical to before this
-    task on a cockpit with no OPENAI_API_KEY set: embed_text and query both
-    degrade to "nothing found" silently, so the substring path underneath
-    is untouched and still runs exactly as it did in Pass R."""
+    `exclude_id` AND meets the `_MIN_SEMANTIC_SIMILARITY` floor) and only
+    falls through to the substring scan below when that comes up empty — no
+    key, no embeddings.db rows yet, every semantic hit was excluded, or the
+    best hit's cosine score was below the floor. This keeps behavior
+    identical to before this task on a cockpit with no OPENAI_API_KEY set:
+    embed_text and query both degrade to "nothing found" silently, so the
+    substring path underneath is untouched and still runs exactly as it did
+    in Pass R."""
     if embeddings_db is not None:
         vector = embeddings.embed_text(f"{title}\n\n{body[:1500]}")
         if vector is not None:
-            for hit_id, hit_title, _path, _score in embeddings.query(embeddings_db, vector, k=5):
-                if hit_id != exclude_id:
+            for hit_id, hit_title, _path, score in embeddings.query(embeddings_db, vector, k=5):
+                if hit_id != exclude_id and score >= _MIN_SEMANTIC_SIMILARITY:
                     return {"id": hit_id, "title": hit_title}
 
     words = {w.lower() for w in _WORD_RE.findall(title) if len(w) >= _MIN_WORD_LEN}

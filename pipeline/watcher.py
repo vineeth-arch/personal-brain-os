@@ -535,6 +535,10 @@ def run_loop(config, events, deps) -> None:
     someone noticed, and the only signal was the API watchdog's push half an
     hour later. A transient condition must cost one tick, not the daemon."""
     print(f"Watching {config.inbox_path} — polling every {POLL_SECONDS // 60} min. Ctrl-C to stop.")
+    # Persists across loop iterations (closed over by the loop body below) so
+    # gmail_tick's own access_token expiry check actually finds a still-valid
+    # cached token instead of doing a full refresh-token exchange every tick.
+    google_token_cache: dict = {}
     while True:
         try:
             # ingest.sweep runs inside run_once now (D1) — every entry point
@@ -545,7 +549,7 @@ def run_loop(config, events, deps) -> None:
             todos.tick(config, events)              # reminders + optional digest
             drain_tick(config, events)                # Pass A: anti-guilt drain — best-guess filing
             embeddings.embeddings_tick(config, events)  # Pass I: incremental semantic index refresh
-            gmailpull.gmail_tick(config, events)    # Pass E: pull "brain"-labeled Gmail into 04-Resources
+            gmailpull.gmail_tick(config, events, token_cache=google_token_cache)  # Pass E: pull "brain"-labeled Gmail into 04-Resources
             dex.pull_contacts(config, events)        # Pass I: pull Dex contacts, auto-match by email/phone
             enrich.retry_pending(config, events)    # one re-attempt for stale enriched:false notes
             intake.sweep_orphaned_sidecars(config.inbox_path)  # abandoned photo-insight dotfiles

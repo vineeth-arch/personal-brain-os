@@ -160,6 +160,18 @@ function writeSplitNote(root, { id, slug, created }) {
   return filePath;
 }
 
+// Ports pipeline/route.py::_kebab verbatim so this file can predict a split
+// child's filename (execute_split slugs each child from its segment TITLE,
+// never its id — see execute_split's `base = f"{created}-{_kebab(title)}"`).
+// Needed because the child id itself is no longer predictable from the
+// parent id (Important #1 fix: ids are minted from a real timestamp walk,
+// not "<parent><index>"), so filename is the only stable handle left.
+function kebab(text) {
+  let slug = text.toLowerCase().replace(/[^\w\s-]/g, "").trim();
+  slug = slug.replace(/[\s_]+/g, "-");
+  return slug.slice(0, 60) || "note";
+}
+
 // The body portion of a note's text (everything after the frontmatter's
 // closing fence + blank line) — for byte-identical before/after comparisons,
 // mirroring api/notes.py's parse_frontmatter without shelling out to Python.
@@ -1005,18 +1017,31 @@ try {
   await splitCard.getByRole("button", { name: "Split" }).click();
   await page.getByText("Split into separate notes.").waitFor();
 
-  const expectedChildIds = SPLIT_SEGMENTS.map((_, i) => `${splitParentId}${i + 1}`);
+  // Child ids are minted from a real timestamp walk, not "<parent><index>"
+  // (Important #1 fix), so they can't be predicted here — filename CAN,
+  // since execute_split slugs each child from its segment title, not its id.
+  const expectedChildFiles = SPLIT_SEGMENTS.map((seg) => `2026-08-20-${kebab(seg.title)}.md`);
   let childPaths = [];
   for (let i = 0; i < 100; i++) {
-    childPaths = expectedChildIds.map((childId) =>
-      fs.readdirSync(splitDir)
-        .map((f) => path.join(splitDir, f))
-        .find((p) => p !== splitParentPath && fs.readFileSync(p, "utf8").includes(`id: ${childId}`)));
-    if (childPaths.every(Boolean)) break;
+    childPaths = expectedChildFiles.map((fname) => path.join(splitDir, fname));
+    if (childPaths.every((p) => fs.existsSync(p))) break;
     await new Promise((r) => setTimeout(r, 100));
   }
-  assert.ok(childPaths.every(Boolean),
-    `expected child notes ${expectedChildIds.join(", ")}, found ${JSON.stringify(childPaths)}`);
+  assert.ok(childPaths.every((p) => fs.existsSync(p)),
+    `expected child note files ${expectedChildFiles.join(", ")}, found ${JSON.stringify(fs.readdirSync(splitDir))}`);
+
+  // Every minted child id matches the locked YYYYMMDDHHmmss format
+  // (CLAUDE.md SCHEMA-REFERENCE.md #1), proven through the real HTTP
+  // round-trip, not just the unit-level test.
+  const childIds = childPaths.map((p) => {
+    const m = fs.readFileSync(p, "utf8").match(/^id: (\S+)$/m);
+    assert.ok(m, `${p} has no id: frontmatter field`);
+    return m[1];
+  });
+  for (const childId of childIds) {
+    assert.match(childId, /^\d{14}$/, `child id ${childId} is not YYYYMMDDHHmmss`);
+  }
+  assert.equal(new Set(childIds).size, childIds.length, "child ids must all be distinct");
 
   const parentTextAfterSplit = fs.readFileSync(splitParentPath, "utf8");
   assert.match(parentTextAfterSplit, /status: archived/, "parent was not archived after Split");

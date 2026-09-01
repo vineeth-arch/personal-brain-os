@@ -213,3 +213,40 @@ def test_related_find_without_embeddings_db_matches_pass_r_behavior_unchanged(tm
     _note(vault, "02-Musings", "n1", "warehouse-visit-notes")
     result = related.find(vault, "Warehouse logistics plan", "no shared word here", "n2")
     assert result == {"id": "n1", "title": "warehouse-visit-notes"}
+
+
+def test_related_find_below_similarity_floor_falls_through_to_substring(tmp_path, monkeypatch):
+    """A weak semantic neighbor (cosine well below
+    related._MIN_SEMANTIC_SIMILARITY) must never be returned just because
+    it's the nearest thing in embedding space — this is the bug the
+    similarity floor closes. With no substring match either, find() must
+    come back None rather than the weak semantic hit."""
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    vault = tmp_path / "vault"
+    db_path = tmp_path / "embeddings.db"
+    q_vector = [1.0, 0.0, 0.0]
+    # orthogonal to the query vector -> cosine 0.0, well below the 0.5 floor
+    _seed_row(db_path, "weak-neighbor", "/v/weak-neighbor.md", "Unrelated note", [0.0, 1.0, 0.0])
+    monkeypatch.setattr(embeddings, "_default_post", lambda texts: [q_vector for _ in texts])
+
+    result = related.find(vault, "Warehouse logistics plan", "some body", "exclude-me",
+                          embeddings_db=db_path)
+    assert result is None, "a weak semantic hit below the floor must not be returned"
+
+
+def test_related_find_below_similarity_floor_falls_through_to_real_substring_hit(tmp_path, monkeypatch):
+    """Same weak-neighbor setup as above, but this time a real substring
+    candidate exists in the vault — find() must fall through to it rather
+    than settling for the weak semantic hit."""
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    vault = tmp_path / "vault"
+    _note(vault, "02-Musings", "substring-candidate", "warehouse-notes",
+         body="warehouse logistics plan")
+    db_path = tmp_path / "embeddings.db"
+    q_vector = [1.0, 0.0, 0.0]
+    _seed_row(db_path, "weak-neighbor", "/v/weak-neighbor.md", "Unrelated note", [0.0, 1.0, 0.0])
+    monkeypatch.setattr(embeddings, "_default_post", lambda texts: [q_vector for _ in texts])
+
+    result = related.find(vault, "Warehouse logistics plan", "some body", "exclude-me",
+                          embeddings_db=db_path)
+    assert result == {"id": "substring-candidate", "title": "warehouse-notes"}

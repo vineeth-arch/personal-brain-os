@@ -6,8 +6,10 @@ in api/tests/test_push.py) and the git commit-count assertion convention
 from pipeline/tests/test_drain.py."""
 from __future__ import annotations
 
+import json as json_mod
 import re
 import subprocess
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -198,3 +200,70 @@ def test_gmail_tick_zero_filed_makes_no_commit(vault, events):
     gmailpull.gmail_tick(config, events, fetch=fake)
 
     assert _commit_count(vault) == before
+
+
+# ---- 7. a real token_cache dict is reused across ticks -----------------------
+
+def test_shared_token_cache_avoids_a_second_token_exchange(vault, events, monkeypatch):
+    """The fix for Important #4: run_loop must hold one token_cache dict
+    across ticks (not build a fresh empty one every call), or gmail_tick's
+    own access_token() never finds a still-valid cached token and does a
+    full refresh-token exchange every single poll. This exercises the REAL
+    api.google.access_token() caching path (fetch=None, so gmail_tick builds
+    its own urllib-based fetch) rather than the injected FakeGmail, since
+    that's the only way to prove the token exchange itself is skipped on the
+    second call. Follows this file's own established fake-fetch idiom, just
+    one boundary lower: the network call being faked is Google's OAuth token
+    endpoint (via api.google._token_request) instead of the Gmail API."""
+    from api import google as google_mod
+
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "cid")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "csecret")
+
+    token_requests: list[dict] = []
+
+    def fake_token_request(fields: dict) -> dict:
+        token_requests.append(fields)
+        if len(token_requests) > 1:
+            raise AssertionError(
+                "a second token exchange happened — the token_cache wasn't reused")
+        return {"access_token": "tok-1", "expires_in": 3600}
+
+    monkeypatch.setattr(google_mod, "_token_request", fake_token_request)
+
+    # Fakes Google's Gmail HTTP boundary (gmail_tick's own internal fetch
+    # closure, built only when fetch=None) — not FakeGmail, since exercising
+    # the real access_token() path is the whole point of this test. Returns
+    # "label not found" so pull() short-circuits after exactly one GET,
+    # keeping the fake minimal, and records the Authorization header seen
+    # each time so the SAME cached token is proven to have been reused.
+    seen_auth_headers: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, payload: dict):
+            self._body = json_mod.dumps(payload).encode("utf-8")
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def fake_urlopen(req, timeout=10):
+        seen_auth_headers.append(req.get_header("Authorization"))
+        return FakeResponse({"labels": [{"id": "Label_1", "name": "not-brain"}]})
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+    config = make_config(vault, refresh_token="rt")
+    token_cache: dict = {}
+
+    gmailpull.gmail_tick(config, events, token_cache=token_cache)
+    gmailpull.gmail_tick(config, events, token_cache=token_cache)
+
+    assert len(token_requests) == 1, "the token exchange must only happen once"
+    assert seen_auth_headers == ["Bearer tok-1", "Bearer tok-1"]
+    assert token_cache["access_token"] == "tok-1"

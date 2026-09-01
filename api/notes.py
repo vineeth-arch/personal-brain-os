@@ -408,8 +408,16 @@ def drain_review(vault: Path, db_path: Path, *, older_than_days: int = 14,
     guess when it was confident enough, parked out of the queue otherwise.
     Every note this touches keeps its full content; nothing is deleted, and
     the whole run is ONE git commit so it's undone with one `git revert`.
-    `origin: ai` + `drained: true` mark exactly which notes this filed, so
-    that provenance (CLAUDE.md §1/§2) is never ambiguous later.
+    Only `drained: true` is stamped on a filed note — `origin` is left
+    exactly as the note already had it (always `human` in practice, since
+    drain only ever touches voice/text captures a human made: the AI never
+    wrote the note's content, it only accepted its own type guess without a
+    human confirming it). `meta_origin` (already set at creation time by
+    route.build_frontmatter, from `cls.routed_by`) already carries the "was
+    the type AI-guessed" signal — CLAUDE.md §2 is explicit that `origin` can
+    NEVER be reconstructed later, so it must never be overwritten here.
+    `drained: true` marks exactly which notes this filed, so a human can
+    spot them and `git revert HEAD` undoes the whole run.
 
     Floor check: a filename with NO classify event at all (e.g. a tag-routed
     capture that skipped the LLM entirely) is treated as PARKED, never filed
@@ -460,7 +468,6 @@ def drain_review(vault: Path, db_path: Path, *, older_than_days: int = 14,
         if confident_enough and note_type in route.TYPE_FOLDER and note_type != "conversation":
             dest = _move_note(vault, path, text, note_type)
             fm_block, sep, body = dest.read_text(encoding="utf-8").partition("\n---\n")
-            fm_block = route.stamp_field(fm_block, "origin", "ai")
             fm_block = route.stamp_field(fm_block, "drained", "true")
             dest.write_text(fm_block + sep + body, encoding="utf-8")
             filed += 1
@@ -1150,6 +1157,28 @@ def _find_note_by_id(vault: Path, note_id: str) -> Path | None:
     return None
 
 
+def _all_note_ids(vault: Path) -> set[str]:
+    """Every id currently in use anywhere in the vault — sibling of
+    _find_note_by_id (same exclusion conventions: raw/, _System/, dotted
+    paths) but collecting every id instead of stopping at one match. Used
+    by execute_split to guarantee a freshly minted child id can never
+    collide with an existing note."""
+    ids: set[str] = set()
+    for p in sorted(vault.rglob("*.md")):
+        rel_parts = p.relative_to(vault).parts
+        if not rel_parts or rel_parts[0] in ("raw", "_System"):
+            continue
+        if any(part.startswith(".") for part in rel_parts):
+            continue
+        text = read_note(p)
+        if text is None:
+            continue
+        fm, _ = parse_frontmatter(text)
+        if fm.get("id"):
+            ids.add(fm["id"])
+    return ids
+
+
 _SPLIT_PENDING_QUERY = (
     "SELECT e.file, e.message FROM events e "
     "JOIN (SELECT file, MAX(id) AS mid FROM events WHERE stage='split' GROUP BY file) m "
@@ -1249,11 +1278,15 @@ def execute_split(vault: Path, note_id: str, segments: list[dict]) -> list[str]:
             f"segments for {note_id} stop at line {segments[-1]['end_line']} "
             f"but the note has {len(lines)} lines — the tail would be lost")
 
+    existing_ids = _all_note_ids(vault)
+    when = datetime.strptime(note_id, "%Y%m%d%H%M%S")
     child_ids: list[str] = []
     for i, seg in enumerate(segments, start=1):
-        child_id = f"{note_id}{i}"
-        while child_id in child_ids:  # pathological collision guard
-            child_id += "x"
+        when += timedelta(seconds=1)
+        while when.strftime("%Y%m%d%H%M%S") in existing_ids:
+            when += timedelta(seconds=1)
+        child_id = when.strftime("%Y%m%d%H%M%S")
+        existing_ids.add(child_id)
         child_ids.append(child_id)
         # No .rstrip() here — a segment legitimately ending on a blank line
         # (an ordinary LLM segmentation) would otherwise have that blank

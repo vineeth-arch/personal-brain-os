@@ -327,6 +327,27 @@ def test_accuracy_null_below_ten(env):
         assert body["accuracy"] is None
 
 
+def test_accuracy_null_when_fewer_than_ten_rows_actually_parse(env):
+    """10 raw approve rows, but only 3 carry a parseable suggested=/chosen=
+    pair — the floor must gate on the PARSED count (total), not the raw row
+    count, or this would wrongly return a 3-in-the-denominator ratio."""
+    root, _, _, _ = env
+    rows = [
+        {"timestamp": "2026-07-01T09:00:00", "file": "/in/a.md", "stage": "approve",
+         "status": "ok", "message": f"id={i} suggested=learning chosen=learning"}
+        for i in range(3)
+    ] + [
+        {"timestamp": "2026-07-01T09:00:00", "file": "/in/b.md", "stage": "approve",
+         "status": "ok", "message": "not a parseable message"}
+        for _ in range(7)
+    ]
+    _seed_events(root / "events.db", rows)
+    with Server(root) as s:
+        code, body = s.req("GET", "/api/review")
+        assert code == 200
+        assert body["accuracy"] is None
+
+
 def test_trust_month_counts(env):
     root, _, _, _ = env
     this_month = date.today().isoformat()[:7]

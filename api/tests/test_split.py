@@ -6,6 +6,7 @@ test_resources.py's import idiom."""
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -140,6 +141,13 @@ def test_split_decision_reconstructs_parent_body_exactly(env):
         child_ids = body["child_ids"]
         assert len(child_ids) == len(SEGMENTS)
 
+        # every minted child id matches the locked YYYYMMDDHHmmss format
+        # (CLAUDE.md SCHEMA-REFERENCE.md #1) — not "<parent><index>", which
+        # produces the wrong digit count and is the bug this fix closes.
+        for child_id in child_ids:
+            assert re.fullmatch(r"\d{14}", child_id), child_id
+        assert len(set(child_ids)) == len(child_ids)  # all distinct
+
         # the parent is archived IN PLACE — full original text intact, never deleted
         assert parent_path.exists()
         parent_text = parent_path.read_text(encoding="utf-8")
@@ -253,6 +261,39 @@ def test_invalid_decision_400s(env):
         code, body = s.req("POST", f"/api/review/split/{PARENT_ID}", {"decision": "sideways"})
         assert code == 400
         assert set(body["error"]) == {"what", "cause", "todo"}
+
+
+# ---- execute_split id minting -------------------------------------------------
+
+def test_execute_split_child_ids_skip_existing_collisions(env):
+    """The child id minter steps forward one second at a time from the
+    parent's own timestamp, skipping any second already claimed by a real
+    note in the vault. Seed a note that occupies the very first candidate
+    second so the minter is forced to step past it."""
+    from api import notes as notes_mod
+
+    root, vault, _, _ = env
+    _write_parent_note(vault)  # id PARENT_ID = 20260628070000
+
+    # occupies the first candidate (parent + 1s) — the minter must skip it
+    collider_id = "20260628070001"
+    collider_dir = vault / "02-Musings"
+    collider_dir.mkdir(parents=True, exist_ok=True)
+    (collider_dir / "collider.md").write_text(
+        f"---\nid: {collider_id}\ntype: musing\ncreated: 2026-06-28\n"
+        f"source: manual\norigin: human\nstatus: active\ncategories: []\n"
+        f"subjects: []\ntags: []\n---\n\nsomething else entirely\n",
+        encoding="utf-8")
+
+    child_ids = notes_mod.execute_split(vault, PARENT_ID, SEGMENTS)
+
+    assert len(child_ids) == len(SEGMENTS)
+    for child_id in child_ids:
+        assert re.fullmatch(r"\d{14}", child_id), child_id
+    assert collider_id not in child_ids
+    assert len(set(child_ids)) == len(child_ids)
+    # the minter stepped past the collision: first child is 2s after parent
+    assert child_ids[0] == "20260628070002"
 
 
 # ---- watcher → notes.py JSON contract ----------------------------------------

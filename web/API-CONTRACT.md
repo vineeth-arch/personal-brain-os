@@ -122,12 +122,19 @@ job — documented here now so the contract doesn't need a second edit then).
 An item sitting in this queue for 14+ days is resolved automatically by a
 once-daily drain tick (anti-guilt, Pass A/B5) rather than left to age
 forever: a confident classifier guess (`confidence >= 0.5`) is filed exactly
-like an `/approve` call would file it, then marked `origin: ai` and
-`drained: true` so its provenance is never ambiguous — every filing is
-revertible with a single `git revert`. Everything else (including every
-`type: conversation` item, which never carries a classify event and so is
-always treated as below the floor) moves to `00-Inbox/parked/` with its
-frontmatter completely untouched and simply stops appearing in `items` here.
+like an `/approve` call would file it, then marked `drained: true` (`origin`
+is left exactly as the note already had it — never overwritten, since the
+note's content is still 100% human speech) so its provenance is never
+ambiguous — every filing is revertible with a single `git revert`. Every
+`type: conversation` item is ALWAYS parked regardless of confidence, on top
+of the floor check: it DOES carry a classify event (confidence 1.0,
+`by=plaud`, logged unconditionally so the review queue can show a number)
+so the floor check alone would wrongly treat it as confident enough to file
+— but a conversation's TYPE is never in doubt, only its attendees are, and
+auto-filing it would skip attendee confirmation entirely, which CLAUDE.md
+§3 forbids. Everything parked (including every conversation) moves to
+`00-Inbox/parked/` with its frontmatter completely untouched and simply
+stops appearing in `items` here.
 Parked notes are not deleted — a human can still find and re-file them by
 hand — they're just out of the daily queue.
 

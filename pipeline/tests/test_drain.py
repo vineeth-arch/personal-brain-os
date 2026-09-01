@@ -89,7 +89,12 @@ def test_stale_high_confidence_item_is_filed(vault, events):
     text = dest.read_text(encoding="utf-8")
     assert "type: learning" in text
     assert "status: active" in text          # route.STATUS_INITIAL["learning"]
-    assert "origin: ai" in text
+    # origin is NEVER overwritten by drain — the note's content is still
+    # 100% human speech; only the TYPE was accepted without human review,
+    # which meta_origin (set at creation) already records. See CLAUDE.md §2:
+    # origin can never be reconstructed later, so it must survive untouched.
+    assert "origin: human" in text
+    assert "meta_origin: ai" in text         # untouched — set at creation, not by drain
     assert "drained: true" in text
     assert "id: 20260816090000" in text      # untouched
     assert "the body" in text                # body preserved
