@@ -271,3 +271,88 @@ def test_absolute_cover_url_passes_through_unsigned(env):
         code, body = s.req("GET", "/api/resources")
         assert code == 200
         assert body["items"][0]["cover"] == "https://picsum.photos/seed/dal/400/560"
+
+
+# ---- review fix: mutation routes were still returning the raw frontmatter
+# cover value, silently re-breaking the exact bug this task exists to close
+# (a cover advancing status or saving an insight would 404 until the next
+# poll re-minted it). Both POST /api/resources/{id}/status and
+# POST /api/resources/{id}/insight return the same _resource_summary shape
+# as GET /api/resources — they need the identical _signed_cover treatment. --
+
+def test_status_route_returns_signed_cover_that_round_trips(env):
+    root, vault, _, _ = env
+    attachments = vault / "attachments"
+    attachments.mkdir()
+    content = b"jpeg-bytes-status"
+    (attachments / "sample.jpg").write_bytes(content)
+    _write_photo_resource(vault, "20260731080000", "2026-07-31")
+
+    with Server(root) as s:
+        code, body = s.req(
+            "POST", "/api/resources/20260731080000/status",
+            body={"status": "to-consume"})
+        assert code == 200
+        cover = body["cover"]
+        # not the raw frontmatter value
+        assert cover != "attachments/sample.jpg"
+        assert cover.startswith("/api/att/sample.jpg?")
+        # and it actually works, unauthenticated, through the real GET route —
+        # not just a string-prefix check
+        code2, raw_body = _get_raw(s.port, cover, token=None)
+        assert code2 == 200
+        assert raw_body == content
+
+
+def test_insight_route_returns_signed_cover_that_round_trips(env):
+    root, vault, _, _ = env
+    attachments = vault / "attachments"
+    attachments.mkdir()
+    content = b"jpeg-bytes-insight"
+    (attachments / "sample.jpg").write_bytes(content)
+    _write_photo_resource(vault, "20260731080000", "2026-07-31")
+
+    with Server(root) as s:
+        code, body = s.req(
+            "POST", "/api/resources/20260731080000/insight",
+            body={"text": "Nice light in this one."})
+        assert code == 200
+        cover = body["cover"]
+        assert cover != "attachments/sample.jpg"
+        assert cover.startswith("/api/att/sample.jpg?")
+        code2, raw_body = _get_raw(s.port, cover, token=None)
+        assert code2 == 200
+        assert raw_body == content
+
+
+def test_enrich_route_has_no_cover_field_to_sign(env):
+    """The enrich route returns {ok, enriched} — a bool, never a resource
+    summary shape — so there is nothing here for _signed_cover to touch.
+    Asserted explicitly so a future shape change doesn't silently reopen
+    the same bug the status/insight routes just had."""
+    root, vault, _, _ = env
+    _write_photo_resource(vault, "20260731080000", "2026-07-31")
+
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/resources/20260731080000/enrich")
+        assert code == 200
+        assert set(body) == {"ok", "enriched"}
+
+
+# ---- review fix: hmac.compare_digest raises TypeError (-> uncaught 500) on
+# a non-ASCII sig; it must fail closed into the same 403 envelope instead. --
+
+def test_non_ascii_signature_is_403_not_500(env):
+    root, vault, _, _ = env
+    attachments = vault / "attachments"
+    attachments.mkdir()
+    (attachments / "sample.jpg").write_bytes(b"bytes")
+
+    with Server(root) as s:
+        exp = int(time.time()) + 600
+        code, body = _get_raw(
+            s.port, f"/api/att/sample.jpg?exp={exp}&sig=%C3%A9%C3%A9%C3%A9",
+            token=None)
+        assert code == 403
+        envelope = _envelope(body)
+        assert "isn't valid" in envelope["what"]

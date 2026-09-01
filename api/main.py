@@ -77,7 +77,7 @@ _ATTACHMENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]*$")
 
 def sign_attachment(name: str, token: str, *, now: int | None = None,
                     ttl: int = ATTACHMENT_TTL_SECONDS) -> str:
-    exp = (now or int(time.time())) + ttl
+    exp = (now if now is not None else int(time.time())) + ttl
     sig = hmac.new(token.encode(), f"{name}:{exp}".encode(), hashlib.sha256).hexdigest()
     return f"/api/att/{name}?exp={exp}&sig={sig}"
 
@@ -1067,22 +1067,28 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 "(SCHEMA-REFERENCE.md §6).",
                 "Advance to one of the lifecycle statuses.")
         try:
-            return notes.set_resource_status(config.vault_path, note_id, body.status)
+            updated = notes.set_resource_status(config.vault_path, note_id, body.status)
         except LookupError:
             raise Envelope(
                 404, "That resource isn't in the vault.",
                 "No resource note in 04-Resources has that id.",
                 "Refresh the resource list.")
+        token = str((config.raw.get("api") or {}).get("auth_token") or "")
+        updated["cover"] = _signed_cover(updated["cover"], token)
+        return updated
 
     @app.post("/api/resources/{note_id}/insight")
     def resource_insight(note_id: str, body: InsightBody, config=Depends(require_token)):
         try:
-            return notes.set_resource_insight(config.vault_path, note_id, body.text)
+            updated = notes.set_resource_insight(config.vault_path, note_id, body.text)
         except LookupError:
             raise Envelope(
                 404, "That resource isn't in the vault.",
                 "No resource note in 04-Resources has that id.",
                 "Refresh the resource list.")
+        token = str((config.raw.get("api") or {}).get("auth_token") or "")
+        updated["cover"] = _signed_cover(updated["cover"], token)
+        return updated
 
     # No Depends(require_token) here, deliberately — same reasoning as
     # GET /api/health (must answer before a token can even be entered) and
@@ -1105,6 +1111,10 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
             raise invalid
         if exp < int(time.time()):
             raise invalid
+        # compare_digest raises TypeError on a non-ASCII str — a malformed
+        # sig must fail closed into the same envelope, never an uncaught 500.
+        if not sig.isascii():
+            raise invalid
         expected_sig = hmac.new(token.encode(), f"{name}:{exp}".encode(), hashlib.sha256).hexdigest()
         if not hmac.compare_digest(sig, expected_sig):
             raise invalid
@@ -1120,7 +1130,8 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 "Reload the screen.")
         content_type = mimetypes.guess_type(name)[0] or "application/octet-stream"
         return FileResponse(target, media_type=content_type,
-                            headers={"Cache-Control": "private, max-age=600"})
+                            headers={"Cache-Control": "private, max-age=600",
+                                    "X-Content-Type-Options": "nosniff"})
 
     # ---- config (safe subset only — key values never leave the server) --------------
 
