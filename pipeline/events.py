@@ -1,5 +1,10 @@
 """Event log: disposable SQLite (events/logs only, never note content — CLAUDE.md §1)
-plus the human-readable vault artifacts (capture_log, PIPELINE-STATUS, heartbeat)."""
+plus the human-readable vault artifacts (capture_log, PIPELINE-STATUS, heartbeat).
+
+Every table here is disposable state (CLAUDE.md §1) — including `resurface`
+(Pass R, B6): it only tracks which notes have been shown and when, so the
+hybrid picker's cooldown works. Losing events.db just means every note
+becomes eligible to resurface again; nothing durable is lost."""
 from __future__ import annotations
 
 import sqlite3
@@ -27,6 +32,12 @@ CREATE TABLE IF NOT EXISTS ingested_files (
     size INTEGER NOT NULL,
     copied_at TEXT NOT NULL,
     PRIMARY KEY (src, mtime_ns, size)
+);
+CREATE TABLE IF NOT EXISTS resurface (
+    note_id TEXT PRIMARY KEY,
+    last_shown TEXT,                 -- ISO date, NULL until first shown
+    shows INTEGER NOT NULL DEFAULT 0,
+    response TEXT                    -- NULL | connected | acted | archived
 );
 """
 
