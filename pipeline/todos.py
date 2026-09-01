@@ -180,10 +180,17 @@ def _tick(config, events, now: datetime) -> None:
     stats = events.digest_stats(today - timedelta(days=1))
     quiet_pipeline = not (stats["captured"] or stats["needs_review"] or stats["failed"])
     drain_filed = _yesterday_drain_filed(events, today - timedelta(days=1))
+    # lazy import: api/notes.py isn't a dependency of the pipeline package
+    # under normal operation (only the FastAPI app imports it), and a
+    # top-level import here would create a pipeline→api coupling nothing
+    # else in this package has — same precedent as watcher.py::drain_tick.
+    from api import notes as notes_mod
+    triage_count = notes_mod.count_review(Path(config.vault_path))
     # the relationship half of the morning — folded into THIS push, never a second one
     people_lines = morning.people_section(config, today)
     people_lines += morning.push_section(config, events.db_path)
-    if not due_today and not overdue and quiet_pipeline and not drain_filed and not people_lines:
+    if not due_today and not overdue and quiet_pipeline and not drain_filed and not triage_count \
+            and not people_lines:
         events.mark_reminder(digest_key)  # nothing to say today; don't re-check
         return
     lines = []
@@ -196,6 +203,8 @@ def _tick(config, events, now: datetime) -> None:
         lines.append(" · ".join(summary))
     if drain_filed:
         lines.append(f"{drain_filed} old items filed at best guess — one command undoes it.")
+    if triage_count:
+        lines.append(f"{triage_count} waiting in triage.")
     picked = resurface_mod.pick(Path(config.vault_path), events.db_path, k=1, now=now.date())
     if picked:
         lines.append(f"Resurfaced: {picked[0]['title']}")

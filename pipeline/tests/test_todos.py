@@ -304,3 +304,76 @@ def test_digest_click_is_empty_without_a_configured_public_url(vault, tmp_path, 
     todos.tick(config, events, now=datetime(2026, 7, 1, 8, 5, tzinfo=todos.TZ))
     assert calls == [""]
     events.close()
+
+
+# ---- triage queue count line (Task R4, B9) ---------------------------------
+
+def _needs_review_note(vault_path, name: str) -> None:
+    inbox = vault_path / "00-Inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / f"{name}.md").write_text(
+        "---\nstatus: needs-review\n---\n\nbody\n", encoding="utf-8")
+
+
+def test_digest_triage_count_line_ordered_between_drain_and_resurfaced(vault, tmp_path, monkeypatch):
+    """Order: pipeline summary → drain → triage count → Resurfaced → Overdue
+    → Today → People."""
+    config = make_config(vault)
+    for name in ("a", "b", "c"):
+        _needs_review_note(config.vault_path, name)
+    resurface_dir = config.vault_path / "02-Musings"
+    resurface_dir.mkdir(parents=True, exist_ok=True)
+    (resurface_dir / "2020-01-01-an-old-hunch.md").write_text(
+        "---\nid: n1\ntype: musing\ncreated: 2020-01-01\nstatus: active\n---\n\n"
+        "A hunch worth revisiting.\n", encoding="utf-8")
+
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    events.conn.execute(
+        "INSERT INTO events (timestamp, file, stage, status, message) VALUES (?,?,?,?,?)",
+        ("2026-06-30T03:00:00", str(config.vault_path), "drain", "ok", "filed=7 parked=2"))
+    events.conn.commit()
+
+    pushes = []
+    monkeypatch.setattr(todos.errors, "ntfy",
+                        lambda url, topic, msg, title="", click="": pushes.append(msg))
+    todos.tick(config, events, now=datetime(2026, 7, 1, 8, 5, tzinfo=todos.TZ))
+    assert len(pushes) == 1
+    digest = pushes[0]
+    assert "3 waiting in triage." in digest
+    assert digest.index("old items filed") < digest.index("3 waiting in triage.") \
+        < digest.index("Resurfaced:")
+    events.close()
+
+
+def test_digest_omits_triage_line_when_queue_is_empty(vault, tmp_path, monkeypatch):
+    config = make_config(vault)
+    todos_dir = config.vault_path / "06-Todos"
+    todos_dir.mkdir(parents=True, exist_ok=True)
+    (todos_dir / "2026-07-01.md").write_text(
+        "# Todos — 2026-07-01\n\n- [ ] water the plants 📅 2026-07-01 ^t-1\n", encoding="utf-8")
+
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    pushes = []
+    monkeypatch.setattr(todos.errors, "ntfy",
+                        lambda url, topic, msg, title="", click="": pushes.append(msg))
+    todos.tick(config, events, now=datetime(2026, 7, 1, 8, 5, tzinfo=todos.TZ))
+    assert len(pushes) == 1
+    assert "waiting in triage" not in pushes[0]
+    events.close()
+
+
+def test_digest_fires_when_triage_count_is_the_only_signal(vault, tmp_path, monkeypatch):
+    """No captures, no drain, no resurface candidates, no todos, no people —
+    a nonzero triage queue alone must still fire the digest (the same class
+    of early-return bug A5 already fixed for drain_filed)."""
+    config = make_config(vault)
+    _needs_review_note(config.vault_path, "only-signal")
+
+    events = EventLog(tmp_path / "events.db", config.vault_path)
+    pushes = []
+    monkeypatch.setattr(todos.errors, "ntfy",
+                        lambda url, topic, msg, title="", click="": pushes.append(msg))
+    todos.tick(config, events, now=datetime(2026, 7, 1, 8, 5, tzinfo=todos.TZ))
+    assert len(pushes) == 1
+    assert "1 waiting in triage." in pushes[0]
+    events.close()
