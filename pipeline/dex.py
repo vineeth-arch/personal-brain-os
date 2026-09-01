@@ -24,9 +24,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.request
 from datetime import date
+from pathlib import Path
+
+from . import relationships
 
 log = logging.getLogger("api")
 
@@ -236,3 +240,138 @@ def push_description(person, summary: str, *, today: date | None = None,
         _call(_update_request(person.dex_id, merged, key))
     result["pushed"] = True
     return result
+
+
+# ---- pull: match Dex contacts to vault people by email/phone (Pass I, I2) -------
+#
+# -- API-SHAPE ASSUMPTION 3: contact LIST endpoint + pagination -------------------
+# As unverified as ASSUMPTION 1/2 above until run against a real key. If a real
+# key comes back with a different list shape or pagination scheme, THIS is the
+# block to correct.
+MAX_PAGES = 20
+
+
+def _list_url(page: int) -> str:
+    return f"{DEX_BASE}/contacts?page={page}"
+
+
+def _contacts_of(payload: dict) -> list[dict]:
+    contacts = payload.get("contacts")
+    return contacts if isinstance(contacts, list) else []
+# -- end API-SHAPE ASSUMPTION 3 -----------------------------------------------------
+#
+# -- API-SHAPE ASSUMPTION 4: per-contact email/phone field shape ------------------
+# Assumed shape per contact: {"id": ..., "emails": [...], "phones": [...]}. If a
+# real key returns nested objects (e.g. {"email": "..."} per entry) instead of
+# bare strings, THIS is the block to correct — _emails_of/_phones_of are the only
+# two functions that read this shape.
+def _emails_of(contact: dict) -> list[str]:
+    return [str(e) for e in (contact.get("emails") or []) if e]
+
+
+def _phones_of(contact: dict) -> list[str]:
+    return [str(p) for p in (contact.get("phones") or []) if p]
+# -- end API-SHAPE ASSUMPTION 4 -----------------------------------------------------
+
+
+def _normalize_email(value: str) -> str:
+    return value.strip().lower()
+
+
+def _normalize_phone(value: str) -> str:
+    return re.sub(r"\D", "", value or "")
+
+
+def _build_indexes(people: list) -> tuple[dict[str, list], dict[str, list]]:
+    """email/normalized-phone → [Person, ...] — a list, not a single Person,
+    because two different vault people sharing the same email/phone is
+    exactly the ambiguous case pull_contacts must refuse to guess at."""
+    by_email: dict[str, list] = {}
+    by_phone: dict[str, list] = {}
+    for person in people:
+        email = _normalize_email(person.channels.get("email", ""))
+        if email:
+            by_email.setdefault(email, []).append(person)
+        phone = _normalize_phone(person.channels.get("whatsapp", ""))
+        if phone:
+            by_phone.setdefault(phone, []).append(person)
+    return by_email, by_phone
+
+
+def pull_contacts(config, events, *, fetch=None) -> None:
+    """Registered in watcher.run_loop, throttled to once a day (a contact
+    list can be long; there's no reason to page through it every 5-minute
+    tick — mirrors drain_tick's own once-a-day reminder-key gate). Silent
+    no-op without DEX_API_KEY. Matches strictly by normalized email or
+    phone (see this module's top for why name is never consulted) against
+    every person note's channels; a person who already has a dex_id is
+    never touched (this pull only ever fills in a blank, never overwrites);
+    a contact matching MORE than one vault person is skipped and logged,
+    never guessed at. Never raises — same "a tick may fail, the loop may
+    not" contract as every other tick in this codebase."""
+    key = api_key()
+    if not key:
+        return
+
+    today_key = f"dexpull-{date.today().isoformat()}"
+    if events.reminder_fired(today_key):
+        return
+
+    try:
+        vault = config.vault_path
+        people = relationships.load_people(vault)
+        by_email, by_phone = _build_indexes(people)
+
+        matched = 0
+        ambiguous = 0
+        for page in range(1, MAX_PAGES + 1):
+            if fetch is not None:
+                payload = fetch("GET", _list_url(page), None)
+            else:
+                req = urllib.request.Request(_list_url(page), headers=_headers(key))
+                payload = _call(req)
+            contacts = _contacts_of(payload)
+            if not contacts:
+                break
+
+            for contact in contacts:
+                dex_contact_id = str(contact.get("id", "")).strip()
+                if not dex_contact_id:
+                    continue
+                candidates: dict[str, object] = {}  # person.id -> Person, deduped
+                for email in _emails_of(contact):
+                    for person in by_email.get(_normalize_email(email), []):
+                        candidates[person.id] = person
+                for phone in _phones_of(contact):
+                    for person in by_phone.get(_normalize_phone(phone), []):
+                        candidates[person.id] = person
+
+                if not candidates:
+                    continue
+                if len(candidates) > 1:
+                    ambiguous += 1
+                    events.log(str(vault), "dex_pull", "ok",
+                              message=f"ambiguous dex_id={dex_contact_id} "
+                                      f"matched {len(candidates)} people — skipped")
+                    continue
+
+                person = next(iter(candidates.values()))
+                if person.dex_id:
+                    continue  # already linked — never overwritten
+
+                new_text = relationships._replace_field(
+                    person.path.read_text(encoding="utf-8"), "dex_id", dex_contact_id)
+                person.path.write_text(new_text, encoding="utf-8")
+                matched += 1
+
+        if matched:
+            from api.notes import git_commit_vault
+            git_commit_vault(Path(vault), f"dex pull: {matched} contacts matched")
+
+        events.log(str(vault), "dex_pull", "ok",
+                  message=f"matched={matched} ambiguous={ambiguous}")
+    except Exception:
+        log.exception("dex pull tick failed — retrying at the next poll")
+        return
+
+    events.mark_reminder(today_key)
