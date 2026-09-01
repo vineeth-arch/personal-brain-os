@@ -415,6 +415,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ text }),
     }),
+  setResourceRating: (id: string, rating: number) =>
+    request<Resource>(`/api/resources/${encodeURIComponent(id)}/rating`, {
+      method: "POST",
+      body: JSON.stringify({ rating }),
+    }),
   sampleCount: (olderThan: SampleScope) =>
     request<SampleCount>(`/api/resources/sample/count?older_than=${olderThan}`),
   deleteSample: (olderThan: SampleScope) =>

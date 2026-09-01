@@ -1080,6 +1080,18 @@ Body `{"text": "…"}`. Writes (or replaces, or — for empty text — removes) 
 prose, even when the rest of the note is `origin: ai`). Returns the refreshed
 summary object. 404 for an unknown id.
 
+### `POST /api/resources/{id}/rating`
+
+Body `{"rating": 1-7}`; anything outside that range → 400 envelope. Stamps the
+`rating` frontmatter field. Returns the refreshed summary object — the same
+shape `/status` and `/insight` already return, which does **not** include
+`rating` (established precedent, not a new inconsistency this route
+introduces; the frontend already knows the value it just set and merges it in
+locally rather than reading it off this response). 404 for an unknown id.
+Rating is meaningful once a resource reaches `consumed` (SCHEMA-REFERENCE.md
+§7), but writable at any lifecycle stage — a correction shouldn't require
+ceremony.
+
 ### `GET /api/resources/sample/count?older_than=1d|1w|1m|all`
 
 `200 {"count": 4, "scope": "1w"}` — how many `sample: true` notes match the

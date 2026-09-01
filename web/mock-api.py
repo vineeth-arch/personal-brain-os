@@ -1185,6 +1185,26 @@ class Handler(BaseHTTPRequestHandler):
                           ("id", "title", "category", "status", "cover", "url", "created",
                            "sample", "file", "has_insight", "insight")}
                 return self._send(200, summary)
+            if path.startswith("/api/resources/") and path.endswith("/rating"):
+                rid = path.split("/")[3]
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                rating = json.loads(raw or b"{}").get("rating")
+                if not isinstance(rating, int) or not (1 <= rating <= 7):
+                    return self._send(400, {"error": {
+                        "what": "That's not a rating this vault understands.",
+                        "cause": f"'{rating}' isn't 1 through 7.",
+                        "todo": "Tap one of the seven dots."}})
+                found = next((r for r in RESOURCE_ITEMS if r["id"] == rid), None)
+                if not found:
+                    return self._send(404, {"error": {
+                        "what": "That resource isn't in the vault.",
+                        "cause": "No resource note in 04-Resources has that id.",
+                        "todo": "Refresh the resource list."}})
+                found["rating"] = str(rating)
+                summary = {k: found[k] for k in
+                          ("id", "title", "category", "status", "cover", "url", "created",
+                           "sample", "file", "has_insight", "insight")}
+                return self._send(200, summary)
             if path.startswith("/api/resurfaced/") and path.endswith("/response"):
                 note_id = path.split("/")[3]
                 raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))

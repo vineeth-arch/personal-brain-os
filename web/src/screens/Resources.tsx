@@ -70,7 +70,6 @@ function detailRows(d: ResourceDetail): { label: string; value: string }[] {
       push("Best time", d.best_time);
       break;
   }
-  push("Rating", d.rating ? `${d.rating}/7` : null);
   return rows;
 }
 
@@ -369,6 +368,15 @@ function Drawer({
           </dl>
         )}
 
+        {detail && (
+          <RatingDots
+            resourceId={current.id}
+            rating={detail.rating}
+            busy={busy}
+            onRated={(n) => setDetail((d) => (d ? { ...d, rating: String(n) } : d))}
+          />
+        )}
+
         {detail?.transcript && (
           <details className="mt-3 px-5">
             <summary className="text-muted cursor-pointer text-xs font-semibold">
@@ -463,6 +471,58 @@ function Drawer({
             </button>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// A 1-7 dot rating control (StreakDots's tonal dot primitive — filled ≤
+// current, hollow above). The API's mutation routes return the same narrow
+// summary shape as GET /api/resources (no `rating` field — see
+// API-CONTRACT.md), so a tap's own value is merged locally rather than read
+// back off the response.
+function RatingDots({
+  resourceId,
+  rating,
+  busy,
+  onRated,
+}: {
+  resourceId: string;
+  rating: string | null;
+  busy: boolean;
+  onRated: (n: number) => void;
+}) {
+  const current = rating ? Number(rating) : 0;
+  const [localBusy, setLocalBusy] = useState(false);
+  const rate = async (n: number) => {
+    if (busy || localBusy) return;
+    setLocalBusy(true);
+    try {
+      await api.setResourceRating(resourceId, n);
+      onRated(n);
+    } catch (err) {
+      toastError(err);
+    } finally {
+      setLocalBusy(false);
+    }
+  };
+  return (
+    <div className="mt-3 px-5">
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">Rating</p>
+      <div className="mt-1.5 flex gap-2" role="group" aria-label="Rating">
+        {[1, 2, 3, 4, 5, 6, 7].map((n) => (
+          <button
+            key={n}
+            type="button"
+            disabled={busy || localBusy}
+            aria-label={`Rate ${n} of 7`}
+            aria-pressed={n <= current}
+            onClick={() => rate(n)}
+            className={`h-2.5 w-2.5 rounded-full disabled:opacity-60 ${
+              n <= current ? "bg-inverted" : "border-emphasis border-2"
+            }`}
+          />
+        ))}
       </div>
     </div>
   );

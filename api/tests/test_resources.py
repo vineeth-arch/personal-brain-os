@@ -282,6 +282,46 @@ def test_insight_write_creates_section_origin_human_and_commits(env):
         assert code == 200 and body["has_insight"] is False
 
 
+def test_rating_write_stamps_frontmatter_and_commits(env):
+    tmp, vault, *_ = env
+    res = vault / "04-Resources"
+    _write_resource(res, "20260101120000", rt="tool", status="consumed",
+                    title="Linear", sample=True, created="2026-01-01")
+    with Server(tmp) as s:
+        code, body = s.req("POST", "/api/resources/20260101120000/rating",
+                           {"rating": 5})
+        assert code == 200
+        note = next((res).glob("*.md"))
+        text = note.read_text(encoding="utf-8")
+        assert "rating: 5" in text
+        assert _git_log(vault)[0] == "api: resource 20260101120000 rated 5"
+        # writable at any lifecycle stage, and the returned summary does NOT
+        # echo rating back (same narrow shape as /status and /insight)
+        assert "rating" not in body
+
+
+def test_rating_out_of_range_is_400(env):
+    tmp, vault, *_ = env
+    res = vault / "04-Resources"
+    _write_resource(res, "20260101120000", rt="tool", status="inbox",
+                    title="Linear", sample=True, created="2026-01-01")
+    with Server(tmp) as s:
+        code, body = s.req("POST", "/api/resources/20260101120000/rating", {"rating": 0})
+        assert code == 400 and set(body["error"]) == {"what", "cause", "todo"}
+        code, body = s.req("POST", "/api/resources/20260101120000/rating", {"rating": 8})
+        assert code == 400 and set(body["error"]) == {"what", "cause", "todo"}
+        # frontmatter untouched by the rejected writes
+        note = next((res).glob("*.md"))
+        assert "rating:" not in note.read_text(encoding="utf-8")
+
+
+def test_rating_unknown_id_is_404(env):
+    tmp, vault, *_ = env
+    with Server(tmp) as s:
+        code, body = s.req("POST", "/api/resources/nonexistent/rating", {"rating": 3})
+        assert code == 404 and set(body["error"]) == {"what", "cause", "todo"}
+
+
 # ---- purge safety (the point) ----------------------------------------------
 
 def _plant_mixed(res: Path) -> None:

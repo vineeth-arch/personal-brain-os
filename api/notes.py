@@ -940,6 +940,23 @@ def set_resource_insight(vault: Path, note_id: str, text: str) -> dict:
     return _resource_summary(vault, path, fm2, body2)
 
 
+def set_resource_rating(vault: Path, note_id: str, rating: int) -> dict:
+    """Stamp the rating (1-7, SCHEMA-REFERENCE.md §7 — meaningful once
+    consumed, but writable anytime: a one-tap correction beats ceremony).
+    Commits. Raises LookupError if the id isn't a resource."""
+    path = find_resource(vault, note_id)
+    if path is None:
+        raise LookupError(note_id)
+    split = _split_note(path.read_text(encoding="utf-8"))
+    if split is None:
+        raise LookupError(note_id)
+    fm_block, body = split
+    path.write_text(_compose_note(_stamp_field(fm_block, "rating", str(rating)), body), encoding="utf-8")
+    git_commit_vault(vault, f"api: resource {note_id} rated {rating}")
+    fm2, body2 = parse_frontmatter(path.read_text(encoding="utf-8"))
+    return _resource_summary(vault, path, fm2, body2)
+
+
 # ---- sample-data purge (safety-critical) ------------------------------------
 # The ONLY thing the purge may target is a note whose frontmatter has exactly
 # sample: true. A note without that flag can never be deleted here, whatever its

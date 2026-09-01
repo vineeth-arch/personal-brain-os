@@ -325,6 +325,30 @@ def test_insight_route_returns_signed_cover_that_round_trips(env):
         assert raw_body == content
 
 
+def test_rating_route_returns_signed_cover_that_round_trips(env):
+    """Task F5: a new resource-mutation route added after this task's own
+    review pass must carry the same _signed_cover treatment as /status and
+    /insight, not reintroduce the gap the review above fixed."""
+    root, vault, _, _ = env
+    attachments = vault / "attachments"
+    attachments.mkdir()
+    content = b"jpeg-bytes-rating"
+    (attachments / "sample.jpg").write_bytes(content)
+    _write_photo_resource(vault, "20260731080000", "2026-07-31")
+
+    with Server(root) as s:
+        code, body = s.req(
+            "POST", "/api/resources/20260731080000/rating",
+            body={"rating": 5})
+        assert code == 200
+        cover = body["cover"]
+        assert cover != "attachments/sample.jpg"
+        assert cover.startswith("/api/att/sample.jpg?")
+        code2, raw_body = _get_raw(s.port, cover, token=None)
+        assert code2 == 200
+        assert raw_body == content
+
+
 def test_enrich_route_has_no_cover_field_to_sign(env):
     """The enrich route returns {ok, enriched} — a bool, never a resource
     summary shape — so there is nothing here for _signed_cover to touch.

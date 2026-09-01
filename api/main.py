@@ -177,6 +177,10 @@ class InsightBody(BaseModel):
     text: str
 
 
+class RatingBody(BaseModel):
+    rating: int
+
+
 class DraftBody(BaseModel):
     to: str
     subject: str
@@ -1125,6 +1129,24 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
     def resource_insight(note_id: str, body: InsightBody, config=Depends(require_token)):
         try:
             updated = notes.set_resource_insight(config.vault_path, note_id, body.text)
+        except LookupError:
+            raise Envelope(
+                404, "That resource isn't in the vault.",
+                "No resource note in 04-Resources has that id.",
+                "Refresh the resource list.")
+        token = str((config.raw.get("api") or {}).get("auth_token") or "")
+        updated["cover"] = _signed_cover(updated["cover"], token)
+        return updated
+
+    @app.post("/api/resources/{note_id}/rating")
+    def resource_rating(note_id: str, body: RatingBody, config=Depends(require_token)):
+        if not (1 <= body.rating <= 7):
+            raise Envelope(
+                400, "That's not a rating this vault understands.",
+                f"'{body.rating}' isn't 1 through 7.",
+                "Tap one of the seven dots.")
+        try:
+            updated = notes.set_resource_rating(config.vault_path, note_id, body.rating)
         except LookupError:
             raise Envelope(
                 404, "That resource isn't in the vault.",
