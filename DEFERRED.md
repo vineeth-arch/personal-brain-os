@@ -8,11 +8,11 @@
 - ~~Track + display AI classification accuracy over time ("94% of last 50 approved unchanged") — research B3.~~ — SHIPPED in Pass A: `service.accuracy()` + Triage accuracy strip.
 - ~~Bound the triage queue view (~5 per visit) + optional 5-minute timeboxed triage with a visual pie timer — research B4.~~ — SHIPPED in Pass A: bounded 5-card queue + opt-in pie timer.
 - ~~Anti-guilt drain: triage items older than N days auto-approve at best guess (origin: ai, git-revertible) — research B5.~~ — SHIPPED in Pass A: `notes.drain_review()` + `00-Inbox/parked/`.
-- Readwise-style hybrid resurfacing: 1–3/day, stochastic + spaced, connect/act/archive responses — research B6.
-- Show a related past note at classification time ("past-you thought this too") — research B7.
-- Streak card → cumulative + windowed framing ("217 captures · 5 of last 7 days"), never broken-chain messaging — research B8.
-- Daily ntfy digest: status + resurfaced note + queue count (the system visits you) — research B9.
-- Optional Goblin-style micro-step breakdown for extracted todos with a "how hard does it feel?" dial — research B10.
+- ~~Readwise-style hybrid resurfacing: 1–3/day, stochastic + spaced, connect/act/archive responses — research B6.~~ — SHIPPED in Pass R: `pipeline/resurface.py` cooldown/age-weighted picker + Connect/Act/Archive routes.
+- ~~Show a related past note at classification time ("past-you thought this too") — research B7.~~ — SHIPPED in Pass R: `pipeline/related.py` substring match, stamped at classification, surfaced on Triage + Today.
+- ~~Streak card → cumulative + windowed framing ("217 captures · 5 of last 7 days"), never broken-chain messaging — research B8.~~ — SHIPPED in Pass R: `total_captures`/`last7` fields + StreakDots sub-line.
+- ~~Daily ntfy digest: status + resurfaced note + queue count (the system visits you) — research B9.~~ — SHIPPED in Pass R: drain/triage-count/resurfaced lines added to the morning digest.
+- ~~Optional Goblin-style micro-step breakdown for extracted todos with a "how hard does it feel?" dial — research B10.~~ — SHIPPED in Pass R: indented child checkboxes + 🎚 feel marker + LLM breakdown route.
 - ~~Surface the trust boundary in the UI ("nothing entered your vault without you — N notes gated this month") — research B11.~~ — SHIPPED in Pass A: `trustLine()` on Triage's empty state + Settings.
 - Integrations: keep a rolling backup copy of config.json on every write (the write is already atomic + key-validated since Pass 2/4).
 - Integrations: true per-card SSE streaming instead of one cached GET /integrations, if health checks ever grow slow.
