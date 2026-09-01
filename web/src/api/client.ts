@@ -224,10 +224,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ type, attendees }),
     }),
-  capture: (text: string, tag: CaptureTag | null) =>
+  capture: (text: string, tag: CaptureTag | null, captureKey?: string) =>
     request<{ id: string; status: string }>("/api/capture", {
       method: "POST",
       body: JSON.stringify({ text, tag }),
+      ...(captureKey ? { headers: { "X-Capture-Key": captureKey } } : {}),
     }),
   // Pass S: the same route, a share shape instead of the quick-capture box —
   // insight rides alongside the url rather than being mashed into one blob.
@@ -239,7 +240,7 @@ export const api = {
   // The recording goes up as the raw body (the server takes no multipart —
   // python-multipart isn't a locked dependency), so the blob's own mime type
   // is what tells the server which extension the inbox file gets.
-  captureAudio: (blob: Blob, tag: CaptureTag | null, name?: string) => {
+  captureAudio: (blob: Blob, tag: CaptureTag | null, name?: string, captureKey?: string) => {
     const params = new URLSearchParams();
     if (tag) params.set("tag", tag);
     if (name && name.trim()) params.set("name", name.trim());
@@ -249,7 +250,10 @@ export const api = {
       {
         method: "POST",
         body: blob,
-        headers: { "Content-Type": blob.type || "audio/webm" },
+        headers: {
+          "Content-Type": blob.type || "audio/webm",
+          ...(captureKey ? { "X-Capture-Key": captureKey } : {}),
+        },
       },
     );
   },
@@ -257,7 +261,7 @@ export const api = {
   // converted the blob to JPEG (Today.tsx's canvas step), same raw-body
   // transport as captureAudio. `insight` and `name` ride as query params,
   // mirroring capture/audio's shape.
-  captureImage: (blob: Blob, tag: CaptureTag | null, name: string, insight: string) => {
+  captureImage: (blob: Blob, tag: CaptureTag | null, name: string, insight: string, captureKey?: string) => {
     const params = new URLSearchParams();
     if (tag) params.set("tag", tag);
     if (name) params.set("name", name);
@@ -268,7 +272,10 @@ export const api = {
       {
         method: "POST",
         body: blob,
-        headers: { "Content-Type": blob.type || "image/jpeg" },
+        headers: {
+          "Content-Type": blob.type || "image/jpeg",
+          ...(captureKey ? { "X-Capture-Key": captureKey } : {}),
+        },
       },
     );
   },

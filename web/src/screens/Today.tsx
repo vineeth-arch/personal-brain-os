@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { api } from "../api/client";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { api, ApiError, isOffline, subscribeOffline } from "../api/client";
 import type { CaptureTag, ResurfaceAction, ResurfacedNote, Status, TodoItem } from "../api/types";
 import { CAPTURE_TAGS } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
 import { StreakDots } from "../components/StreakDots";
 import { toast } from "../components/Toast";
 import { usePolling } from "../hooks/usePolling";
+import * as outbox from "../outbox";
 
 const HEARTBEAT_LIMIT_MIN = 20;
 
@@ -588,6 +589,18 @@ function MicButton({
       await api.captureAudio(blob, sentTag, sentName);
       onCaptured();
     } catch (err) {
+      const isNetworkFailure = err instanceof ApiError && err.status === 0;
+      if (isNetworkFailure && blob.size <= 25 * 1024 * 1024) {
+        try {
+          await outbox.enqueue({ kind: "audio", blob, tag: sentTag ?? "", name: sentName });
+          toast("Saved to outbox — sends when you're back online.");
+          return;
+        } catch {
+          // enqueue itself failed (shouldn't happen given the size check above,
+          // but IndexedDB can still fail) — fall through to the existing
+          // pending-retry UI below, exactly like today
+        }
+      }
       const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
       toast(
         envelope ? `${envelope.what} ${envelope.todo}` : "The recording didn't reach the server.",
@@ -787,6 +800,16 @@ function PhotoButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: 
       await api.captureImage(blob, sentTag, name, "");
       onCaptured();
     } catch (err) {
+      const isNetworkFailure = err instanceof ApiError && err.status === 0;
+      if (isNetworkFailure) {
+        try {
+          await outbox.enqueue({ kind: "image", blob, tag: sentTag ?? "", name, insight: undefined });
+          toast("Saved to outbox — sends when you're back online.");
+          return;
+        } catch {
+          // fall through to existing pending-retry UI
+        }
+      }
       const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
       toast(
         envelope ? `${envelope.what} ${envelope.todo}` : "The photo didn't reach the server.",
@@ -861,6 +884,31 @@ function PhotoButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: 
   );
 }
 
+function OutboxPill() {
+  const count = useSyncExternalStore(outbox.subscribeOutboxCount, outbox.getOutboxCount);
+  const [sending, setSending] = useState(false);
+  if (count === 0) return null;
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <span className="bg-cal-muted text-emphasis border-emphasis inline-block shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-bold uppercase tracking-[0.08em]">
+        {count} queued
+      </span>
+      <button
+        type="button"
+        disabled={sending}
+        onClick={async () => {
+          setSending(true);
+          await outbox.drain();
+          setSending(false);
+        }}
+        className="text-subtle text-xs font-bold underline disabled:opacity-60"
+      >
+        Send now
+      </button>
+    </div>
+  );
+}
+
 function QuickCapture() {
   const [text, setText] = useState(SHARED_CAPTURE_TEXT);
   const [tag, setTag] = useState<CaptureTag | null>(null);
@@ -868,6 +916,25 @@ function QuickCapture() {
 
   useEffect(() => {
     if (SHARED_CAPTURE_TEXT) inputRef.current?.focus();
+  }, []);
+
+  // Drain triggers for the offline outbox: catch up on mount (in case items
+  // were queued from a previous session and we're already online), on the
+  // window regaining focus, and on a genuine offline→online transition.
+  // setOffline only notifies subscribers on a real value change, so a
+  // callback firing with isOffline() === false is always the "we just came
+  // back online" edge, never a redundant false→false call.
+  useEffect(() => {
+    void outbox.drain();
+    const onFocus = () => void outbox.drain();
+    const unsubscribeOffline = subscribeOffline(() => {
+      if (!isOffline()) void outbox.drain();
+    });
+    window.addEventListener("focus", onFocus);
+    return () => {
+      window.removeEventListener("focus", onFocus);
+      unsubscribeOffline();
+    };
   }, []);
 
   const submit = async (e: React.FormEvent) => {
@@ -885,13 +952,19 @@ function QuickCapture() {
     try {
       await api.capture(body, sentTag);
     } catch (err) {
-      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
-      toast(
-        envelope ? `${envelope.what} ${envelope.todo}` : "Capture didn't reach the server.",
-        "error",
-      );
-      setText(body); // nothing is lost
-      setTag(sentTag);
+      const isNetworkFailure = err instanceof ApiError && err.status === 0;
+      if (isNetworkFailure) {
+        await outbox.enqueue({ kind: "text", body: { text: body, tag: sentTag ?? undefined } });
+        toast("Saved to outbox — sends when you're back online.");
+      } else {
+        const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+        toast(
+          envelope ? `${envelope.what} ${envelope.todo}` : "Capture didn't reach the server.",
+          "error",
+        );
+        setText(body); // nothing is lost
+        setTag(sentTag);
+      }
     }
   };
 
@@ -900,6 +973,7 @@ function QuickCapture() {
       <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
         Quick capture
       </p>
+      <OutboxPill />
       <form onSubmit={submit} className="mt-2">
         <div className="flex gap-2">
           <input

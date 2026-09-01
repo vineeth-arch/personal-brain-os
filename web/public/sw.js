@@ -9,7 +9,7 @@
  * Static shell assets are safe to cache aggressively: Vite content-hashes
  * them, so a new build means new URLs. Bump VERSION on SW logic changes.
  */
-const VERSION = "cockpit-shell-v1";
+const VERSION = "cockpit-shell-v2";
 const SHELL = ["./", "index.html", "manifest.webmanifest"];
 
 self.addEventListener("install", (event) => {

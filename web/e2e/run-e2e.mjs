@@ -712,6 +712,93 @@ try {
     .waitFor();
   console.log("✓ Settings shows the same trust line as Triage's empty state");
 
+  // ---- 15. PWA offline outbox: idempotent retry never creates a duplicate (Task F4) ---
+  // Task F3 built the server-side X-Capture-Key dedup; this proves the client
+  // actually uses it. A plain page.route(...).abort() blocks a request before
+  // it ever reaches the server, so a failure there can't test dedup on its
+  // own (there's nothing server-side to deduplicate against). So this test
+  // does two things: (a) confirms a live capture that fails purely
+  // client-side gets queued, and (b) forwards a QUEUED retry to the real
+  // server (so it genuinely writes a note) while still failing the response
+  // back to the browser — the exact "silently landed" scenario F3/F4 exist
+  // for — then retries that same still-queued item a second time and proves
+  // the server's key-based dedup, not just the outbox's plumbing, is what
+  // kept the file count at one.
+  await page.goto(`${BASE}/#/today`);
+  assert.equal(await page.getByRole("button", { name: "Send now" }).count(), 0,
+    "outbox pill/Send-now rendered before anything was queued");
+
+  const outboxWord = "quibblewroughtcapture";
+
+  // (a) live attempt: no X-Capture-Key on this hop (the live path never
+  // sends one) — aborted purely client-side, never reaches the server.
+  let liveAttemptHits = 0;
+  await page.route("**/api/capture", (route) => {
+    liveAttemptHits++;
+    return route.abort();
+  });
+  await page.getByLabel("Quick capture").fill(`${outboxWord} first try`);
+  await page.getByRole("button", { name: "Capture", exact: true }).click();
+  await page.getByText("Saved to outbox — sends when you're back online.").waitFor();
+  await page.getByText("1 queued").waitFor();
+  await page.unroute("**/api/capture");
+  assert.equal(liveAttemptHits, 1, "the live capture attempt should have hit the route exactly once");
+  console.log("✓ A network failure on the live capture path queues to the outbox");
+
+  // (b) first retry of the queued item: genuinely forward to the real server
+  // (so a note really gets written) but still fail the response the browser
+  // sees, so the item stays queued for a second retry.
+  let firstRetryKey = null;
+  await page.route("**/api/capture", async (route) => {
+    firstRetryKey = await route.request().headerValue("x-capture-key");
+    try {
+      await fetch(`${BASE}/api/capture`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${TOKEN}`,
+          "Content-Type": "application/json",
+          ...(firstRetryKey ? { "X-Capture-Key": firstRetryKey } : {}),
+        },
+        body: route.request().postData(),
+      });
+    } catch { /* best-effort forward — the abort below is what the page sees */ }
+    return route.abort();
+  });
+  await page.getByRole("button", { name: "Send now" }).click();
+  // the onClick handler's own await isn't awaited by .click() itself, so poll
+  // for the route handler (which runs async, mid-drain) to have fired
+  for (let i = 0; i < 50 && firstRetryKey === null; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.ok(firstRetryKey, "the retried send did not carry an X-Capture-Key header");
+  // the drain attempt itself failed client-side too, so the item is still queued
+  await page.getByText("1 queued").waitFor();
+  await page.unroute("**/api/capture");
+  console.log("✓ The retry carried the queued item's id as X-Capture-Key and reached the real server");
+
+  // (c) second retry of the SAME item, unrouted (real server, real network):
+  // the server must recognize firstRetryKey and refuse to write a second file.
+  await page.getByRole("button", { name: "Send now" }).click();
+  await page.getByText("1 queued").waitFor({ state: "detached" });
+  console.log("✓ Send now (second attempt) drains the outbox and the pill disappears");
+
+  const outboxInboxDir = path.join(root, "inbox");
+  let outboxFiles = [];
+  for (let i = 0; i < 50; i++) {
+    outboxFiles = fs.readdirSync(outboxInboxDir).filter((f) => {
+      try {
+        return fs.readFileSync(path.join(outboxInboxDir, f), "utf8").includes(outboxWord);
+      } catch {
+        return false; // non-text (e.g. audio) files from earlier steps
+      }
+    });
+    if (outboxFiles.length) break;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  assert.equal(outboxFiles.length, 1,
+    `expected exactly one file despite two real send attempts sharing one idempotency key, saw ${JSON.stringify(outboxFiles)}`);
+  console.log("✓ Idempotency key genuinely prevented a duplicate note across two real server-side sends");
+
   console.log("\nE2E: all checks passed.");
 } catch (err) {
   failed = true;
