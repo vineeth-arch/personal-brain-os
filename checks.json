@@ -63,6 +63,9 @@
     { "id": "passR", "phase": "Build passes", "label": "Pass R — rhythm & resurfacing",
       "type": "file_exists", "path": "pipeline/resurface.py",
       "next_action": "Run the Pass R build session (streak reframe, resurfacing, related notes, digest, micro-steps)." },
+    { "id": "passF", "phase": "Build passes", "label": "Pass F — real fixes",
+      "type": "file_exists", "path": "web/src/outbox.ts",
+      "next_action": "Run the Pass F build session (signed covers, cover download, capture idempotency, offline outbox, ratings)." },
 
     { "id": "wire-config", "phase": "Wiring", "label": "config.json filled (vault + inbox paths)",
       "type": "config_field_set", "field": "vault_path",

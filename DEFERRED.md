@@ -25,8 +25,8 @@
 - Pass B: surface provider stats as a small sparkline over time, not just cumulative counts.
 - Pass T: recurring todos (weekly/daily) — current model is one-shot due dates only.
 - Pass 10: a live `url_ok` probe type for the reachable-from-internet milestone (GET deploy.public_url from the server) — manual config-field check for now, per the pass spec.
-- Pass 6: resource rating (schema `rating` 1–7) capture + display in the drawer — status lifecycle and insight shipped, rating not surfaced this pass.
-- Pass 6: real cover images via `attachments/` (book covers / posters) — seed uses remote picsum placeholders; the card already falls back to a category-initial tile.
+- ~~Pass 6: resource rating (schema `rating` 1–7) capture + display in the drawer — status lifecycle and insight shipped, rating not surfaced this pass.~~ — SHIPPED in Pass F: 1-7 dot rating control in the drawer.
+- ~~Pass 6: real cover images via `attachments/` (book covers / posters) — seed uses remote picsum placeholders; the card already falls back to a category-initial tile.~~ — SHIPPED in Pass F: F1 (signed URLs) + F2 (download at enrich time).
 - Pass 6: editing the type-extras from the cockpit (they render in the drawer since the per-type schema pass, but are written by the seed/pipeline only — no UI to change ingredients, runtime, etc.).
 - Pass 6: server-side resource filtering is live + tested, but the dashboard filters the fetched list client-side (snappy at current scale) — switch to server params if the library grows large.
 - Pass 6: insight edit history / a per-section origin stamp — the human-origin guarantee currently rides the note-level `origin` firewall (AI never writes `## Insight`).
@@ -49,13 +49,13 @@
 - Pass MW: a People sample-purge endpoint in the API — scripts/seed_people.py --purge covers it for now.
 - Pass MW: PDL credits counter is read from the response header per call; no running total is stored between calls.
 - NOT DEFERRED — PERMANENTLY OUT (CLAUDE.md §4): sending email or any message from the app. Drafts are written to Gmail and sent by the human, in Gmail. api/tests/test_google.py fails the build if a send path ever appears.
-- Pass 13: Resources gallery/drawer don't render local `attachments/` covers (bearer-auth means a plain `<img src>` can't authenticate) — falls back to the existing category-initial tile; needs an authed image-serving route or a signed short-lived URL scheme. Still true after Pass V2/V3's photo capture landed — nothing added an attachments-serving route.
+- ~~Pass 13: Resources gallery/drawer don't render local `attachments/` covers (bearer-auth means a plain `<img src>` can't authenticate) — falls back to the existing category-initial tile; needs an authed image-serving route or a signed short-lived URL scheme. Still true after Pass V2/V3's photo capture landed — nothing added an attachments-serving route.~~ — SHIPPED in Pass F: HMAC-signed short-lived `/api/att/{name}` route (F1).
 - Pass 13: Instagram/YouTube reel and video CONTENT understanding (downloading media, frame-sampling to vision) — only metadata/caption/transcript extraction ships this pass, same as Pass L.
 - Pass 13: Apify setup for real Instagram captions/thumbnails — the seam already exists (pipeline/enrich.py); fallback-first (owner's own words + AI description) ships without it.
-- Pass 13: the iOS Shortcut has no offline queue / auto-retry — a failed POST (no signal, server down) is lost from the Shortcut's perspective; the user would need to re-share.
+- ~~Pass 13: the iOS Shortcut has no offline queue / auto-retry — a failed POST (no signal, server down) is lost from the Shortcut's perspective; the user would need to re-share.~~ — PARTIALLY SHIPPED in Pass F: the Shortcut now retries the POST once and shows a distinct failure notification (F6); a full offline queue for the Shortcut itself is still out of scope (a manual [YOU] rebuild, no state to persist between runs) — the cockpit's own PWA got a real offline outbox instead (F4).
 - Pass V2/V3: carousel-image OCR / multi-frame description for Instagram carousels — vision.py describes one photo at a time; a carousel share still goes through Pass L's Apify enrichment, not vision.
 - Pass V2/V4: Android PWA `share_target` — iOS Safari ignores it, so the Shortcut is the only cross-platform share-sheet path this round; an Android-only share target is a separate, smaller add later.
-- Pass V3: download a resource's cover image into `attachments/` instead of hot-linking it — matches how a photo capture's own attachment already works, but link covers (YouTube thumbnails, IG display URLs) still point at the source.
+- ~~Pass V3: download a resource's cover image into `attachments/` instead of hot-linking it — matches how a photo capture's own attachment already works, but link covers (YouTube thumbnails, IG display URLs) still point at the source.~~ — SHIPPED in Pass F: best-effort download at enrich time behind `enrich.download_covers` (F2).
 - Pass V4: EXIF capture date in frontmatter — photo notes use the upload timestamp; the original shot date (if any) isn't read out of the file.
 - Pass V4: multi-image batch share (several photos in one Shortcut/PWA action) — today's photo button and Shortcut step both handle exactly one image per share.
 - Pass H1: vault-sync via Syncthing for non-Railway (VPS/Docker) deploys — GO-LIVE.md's §5 already covers this via folder-level sync; a git-based VAULT_GIT_REMOTE is the Railway-specific fix for a mounted volume no Obsidian ever opens directly.
