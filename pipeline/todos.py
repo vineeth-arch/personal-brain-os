@@ -3,6 +3,17 @@
 Line format (markers only when known; block-id enables API round-trips):
     - [ ] task text (from [[20260703140000]]) 📅 2026-07-05 ⏰ 14:00 ^20260703140000-1
 
+A todo may carry a micro-step breakdown (B10): 2-4 indented (4-space) child
+checkboxes right below it, and a 🎚N (1-5) "how hard does it feel" marker
+appended to the parent line:
+    - [ ] plan the offsite (from [[20260901100000]]) 📅 2026-09-03 ^20260901100000-1 🎚4
+        - [ ] book the room ^20260901100000-1a
+        - [ ] draft the agenda ^20260901100000-1b
+Children have no provenance/due/time markers of their own — those live on the
+parent line only. Completing all children auto-completes the parent, and
+reopening one un-marks it (see toggle()); toggling the parent directly never
+cascades down to its children.
+
 Completing a todo flips "- [ ]" to "- [x]" IN PLACE — lines are never deleted.
 The reminder tick runs inside the watcher's --loop (no new process) and fires
 each reminder exactly once via the reminders table in events.db. The user's
@@ -11,7 +22,7 @@ timezone is Asia/Kolkata for everything date-shaped.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -27,10 +38,11 @@ _FROM_RE = re.compile(r"\s*\(from \[\[[\w-]+\]\]\)$")
 _DRAIN_FILED_RE = re.compile(r"filed=(\d+)")
 
 _LINE_RE = re.compile(
-    r"^- \[(?P<done>[ x])\] (?P<task>.*?)"
+    r"^(?P<indent>    )?- \[(?P<done>[ x])\] (?P<task>.*?)"
     r"(?: 📅 (?P<due>\d{4}-\d{2}-\d{2}))?"
     r"(?: ⏰ (?P<time>\d{2}:\d{2}))?"
-    r"(?: \^(?P<block>[\w-]+))?$"
+    r"(?: \^(?P<block>[\w-]+))?"
+    r"(?: 🎚(?P<feel>\d))?$"
 )
 
 
@@ -43,6 +55,8 @@ class Todo:
     due: str | None        # YYYY-MM-DD
     time: str | None       # HH:MM — presence means "remind me at this time"
     block_id: str | None
+    feel: int | None = None            # 1-5 "how hard does it feel" dial (parent only)
+    children: list["Todo"] = field(default_factory=list)  # micro-steps, one level deep
 
 
 def format_line(task: str, note_id: str, index: int,
@@ -56,12 +70,19 @@ def format_line(task: str, note_id: str, index: int,
     return " ".join(parts)
 
 
-def parse_line(line: str) -> tuple[str, bool, str | None, str | None, str | None] | None:
+def format_child_line(task: str, block_id: str) -> str:
+    """A micro-step under a parent todo — no provenance, no due/time; those
+    live on the parent line only (B10)."""
+    return f"    - [ ] {task} ^{block_id}"
+
+
+def parse_line(line: str) -> tuple[str, bool, str | None, str | None, str | None, bool, int | None] | None:
     m = _LINE_RE.match(line.rstrip())
     if not m:
         return None
     task = _FROM_RE.sub("", m["task"].strip())  # provenance stays in the file, not the UI
-    return (task, m["done"] == "x", m["due"], m["time"], m["block"])
+    feel = int(m["feel"]) if m["feel"] else None
+    return (task, m["done"] == "x", m["due"], m["time"], m["block"], bool(m["indent"]), feel)
 
 
 def scan(vault: Path) -> list[Todo]:
@@ -71,31 +92,90 @@ def scan(vault: Path) -> list[Todo]:
     out: list[Todo] = []
     for path in sorted(todos_dir.glob("*.md")):
         try:
-            text = path.read_text(encoding="utf-8")
+            lines = path.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeDecodeError):
             continue        # one unreadable day must not empty the agenda
-        for i, line in enumerate(text.splitlines()):
-            parsed = parse_line(line)
-            if parsed:
-                task, done, due, time, block = parsed
-                out.append(Todo(path, i, task, done, due, time, block))
+        i = 0
+        while i < len(lines):
+            parsed = parse_line(lines[i])
+            if parsed is None or parsed[5]:  # not a line, or an orphaned child (no parent above it) — skip
+                i += 1
+                continue
+            task, done, due, time, block, _indent, feel = parsed
+            children: list[Todo] = []
+            j = i + 1
+            while j < len(lines):
+                child_parsed = parse_line(lines[j])
+                if child_parsed is not None and child_parsed[5]:
+                    c_task, c_done, c_due, c_time, c_block, _, _ = child_parsed
+                    children.append(Todo(path, j, c_task, c_done, c_due, c_time, c_block))
+                    j += 1
+                else:
+                    break
+            out.append(Todo(path, i, task, done, due, time, block, feel=feel, children=children))
+            i = j
     return out
 
 
 def toggle(vault: Path, block_id: str) -> bool:
-    """Flip the checkbox of the line carrying ^block_id. Returns the new done
-    state. Raises LookupError if no line carries that id."""
+    """Flip the checkbox of the line carrying ^block_id — a top-level todo OR
+    one of its children. Returns the new done state. Raises LookupError if no
+    line carries that id. Toggling a child rolls up onto its parent (all
+    children done → parent auto-marks done; reopening one un-marks it).
+    Toggling a parent directly never cascades down to its children."""
     for todo in scan(vault):
         if todo.block_id == block_id:
-            lines = todo.file.read_text(encoding="utf-8").splitlines()
-            line = lines[todo.line_no]
-            if todo.done:
-                lines[todo.line_no] = line.replace("- [x]", "- [ ]", 1)
-            else:
-                lines[todo.line_no] = line.replace("- [ ]", "- [x]", 1)
-            todo.file.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            return not todo.done
+            return _flip_line(todo.file, todo.line_no, todo.done)
+        for child in todo.children:
+            if child.block_id == block_id:
+                new_done = _flip_line(child.file, child.line_no, child.done)
+                _rollup_parent(todo, child, new_done)
+                return new_done
     raise LookupError(block_id)
+
+
+def _flip_line(file: Path, line_no: int, was_done: bool) -> bool:
+    lines = file.read_text(encoding="utf-8").splitlines()
+    line = lines[line_no]
+    lines[line_no] = (line.replace("- [x]", "- [ ]", 1) if was_done
+                      else line.replace("- [ ]", "- [x]", 1))
+    file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return not was_done
+
+
+def _rollup_parent(parent: Todo, flipped_child: Todo, flipped_child_new_done: bool) -> None:
+    all_done = all(
+        flipped_child_new_done if c.line_no == flipped_child.line_no else c.done
+        for c in parent.children
+    )
+    if all_done and not parent.done:
+        _flip_line(parent.file, parent.line_no, was_done=False)
+    elif not all_done and parent.done:
+        _flip_line(parent.file, parent.line_no, was_done=True)
+
+
+def add_breakdown(vault: Path, block_id: str, feel: int, steps: list[str]) -> Todo:
+    """Insert 2-4 child checkbox lines under the todo carrying ^block_id, and
+    stamp the feel-dial marker on the parent line. Raises LookupError if the
+    id is unknown, ValueError if it already has children (never overwrite an
+    existing breakdown — the route this backs returns 409 for that case)."""
+    todos = scan(vault)
+    parent = next((t for t in todos if t.block_id == block_id), None)
+    if parent is None:
+        raise LookupError(block_id)
+    if parent.children:
+        raise ValueError(f"{block_id} already has children")
+
+    lines = parent.file.read_text(encoding="utf-8").splitlines()
+    parent_line = lines[parent.line_no].rstrip() + f" 🎚{feel}"
+    child_lines = [
+        format_child_line(step, f"{block_id}{chr(ord('a') + i)}")
+        for i, step in enumerate(steps)
+    ]
+    lines[parent.line_no:parent.line_no + 1] = [parent_line] + child_lines
+    parent.file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    return next(t for t in scan(vault) if t.block_id == block_id)
 
 
 # ---- ranges (all dates in the user's timezone) --------------------------------

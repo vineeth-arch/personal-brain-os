@@ -18,6 +18,7 @@ import pytest
 import uvicorn
 
 from api.main import create_app
+from pipeline import llm as llm_mod
 
 TOKEN = "test-token-123"
 
@@ -851,6 +852,91 @@ def test_todos_ranges_and_toggle(env):
                                 capture_output=True, text=True).stdout.strip()
         assert logmsg == "api: todo 20260701090000-1 marked done"
         assert s.req("POST", "/api/todos/nope/toggle")[0] == 404
+
+
+# ---- micro-step breakdown (Task R5, B10) ------------------------------------
+
+def _use_llm(monkeypatch, providers: dict):
+    """Same idiom as pipeline/tests/test_llm.py, applied at the API layer —
+    the router module is a process-wide singleton, so patching it here reaches
+    the api/main.py route (which imports the same `pipeline.llm` module)."""
+    monkeypatch.setattr(llm_mod, "PROVIDERS", providers)
+    monkeypatch.setattr(
+        llm_mod, "ENV_KEYS",
+        {name: llm_mod.ENV_KEYS.get(name, "ANTHROPIC_API_KEY") for name in providers})
+
+
+def _seed_one_todo(vault):
+    from pipeline.todos import today_kolkata
+    today = today_kolkata()
+    todos_file = vault / "06-Todos" / f"{today.isoformat()}.md"
+    todos_file.parent.mkdir(exist_ok=True)
+    todos_file.write_text("- [ ] plan the offsite ^20260901100000-1\n", encoding="utf-8")
+    return todos_file
+
+
+def test_todos_breakdown_writes_children_and_feel_marker(env, monkeypatch):
+    root, vault, _, _ = env
+    todos_file = _seed_one_todo(vault)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "fake-key")
+    steps = ["book the room", "draft the agenda", "invite the team"]
+    _use_llm(monkeypatch, {"claude-haiku": lambda p, k: json.dumps({"steps": steps})})
+
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/todos/20260901100000-1/breakdown", {"feel": 3})
+        assert code == 200
+        assert body["id"] == "20260901100000-1" and body["feel"] == 3
+        assert [c["task"] for c in body["children"]] == steps
+        assert [c["id"] for c in body["children"]] == [
+            "20260901100000-1a", "20260901100000-1b", "20260901100000-1c"]
+        assert all(c["done"] is False for c in body["children"])
+
+        # filesystem assertion — the real lines, not just the response body
+        lines = todos_file.read_text(encoding="utf-8").splitlines()
+        assert lines[0].endswith("^20260901100000-1 🎚3")
+        assert lines[1] == "    - [ ] book the room ^20260901100000-1a"
+        assert lines[2] == "    - [ ] draft the agenda ^20260901100000-1b"
+        assert lines[3] == "    - [ ] invite the team ^20260901100000-1c"
+
+        logmsg = subprocess.run(["git", "-C", str(vault), "log", "-1", "--format=%s"],
+                                capture_output=True, text=True).stdout.strip()
+        assert logmsg == "api: broke down 20260901100000-1"
+
+        # repeat call on the same id → 409, never a duplicate breakdown
+        code, body = s.req("POST", "/api/todos/20260901100000-1/breakdown", {"feel": 2})
+        assert code == 409
+        assert set(body["error"]) == {"what", "cause", "todo"}
+
+
+def test_todos_breakdown_feel_out_of_range_400(env):
+    root, vault, _, _ = env
+    _seed_one_todo(vault)
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/todos/20260901100000-1/breakdown", {"feel": 6})
+        assert code == 400
+        assert set(body["error"]) == {"what", "cause", "todo"}
+        code, _ = s.req("POST", "/api/todos/20260901100000-1/breakdown", {"feel": 0})
+        assert code == 400
+
+
+def test_todos_breakdown_all_providers_fail_503_and_leaves_file_unmutated(env, monkeypatch):
+    root, vault, _, _ = env
+    todos_file = _seed_one_todo(vault)
+    original_text = todos_file.read_text(encoding="utf-8")
+    for var in llm_mod.ENV_KEYS.values():
+        monkeypatch.delenv(var, raising=False)  # keyless → every provider skipped, all-fail
+
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/todos/20260901100000-1/breakdown", {"feel": 3})
+        assert code == 503
+        assert set(body["error"]) == {"what", "cause", "todo"}
+
+        # no partial write: the file on disk is byte-identical to before the call
+        assert todos_file.read_text(encoding="utf-8") == original_text
+        # and no commit was made for a breakdown that never happened
+        gitlog = subprocess.run(["git", "-C", str(vault), "log", "--format=%s"],
+                                capture_output=True, text=True).stdout
+        assert "broke down" not in gitlog
 
 
 def test_build_probes_and_providers(env):

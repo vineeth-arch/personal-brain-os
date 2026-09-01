@@ -827,18 +827,40 @@ never deleted. All date ranges are **Asia/Kolkata**.
 ```json
 { "items": [ { "id": "20260703140000-1", "task": "call the dentist",
   "due": "2026-07-05", "time": "14:00", "done": false, "overdue": false,
-  "file": "06-Todos/2026-07-03.md" } ] }
+  "file": "06-Todos/2026-07-03.md", "feel": null, "children": [] } ] }
 ```
 
 Only lines with a due date and a block id appear (undated todos live in the
 daily note). `week` = the day after tomorrow through +7 days. Unknown range →
-400 envelope.
+400 envelope. `feel` is the 1-5 "how hard does it feel" dial (null until a
+breakdown is made); `children` are the todo's micro-steps, each
+`{id, task, done}` — empty until broken down.
 
 ### `POST /api/todos/{block_id}/toggle`
 
 Flips the checkbox in place and git-commits the vault
 (`api: todo <id> marked done|open`). `200 {"ok": true, "done": true}`;
-unknown id → 404 envelope.
+unknown id → 404 envelope. A child's own block id works here too — toggling a
+child rolls up onto its parent (all children done auto-marks the parent done;
+reopening one un-marks it). Toggling a parent directly never cascades down to
+its children.
+
+### `POST /api/todos/{block_id}/breakdown` (B10)
+
+Body `{"feel": 1-5}`. Asks the model router for 2-4 short concrete steps,
+inserts them as indented child checkboxes right under the parent line, stamps
+a `🎚N` feel-dial marker on the parent, and git-commits the vault
+(`api: broke down <id>`):
+
+```json
+{ "id": "20260901100000-1", "task": "plan the offsite", "feel": 4,
+  "children": [ { "id": "20260901100000-1a", "task": "book the room", "done": false },
+                { "id": "20260901100000-1b", "task": "draft the agenda", "done": false } ] }
+```
+
+`feel` outside 1-5 → 400 envelope. Unknown id → 404. The todo already has
+children → 409 (never overwrites an existing breakdown). Every provider in
+the chain failing → 503, and nothing is written — no child lines, no commit.
 
 ## Build tracker + model router (Pass B)
 

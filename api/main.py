@@ -30,7 +30,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from pipeline import classify, config as config_mod, enrich, intake, route as proute, todos as ptodos, watcher
+from pipeline import classify, config as config_mod, enrich, intake, llm, route as proute, todos as ptodos, watcher
 from pipeline.events import EventLog
 
 from . import (build_status, google, integrations, notes, people as people_mod,
@@ -196,6 +196,33 @@ class ResurfacedResponseBody(BaseModel):
     # the card's own title, sent by the client rather than looked up
     # server-side — see the route below for why
     title: str = ""
+
+
+class BreakdownBody(BaseModel):
+    feel: int
+
+
+# ---- micro-step breakdown (B10): prompt + validator, mirroring
+# classify.py's build_prompt/validate_classification split ----------------
+
+def _breakdown_prompt(task: str) -> str:
+    return (
+        "Break this todo into 2 to 4 short concrete steps. Return ONLY JSON "
+        'with one key: steps (a list of 2-4 short strings, each 80 characters or less).\n\n'
+        f"TODO: {task}"
+    )
+
+
+def _validate_breakdown(data: object) -> str | None:
+    if not isinstance(data, dict):
+        return "not a JSON object"
+    steps = data.get("steps")
+    if not isinstance(steps, list) or not (2 <= len(steps) <= 4):
+        return "steps must be a list of 2 to 4 items"
+    for s in steps:
+        if not isinstance(s, str) or not s.strip() or len(s) > 80:
+            return "each step must be a non-empty string of 80 characters or fewer"
+    return None
 
 
 def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAPI:
@@ -386,6 +413,8 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 "done": t.done,
                 "overdue": ptodos.in_range(t, "overdue"),
                 "file": str(t.file.relative_to(config.vault_path)),
+                "feel": t.feel,
+                "children": [{"id": c.block_id, "task": c.task, "done": c.done} for c in t.children],
             }
             for t in ptodos.scan(config.vault_path)
             if t.block_id and ptodos.in_range(t, range)
@@ -406,6 +435,43 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
             config.vault_path,
             f"api: todo {block_id} marked {'done' if done else 'open'}")
         return {"ok": True, "done": done}
+
+    @app.post("/api/todos/{block_id}/breakdown")
+    def todos_breakdown(block_id: str, body: BreakdownBody, config=Depends(require_token)):
+        if not (1 <= body.feel <= 5):
+            raise Envelope(
+                400, "That's not a feel-dial value this screen understands.",
+                f"'{body.feel}' isn't 1 through 5.",
+                "Tap one of the five dots.")
+        try:
+            existing = next(t for t in ptodos.scan(config.vault_path) if t.block_id == block_id)
+        except StopIteration:
+            raise Envelope(
+                404, "That todo isn't in the daily notes anymore.",
+                "Its line was edited or removed in Obsidian, or the id is unknown.",
+                "Refresh the agenda.")
+        if existing.children:
+            raise Envelope(
+                409, "This todo's already broken down.",
+                "It has steps under it already — breaking it down twice would duplicate them.",
+                "Check the steps already there.")
+
+        data, provider, attempts = llm.complete_json(
+            _breakdown_prompt(existing.task), config, _validate_breakdown)
+        if data is None:
+            raise Envelope(
+                503, "Couldn't break this down right now.",
+                "Every model in the chain failed or is unreachable.",
+                "Try again in a bit, or just do it as one step.")
+
+        updated = ptodos.add_breakdown(config.vault_path, block_id, body.feel, data["steps"])
+        notes.git_commit_vault(config.vault_path, f"api: broke down {block_id}")
+        return {
+            "id": updated.block_id,
+            "task": updated.task,
+            "feel": updated.feel,
+            "children": [{"id": c.block_id, "task": c.task, "done": c.done} for c in updated.children],
+        }
 
     @app.get("/api/build")
     def build(fresh: int = 0, config=Depends(require_token)):
