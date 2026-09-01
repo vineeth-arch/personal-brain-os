@@ -287,7 +287,12 @@ def transcribe_long(audio_path: Path, transcriber: Transcriber, *, sleep=time.sl
         if failed == len(chunks):
             # nothing at all came through — a note that's pure placeholders
             # would be silent data loss (it reads as a normal, if odd, memo).
-            # Quarantine like any other permanent failure instead.
+            # Quarantine like any other permanent failure instead. The audio
+            # never gets archived on this path (it's quarantined to failed/
+            # instead), so an empty cache dir here would just be an orphan —
+            # clean it up rather than leaving an empty .chunks/<stem>/ behind.
+            if cache_dir is not None:
+                shutil.rmtree(cache_dir, ignore_errors=True)
             raise StageError(
                 "Could not transcribe any part of the long recording.",
                 f"All {len(chunks)} segments failed to transcribe.",
@@ -345,7 +350,11 @@ def resume_note(note_path: Path, audio_path: Path, transcriber: Transcriber,
     new_transcript = transcribe_long(audio_path, transcriber, sleep=sleep, cache_dir=cache_dir)
 
     recovered = 0
-    for piece in new_transcript.split("\n\n"):
+    # Split only at chunk-marker boundaries, not every blank line — a
+    # recovered chunk's own text can legitimately contain a blank line
+    # (e.g. a multi-paragraph transcript), and splitting on "\n\n" would
+    # silently truncate it at the first paragraph break.
+    for piece in re.split(r"\n\n(?=\[\d{2}:\d{2}\])", new_transcript):
         piece = piece.strip()
         if not piece.startswith("["):
             continue

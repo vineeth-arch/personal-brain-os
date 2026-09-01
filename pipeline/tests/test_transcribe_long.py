@@ -216,25 +216,10 @@ def test_transient_chunk_failure_is_retried_with_backoff(tmp_path):
 
 
 # ---- chunk cache (Pass E, task E3) ---------------------------------------------
-
-@needs_ffmpeg
-def test_cache_dir_none_leaves_behavior_unchanged(tmp_path):
-    """Regression check: the default (no cache_dir) must behave exactly like
-    before this task."""
-    audio = _wav(tmp_path / "long.wav", 12)
-    t = CountingTranscriber()
-    out = tr.transcribe_long(audio, t, sleep=lambda s: None, chunk_seconds=4)
-    assert t.calls == 3
-    assert out.count("chunk text") == 3
-
-
-@needs_ffmpeg
-def test_every_chunk_failing_quarantines_instead_of_a_placeholder_only_note_unchanged(tmp_path):
-    audio = _wav(tmp_path / "long.wav", 8)
-    with pytest.raises(StageError) as exc:
-        tr.transcribe_long(audio, AlwaysFailingChunk(), sleep=lambda s: None, chunk_seconds=4)
-    assert exc.value.transient is False
-
+# The pre-existing tests above (e.g. test_chunks_are_stitched_into_one_transcript_
+# with_markers, test_every_chunk_failing_quarantines_instead_of_a_placeholder_
+# only_note) already run with no cache_dir and, all passing unmodified, are the
+# regression proof that the default (cache_dir=None) behavior is unchanged.
 
 @needs_ffmpeg
 def test_first_call_caches_only_the_successful_chunks(tmp_path):
@@ -270,6 +255,19 @@ def test_cache_dir_is_removed_once_every_chunk_succeeds(tmp_path):
     cache_dir = tmp_path / "cache"
     tr.transcribe_long(audio, CountingTranscriber(), sleep=lambda s: None,
                        chunk_seconds=4, cache_dir=cache_dir)
+    assert not cache_dir.exists()
+
+
+@needs_ffmpeg
+def test_cache_dir_is_removed_when_every_chunk_fails_and_the_file_quarantines(tmp_path):
+    """Code-review nit: the audio never gets archived on this path (it's
+    quarantined to failed/ instead), so an empty .chunks/<stem>/ cache dir
+    must not be left orphaned under archive_path."""
+    audio = _wav(tmp_path / "long.wav", 8)
+    cache_dir = tmp_path / "cache"
+    with pytest.raises(StageError):
+        tr.transcribe_long(audio, AlwaysFailingChunk(), sleep=lambda s: None,
+                           chunk_seconds=4, cache_dir=cache_dir)
     assert not cache_dir.exists()
 
 

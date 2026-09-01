@@ -71,6 +71,23 @@ class ExplodingTranscriber(Transcriber):
         raise AssertionError("transcribe() should never be called")
 
 
+class MultiParagraphTranscriber(Transcriber):
+    """The second chunk's recovered transcript itself contains an internal
+    blank line — a legitimate multi-paragraph transcript. Regression fixture
+    for the code-review bug: resume_note must not split the stitched
+    transcript on every "\\n\\n" (only chunk-marker boundaries), or this
+    second paragraph is silently dropped."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def transcribe(self, audio_path: Path) -> str:
+        self.calls += 1
+        if self.calls == 2:
+            return "first paragraph of recovered text\n\nsecond paragraph should not be lost"
+        return f"recovered text {self.calls}"
+
+
 # ---- the short-circuit (no placeholders at all) --------------------------------
 
 def test_no_placeholders_short_circuits_before_any_transcription(tmp_path):
@@ -103,6 +120,29 @@ def test_recovers_the_only_placeholder_and_leaves_surrounding_text_untouched(tmp
     expected = f"{before}[00:10] recovered text 2{after}"
     assert new_text == expected, "the surrounding text must be byte-identical"
     assert not cache_dir.exists(), "no placeholders remain — cache is disposable now"
+
+
+@needs_ffmpeg
+def test_a_recovered_chunks_internal_blank_line_is_not_truncated(tmp_path):
+    """Code-review regression: splitting the stitched transcript on every
+    "\\n\\n" (instead of only at chunk-marker boundaries) used to drop a
+    recovered chunk's own second paragraph silently, while still counting
+    it as fully recovered."""
+    audio = _wav(tmp_path / "meeting.wav", 601)  # > 600s → two 10-min chunks
+    cache_dir = tmp_path / "cache"
+    note_path = tmp_path / "note.md"
+    note_path.write_text(f"[00:00] first chunk\n\n{PLACEHOLDER_10}\n", encoding="utf-8")
+
+    n = tr.resume_note(note_path, audio, MultiParagraphTranscriber(), cache_dir,
+                       sleep=lambda s: None)
+
+    assert n == 1
+    new_text = note_path.read_text(encoding="utf-8")
+    assert new_text == (
+        "[00:00] first chunk\n\n"
+        "[00:10] first paragraph of recovered text\n\n"
+        "second paragraph should not be lost\n"
+    ), "the full multi-paragraph recovered text must land in the note, not just the first paragraph"
 
 
 # ---- two placeholders, only one heals ------------------------------------------
