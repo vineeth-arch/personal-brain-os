@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
-import type { CaptureTag, Status, TodoItem } from "../api/types";
+import type { CaptureTag, ResurfaceAction, ResurfacedNote, Status, TodoItem } from "../api/types";
 import { CAPTURE_TAGS } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
 import { StreakDots } from "../components/StreakDots";
@@ -122,14 +122,43 @@ function HeroCard({ status }: { status: Status }) {
   );
 }
 
-function Resurfaced({ vault }: { vault: string }) {
-  const { data, error, loading } = usePolling(api.resurfaced);
-  if (loading || error) return null; // quiet card — the hero owns error surfacing
-  const note = data?.note;
-  if (!note) return null;
+function ResurfacedCard({
+  note,
+  vault,
+  onGone,
+}: {
+  note: ResurfacedNote;
+  vault: string;
+  onGone: (id: string) => void;
+}) {
+  const [busy, setBusy] = useState(false);
   const deepLink = `obsidian://open?vault=${encodeURIComponent(vault)}&file=${encodeURIComponent(
     note.file.replace(/\.md$/, ""),
   )}`;
+  const respond = async (action: ResurfaceAction) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await api.resurfacedRespond(note.id, action, note.title);
+      if (action === "connect") {
+        window.location.hash = `#/search?q=${encodeURIComponent(note.title)}`;
+      } else if (action === "act") {
+        toast("Todo added.");
+        onGone(note.id);
+      } else {
+        toast("Won't resurface again.");
+        onGone(note.id);
+      }
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(
+        envelope ? `${envelope.what} ${envelope.todo}` : "That didn't reach the server.",
+        "error",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
   return (
     <section className="bg-cal-stamp border-subtle rounded-xl border p-5">
       <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
@@ -139,13 +168,59 @@ function Resurfaced({ vault }: { vault: string }) {
         {note.title}
       </h3>
       <p className="text-default mt-2 text-sm">{note.excerpt}</p>
-      <a
-        href={deepLink}
-        className="border-emphasis text-emphasis mt-4 inline-flex min-h-11 items-center rounded-xl border px-5 text-sm font-bold"
-      >
-        Open in Obsidian ↗
-      </a>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <a
+          href={deepLink}
+          className="border-emphasis text-emphasis inline-flex min-h-11 items-center rounded-xl border px-4 text-sm font-bold"
+        >
+          Open in Obsidian ↗
+        </a>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => respond("connect")}
+          className="border-subtle text-subtle hover:border-emphasis min-h-11 rounded-xl border px-4 text-sm font-bold disabled:opacity-60"
+        >
+          Connect
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => respond("act")}
+          className="border-subtle text-subtle hover:border-emphasis min-h-11 rounded-xl border px-4 text-sm font-bold disabled:opacity-60"
+        >
+          Act
+        </button>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => respond("archive")}
+          className="border-subtle text-subtle hover:border-emphasis min-h-11 rounded-xl border px-4 text-sm font-bold disabled:opacity-60"
+        >
+          Archive
+        </button>
+      </div>
     </section>
+  );
+}
+
+function Resurfaced({ vault }: { vault: string }) {
+  const { data, error, loading } = usePolling(api.resurfaced);
+  const [gone, setGone] = useState<Set<string>>(new Set());
+  if (loading || error) return null; // quiet card — the hero owns error surfacing
+  const visible = (data?.notes ?? []).filter((n) => !gone.has(n.id));
+  if (visible.length === 0) return null;
+  return (
+    <div className="space-y-3">
+      {visible.map((note) => (
+        <ResurfacedCard
+          key={note.id}
+          note={note}
+          vault={vault}
+          onGone={(id) => setGone((s) => new Set(s).add(id))}
+        />
+      ))}
+    </div>
   );
 }
 

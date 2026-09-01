@@ -282,12 +282,39 @@ have `captured: true` — the same definition, just windowed.
   "id": "20260101090000", "title": "note-title",
   "file": "02-Musings/2026-01-01-note-title.md",
   "excerpt": "…", "type": "musing", "created": "2026-01-01"
-} }
+}, "notes": [ /* up to 2, same shape */ ] }
 ```
 
-One deterministic pick per day (e.g. date-seeded); `note` may be `null` when
-the vault is empty. `file` is vault-relative — the frontend builds
-`obsidian://open?vault=<vault>&file=<file minus .md>` itself.
+A hybrid pick (Pass R, B6) from the three resurfacing folders (`02-Musings`,
+`03-Learnings`, `wiki/`), weighted toward older notes, with a spaced-repetition
+cooldown that widens each time a note is shown again (`7 * (shows + 1)` days)
+so the same note doesn't keep coming back. `notes` is up to 2 items for the
+Today screen; `note` is a back-compat alias for `notes[0]` (both `null`/`[]`
+when nothing is eligible — an empty vault, or every candidate is cooling down
+or archived). `file` is vault-relative — the frontend builds
+`obsidian://open?vault=<vault>&file=<file minus .md>` itself. Every call to
+this route also records that its picks were shown (advancing their cooldown),
+so polling it repeatedly cycles through the eligible pool rather than
+re-showing the same note.
+
+### `POST /api/resurfaced/{id}/response`
+
+Body `{"action": "connect"|"act"|"archive", "title": "note-title"}` — `title`
+is the card's own title, sent by the client rather than looked up server-side
+(the note being responded to was very likely just shown by the `GET` above,
+which already started its cooldown window, so a fresh server-side pick can't
+reliably find it again). Response `200 {"ok": true, "todo_block": "^id-r1"|null}`.
+
+- `connect` — records the response (events.db only) and returns
+  `todo_block: null`. Navigation to search is entirely client-side.
+- `act` — appends `- [ ] Follow up: {title} (from [[{id}]]) ^{id}-rN` to
+  today's `06-Todos/<date>.md` (`N` is collision-checked: `-r1`, `-r2`, …),
+  commits the vault, and returns the new block id as `todo_block`.
+- `archive` — records the response as `archived`, which permanently excludes
+  the note from future picks (checked before the cooldown math, so it holds
+  regardless of age). Returns `todo_block: null`.
+
+Invalid `action` → 400 envelope.
 
 ## Integrations (Pass 4)
 

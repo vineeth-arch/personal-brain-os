@@ -31,6 +31,8 @@ import type {
   PushResult,
   PushTarget,
   ResurfacedNote,
+  ResurfaceAction,
+  ResurfaceRespondResult,
   ReviewResponse,
   ReviewTrust,
   Resource,
@@ -315,7 +317,15 @@ export const api = {
     ),
   run: () => request<{ started: boolean }>("/api/run", { method: "POST" }),
   streak: () => request<Streak>("/api/streak"),
-  resurfaced: () => request<{ note: ResurfacedNote | null }>("/api/resurfaced"),
+  resurfaced: () =>
+    request<{ note: ResurfacedNote | null; notes: ResurfacedNote[] }>("/api/resurfaced"),
+  // title rides along rather than being looked up server-side — the card
+  // rendering the buttons already has it (see API-CONTRACT.md).
+  resurfacedRespond: (id: string, action: ResurfaceAction, title: string) =>
+    request<ResurfaceRespondResult>(`/api/resurfaced/${id}/response`, {
+      method: "POST",
+      body: JSON.stringify({ action, title }),
+    }),
   integrations: (fresh = false) =>
     request<IntegrationsResponse>(`/api/integrations${fresh ? "?fresh=1" : ""}`),
   setEngine: (engine: EngineName) =>

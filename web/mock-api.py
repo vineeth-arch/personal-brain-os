@@ -392,21 +392,34 @@ for day in reversed(STREAK_DAYS):
 TOTAL_CAPTURES = 0 if MODE_EMPTY else 217  # a plausible all-time number, not derived from STREAK_DAYS
 LAST7 = sum(1 for d in STREAK_DAYS[-7:] if d["captured"])
 
-RESURFACED = (
-    None
+RESURFACED_ITEMS = (
+    []
     if MODE_EMPTY
-    else {
-        "id": "20260214093000",
-        "title": "constraints-beat-aspirations",
-        "file": "wiki/2026-02-14-constraints-beat-aspirations.md",
-        "excerpt": (
-            "A banned-words list changes writing faster than a tone-of-voice deck. "
-            "Negative rules are checkable in the moment; aspirations require taste "
-            "you don't have at 11pm."
-        ),
-        "type": "insight",
-        "created": "2026-02-14",
-    }
+    else [
+        {
+            "id": "20260214093000",
+            "title": "constraints-beat-aspirations",
+            "file": "wiki/2026-02-14-constraints-beat-aspirations.md",
+            "excerpt": (
+                "A banned-words list changes writing faster than a tone-of-voice deck. "
+                "Negative rules are checkable in the moment; aspirations require taste "
+                "you don't have at 11pm."
+            ),
+            "type": "insight",
+            "created": "2026-02-14",
+        },
+        {
+            "id": "20260118081500",
+            "title": "the-inbox-is-not-a-todo-list",
+            "file": "02-Musings/2026-01-18-the-inbox-is-not-a-todo-list.md",
+            "excerpt": (
+                "Everything captured goes to review first — nothing skips the human "
+                "gate just because it looked like a task at 2am."
+            ),
+            "type": "musing",
+            "created": "2026-01-18",
+        },
+    ]
 )
 
 FAIL_ENVELOPE = {
@@ -892,7 +905,8 @@ class Handler(BaseHTTPRequestHandler):
                     "last7": LAST7,
                 })
             if path == "/api/resurfaced":
-                return self._send(200, {"note": RESURFACED})
+                items = RESURFACED_ITEMS
+                return self._send(200, {"note": items[0] if items else None, "notes": items})
             if path == "/api/integrations":
                 q = self.path.split("?")[1] if "?" in self.path else ""
                 params = dict(p.split("=", 1) for p in q.split("&") if "=" in p)
@@ -1102,6 +1116,18 @@ class Handler(BaseHTTPRequestHandler):
                           ("id", "title", "category", "status", "cover", "url", "created",
                            "sample", "file", "has_insight", "insight")}
                 return self._send(200, summary)
+            if path.startswith("/api/resurfaced/") and path.endswith("/response"):
+                note_id = path.split("/")[3]
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                data = json.loads(raw or b"{}")
+                action = data.get("action", "")
+                if action not in ("connect", "act", "archive"):
+                    return self._send(400, {"error": {
+                        "what": "That's not a response this screen understands.",
+                        "cause": f"'{action}' isn't connect, act, or archive.",
+                        "todo": "Use one of the three resurfaced-note buttons."}})
+                todo_block = f"^{note_id}-r1" if action == "act" else None
+                return self._send(200, {"ok": True, "todo_block": todo_block})
             if path.startswith("/api/todos/") and path.endswith("/toggle"):
                 block_id = path.split("/")[3]
                 item = next((t for t in TODO_ITEMS if t["id"] == block_id), None)

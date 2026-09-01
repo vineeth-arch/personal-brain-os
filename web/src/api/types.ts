@@ -141,6 +141,14 @@ export interface ResurfacedNote {
   created: string;
 }
 
+// Pass R (B6): Connect/Act/Archive on a resurfaced card.
+export type ResurfaceAction = "connect" | "act" | "archive";
+
+export interface ResurfaceRespondResult {
+  ok: boolean;
+  todo_block: string | null;
+}
+
 // Integrations screen (Pass 4). Health checks run server-side, cached 60s.
 export type EngineName = "whispercpp" | "openai";
 export type IntegrationStatus = "ok" | "warn" | "problem" | "unknown";
