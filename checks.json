@@ -1,8 +1,8 @@
 {
   "items": [
     { "id": "pass0", "phase": "Build passes", "label": "Pass 0 — scaffold + constitution",
-      "type": "file_exists", "path": "CLAUDE.md",
-      "next_action": "Restore CLAUDE.md from git — the constitution must exist." },
+      "type": "endpoint_ok", "path": "/api/health",
+      "next_action": "Start the API: .venv/bin/uvicorn api.main:app — CLAUDE.md itself lives in the repo, not the running server; Docker's runtime image never copies it in (it governs coding sessions, not runtime behavior)." },
     { "id": "pass1", "phase": "Build passes", "label": "Pass 1 — pipeline core",
       "type": "file_exists", "path": "pipeline/watcher.py",
       "next_action": "Run the Pass 1 build session (watcher + stages)." },
