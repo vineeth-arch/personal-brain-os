@@ -137,17 +137,6 @@ class EventLog:
             (message_id, datetime.now().isoformat(timespec="seconds")))
         self.conn.commit()
 
-    def last_vault_sync_ok(self) -> str | None:
-        """ISO timestamp of the most recent healthy sync (ok or resolved),
-        for the build tracker's vault_sync_healthy probe. Disposable —
-        events.db loss just means the probe reads 'unknown' until the next
-        successful tick, same as every other events.db-backed signal here."""
-        cur = self.conn.execute(
-            "SELECT timestamp FROM events WHERE stage='vault_sync' "
-            "AND status IN ('ok','resolved') ORDER BY id DESC LIMIT 1")
-        row = cur.fetchone()
-        return row[0] if row else None
-
     def heartbeat(self, path: Path) -> None:
         Path(path).write_text(datetime.now().isoformat(timespec="seconds") + "\n", encoding="utf-8")
 

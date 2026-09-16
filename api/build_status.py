@@ -168,6 +168,9 @@ def _probe_vault_sync_healthy(app_root: Path, item: dict, config, db_path: Path)
     have the side effect of creating state."""
     if config is None:
         return False, "config.json doesn't exist yet."
+    from pipeline import vaultsync
+    if vaultsync.remote_config(config) is None:
+        return True, "Vault sync isn't configured — single-machine setups don't need it."
     if not Path(db_path).exists():
         return False, "The vault has never synced successfully yet."
     try:

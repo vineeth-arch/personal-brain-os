@@ -258,6 +258,9 @@ def test_url_ok_no_config_at_all():
 
 # ---- Task 4: vault_sync_healthy --------------------------------------------
 
+_CONFIGURED_VAULT_SYNC = {"vault_sync": {"remote": "https://github.com/me/vault.git"}}
+
+
 def test_vault_sync_healthy_true_when_recent(tmp_path):
     vault = tmp_path / "vault"
     vault.mkdir()
@@ -266,7 +269,7 @@ def test_vault_sync_healthy_true_when_recent(tmp_path):
     events.log(str(vault), "vault_sync", "ok", message="status=ok ahead=0 behind=0")
     events.close()
 
-    config = SimpleNamespace(vault_path=vault, raw={})
+    config = SimpleNamespace(vault_path=vault, raw=_CONFIGURED_VAULT_SYNC)
     ok, detail = _probe_vault_sync_healthy(REPO_ROOT, {"max_age_hours": 2}, config, db_path)
     assert ok is True and "ago" in detail
 
@@ -283,7 +286,7 @@ def test_vault_sync_healthy_false_when_stale(tmp_path):
     events.conn.commit()
     events.close()
 
-    config = SimpleNamespace(vault_path=vault, raw={})
+    config = SimpleNamespace(vault_path=vault, raw=_CONFIGURED_VAULT_SYNC)
     ok, detail = _probe_vault_sync_healthy(REPO_ROOT, {"max_age_hours": 2}, config, db_path)
     assert ok is False and "over the" in detail
 
@@ -292,7 +295,7 @@ def test_vault_sync_healthy_false_when_never_synced(tmp_path):
     vault = tmp_path / "vault"
     vault.mkdir()
     empty_db_path = tmp_path / "empty-events.db"
-    config = SimpleNamespace(vault_path=vault, raw={})
+    config = SimpleNamespace(vault_path=vault, raw=_CONFIGURED_VAULT_SYNC)
     ok, detail = _probe_vault_sync_healthy(REPO_ROOT, {}, config, empty_db_path)
     assert ok is False and "never synced" in detail
 
@@ -300,6 +303,16 @@ def test_vault_sync_healthy_false_when_never_synced(tmp_path):
 def test_vault_sync_healthy_no_config_at_all(tmp_path):
     ok, detail = _probe_vault_sync_healthy(REPO_ROOT, {}, None, tmp_path / "events.db")
     assert ok is False and "config.json doesn't exist" in detail
+
+
+def test_vault_sync_healthy_true_when_not_configured(tmp_path):
+    # single-machine setups never configure vault sync — this must read as
+    # done-not-applicable, not a permanently failing checklist item.
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    config = SimpleNamespace(vault_path=vault, raw={})
+    ok, detail = _probe_vault_sync_healthy(REPO_ROOT, {}, config, tmp_path / "events.db")
+    assert ok is True and "isn't configured" in detail
 
 
 def test_the_shipped_passes_actually_probe_true():

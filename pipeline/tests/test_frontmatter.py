@@ -121,3 +121,15 @@ def test_single_item_block_list_on_ordinary_key_stays_block():
     fm, body = frontmatter.parse(text)
     assert fm["attendees"] == ["[[123]]"]
     assert frontmatter.serialize(fm, body) == text
+
+
+def test_parse_returns_empty_on_block_map_it_cannot_represent():
+    # a block-style nested map under a key with no inline value — this
+    # parser doesn't support it; it must fail closed (whole doc unparsed)
+    # rather than silently drop the map and let a caller re-serialize an
+    # empty key over real content
+    text = ("---\nid: 1\nchannels:\n  email: a@b.c\n  whatsapp: +9715\n---\n"
+            "Body\n")
+    fm, body = frontmatter.parse(text)
+    assert fm == {}
+    assert body == text

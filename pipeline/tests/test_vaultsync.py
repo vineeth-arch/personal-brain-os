@@ -439,3 +439,60 @@ def test_resolve_conflict_skips_new_heading_without_mangling_structure():
     assert resolved is not None
     fm, body = frontmatter.parse(resolved)
     assert "## New Section" not in body  # new headings are out of scope for auto-merge
+
+
+# ---- Final review fix wave --------------------------------------------------
+
+def test_resolve_conflict_keeps_hash_prefixed_non_heading_content():
+    base = "---\nid: 1\n---\n# P\n\n## Interaction log\n\n"
+    ours = base
+    theirs = base + "#followup ping her about the deck\n"
+    resolved = vaultsync.resolve_conflict(ours, theirs, base)
+    assert resolved is not None
+    assert "#followup ping her about the deck" in resolved
+
+
+def test_resolve_conflict_returns_none_when_frontmatter_has_unrepresentable_block_content():
+    base = "---\nid: 1\nchannels:\n  email: a@b.c\n---\nBody\n"
+    ours = base
+    theirs = "---\nid: 1\nchannels:\n  email: a@b.c\n  whatsapp: +9715\n---\nBody\n"
+    assert vaultsync.resolve_conflict(ours, theirs, base) is None
+
+
+def test_sync_auto_resolves_without_editor_in_environment(bare_remote, tmp_path, monkeypatch):
+    # Critical 1 regression: `git rebase --continue` must never need an
+    # interactive editor — the Docker runtime has no vi/nano installed, so
+    # every conflict auto-resolution would fail at the last step in
+    # production while every dev machine's own $EDITOR papered over it.
+    monkeypatch.delenv("EDITOR", raising=False)
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.delenv("GIT_EDITOR", raising=False)
+
+    origin = _init_vault(tmp_path / "origin")
+    (origin / "07-People").mkdir()
+    note = origin / "07-People" / "priya.md"
+    note.write_text("---\nid: 1\nchannels: {}\n---\n# Priya\n\n## Interaction log\n\n")
+    _run("add", "-A", cwd=origin)
+    _run("commit", "-q", "-m", "seed", cwd=origin)
+    _run("push", "-q", f"file://{bare_remote}", "HEAD:main", cwd=origin)
+
+    a = _clone(bare_remote, tmp_path / "a")
+    b = _clone(bare_remote, tmp_path / "b")
+
+    (a / "07-People" / "priya.md").write_text(
+        "---\nid: 1\nchannels: {email: a@b.c}\n---\n# Priya\n\n## Interaction log\n\n"
+        "- 2026-09-16 — called from A <!-- bc:a -->\n")
+    _run("add", "-A", cwd=a)
+    _run("commit", "-q", "-m", "a edits", cwd=a)
+    _run("push", "-q", f"file://{bare_remote}", "HEAD:main", cwd=a)
+
+    (b / "07-People" / "priya.md").write_text(
+        "---\nid: 1\nchannels: {whatsapp: +971555}\n---\n# Priya\n\n## Interaction log\n\n"
+        "- 2026-09-16 — noted from B <!-- vq:b -->\n")
+    _run("add", "-A", cwd=b)
+    _run("commit", "-q", "-m", "b edits", cwd=b)
+
+    cfg = config({"remote": f"file://{bare_remote}"})
+    result = vaultsync.sync(b, cfg)
+
+    assert result.status == "resolved"

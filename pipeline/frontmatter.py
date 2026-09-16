@@ -98,6 +98,13 @@ def parse(text: str) -> tuple[dict, str]:
                 i += 1
             fm[key] = BlockList(items)
             continue
+        elif rest == "" and i + 1 < len(lines) and lines[i + 1].startswith((" ", "\t")) \
+                and lines[i + 1].strip():
+            # blank value followed by SOME other indented content this
+            # parser doesn't understand (e.g. a block-style nested map) —
+            # fail closed rather than silently drop it and let a caller
+            # re-serialize an empty key over real content
+            return {}, text
         else:
             fm[key] = _unquote(rest)
         i += 1

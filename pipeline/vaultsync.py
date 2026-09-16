@@ -94,7 +94,7 @@ def _authed_url(remote: str, token: str) -> str:
 
 
 def _git(vault: Path, args: list[str]) -> subprocess.CompletedProcess:
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_EDITOR": "true"}
     return subprocess.run(["git", "-C", str(vault), *args],
                           capture_output=True, text=True, timeout=GIT_TIMEOUT, env=env)
 
@@ -146,6 +146,14 @@ def resolve_conflict(ours: str, theirs: str, base: str) -> str | None:
     today = date.today().isoformat()
     result_fm = dict(base_fm)
     suggestions: list[str] = []
+    # NOTE: frontmatter merge is intentionally less conservative than the
+    # body merge above — a one-sided Fill-field edit (e.g. owner changes
+    # `company` in Obsidian while an unrelated field changes on the other
+    # machine) reverts to the base value and appends a suggestion instead
+    # of applying or aborting. This is a known gap versus the body merge's
+    # abort-on-any-existing-line-change guarantee; closing it is Step 1
+    # roadmap work (distinguishing an owner edit from a second-app
+    # enrichment proposal), not in scope for Step 0.
     for key in set(ours_fm) | set(theirs_fm):
         ours_value = ours_fm.get(key)
         if ours_value not in (None, ""):
@@ -168,8 +176,8 @@ def resolve_conflict(ours: str, theirs: str, base: str) -> str | None:
             stripped = line.strip()
             if not stripped or stripped in base_line_set or stripped in result_lines:
                 continue
-            if stripped.startswith("#"):
-                continue  # heading lines are handled separately below (Issue 2)
+            if re.match(r"^#{1,6}\s", stripped):
+                continue  # a genuinely new heading — out of scope for line-level auto-merge (see Task 3 round 2); anything else starting with '#' (e.g. a capture tag like #todo) is ordinary content and must NOT be dropped here
             marker_match = re.search(r"(<!--\s*\S+:\S+\s*-->)\s*$", stripped)
             marker = marker_match.group(1) if marker_match else _synth_marker(stripped)
             if marker in result_body:

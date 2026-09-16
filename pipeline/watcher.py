@@ -486,7 +486,7 @@ def sync_vault(config, events: EventLog) -> None:
         return
     result = vaultsync.sync(Path(config.vault_path), config)
     events.log(str(config.vault_path), "vault_sync",
-              "ok" if result.status in ("ok", "resolved") else "failed",
+              result.status if result.status in ("ok", "resolved") else "failed",
               message=f"status={result.status} ahead={result.ahead} behind={result.behind}"
                       + (f" — {result.detail}" if result.detail else ""))
     if result.status == "conflict":
