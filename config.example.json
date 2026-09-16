@@ -3,6 +3,7 @@
   "inbox_path": "",
   "archive_path": "",
   "failed_path": "",
+  "timezone": "Asia/Kolkata",
   "transcription": {
     "engine": "openai",
     "language": "hi",

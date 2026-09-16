@@ -5,6 +5,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 
 @dataclass
@@ -20,6 +21,7 @@ class Config:
     ntfy_url: str = ""
     ntfy_topic: str = ""
     confidence_threshold: float = 0.7
+    timezone: str = "UTC"
     raw: dict = field(default_factory=dict)
 
     # Keys resolved from env, never from config.json.
@@ -30,6 +32,10 @@ class Config:
     @property
     def openai_key(self) -> str | None:
         return os.environ.get("OPENAI_API_KEY")
+
+    @property
+    def tzinfo(self) -> ZoneInfo:
+        return ZoneInfo(self.timezone)
 
 
 def load(path: str | Path = "config.json") -> Config:
@@ -50,5 +56,6 @@ def load(path: str | Path = "config.json") -> Config:
         ntfy_url=n.get("url", ""),
         ntfy_topic=n.get("topic", ""),
         confidence_threshold=float(c.get("confidence_threshold", 0.7)),
+        timezone=data.get("timezone", "UTC"),
         raw=data,
     )
