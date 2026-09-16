@@ -116,3 +116,9 @@ def test_normalize_phone():
 def test_slugify():
     assert merge.slugify("Priya D'Souza") == "priya-dsouza"
     assert merge.slugify("   ") == ""
+
+
+def test_forward_handles_unparseable_existing_value_without_crashing():
+    fm, _ = merge.apply_field({"last_contact": 12345}, "last_contact", "2026-09-16",
+                               source="cockpit", origin="human", today="2026-09-16")
+    assert fm["last_contact"] == "2026-09-16"

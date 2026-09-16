@@ -95,7 +95,7 @@ def apply_field(existing: dict, key: str, new_value, *, source: str, origin: str
     if kind == "forward":
         try:
             current_date = date.fromisoformat(current) if current else None
-        except ValueError:
+        except (ValueError, TypeError):
             current_date = None
         try:
             new_date = date.fromisoformat(new_value)
