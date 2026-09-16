@@ -415,3 +415,27 @@ def test_sync_aborts_cleanly_on_non_utf8_conflicted_file(bare_remote, tmp_path):
 
 def test_resolvable_folders_excludes_todos():
     assert "06-Todos" not in vaultsync.RESOLVABLE_FOLDERS
+
+
+# ---- Fix round 2 — Task 3 review fixes -------------------------------------
+
+def test_resolve_conflict_merges_short_line_not_lost_to_substring_match():
+    base = "---\nid: 1\n---\n# P\n\n## Interaction log\n\nHe confirmed the deal is done today.\n"
+    ours = base
+    theirs = ("---\nid: 1\n---\n# P\n\n## Interaction log\n\n"
+              "He confirmed the deal is done today.\ndone\n")
+    resolved = vaultsync.resolve_conflict(ours, theirs, base)
+    fm, body = frontmatter.parse(resolved)
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    assert any(ln == "done" or ln.startswith("done <!--") for ln in lines)
+
+
+def test_resolve_conflict_skips_new_heading_without_mangling_structure():
+    base = "---\nid: 1\n---\n# P\n\n## Context\n\nMet at a conference.\n"
+    ours = base
+    theirs = ("---\nid: 1\n---\n# P\n\n## Context\n\nMet at a conference.\n\n"
+              "## New Section\n\nSome prose here.\n")
+    resolved = vaultsync.resolve_conflict(ours, theirs, base)
+    assert resolved is not None
+    fm, body = frontmatter.parse(resolved)
+    assert "## New Section" not in body  # new headings are out of scope for auto-merge

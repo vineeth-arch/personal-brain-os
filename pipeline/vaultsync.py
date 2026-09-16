@@ -161,18 +161,29 @@ def resolve_conflict(ours: str, theirs: str, base: str) -> str | None:
                 suggestions.append(s)
 
     result_body = ours_body
+    result_lines = {ln.strip() for ln in result_body.splitlines() if ln.strip()}
+    base_line_set = {ln.strip() for ln in base_body.splitlines() if ln.strip()}
     for side_body in (theirs_body,):
         for line in side_body.splitlines():
             stripped = line.strip()
-            if not stripped or stripped in base_body or stripped in result_body:
+            if not stripped or stripped in base_line_set or stripped in result_lines:
                 continue
+            if stripped.startswith("#"):
+                continue  # heading lines are handled separately below (Issue 2)
             marker_match = re.search(r"(<!--\s*\S+:\S+\s*-->)\s*$", stripped)
             marker = marker_match.group(1) if marker_match else _synth_marker(stripped)
             if marker in result_body:
                 continue
             section = _section_for_line(side_body, line) or "Updates"
+            if f"## {section}" not in base_body:
+                # the resolved heading is itself new on this side (not in
+                # base) — routing to it would silently create that brand-new
+                # section via append_line, defeating the Issue 2 skip above.
+                # Treat it as unresolved and fall back to Updates.
+                section = "Updates"
             text = stripped[: marker_match.start()].rstrip() if marker_match else stripped
             result_body = merge.append_line(result_body, section, text, marker)
+            result_lines.add(stripped)
 
     for suggestion in suggestions:
         marker = _synth_marker(suggestion)
