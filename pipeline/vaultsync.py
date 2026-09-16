@@ -25,19 +25,24 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
+
+from pipeline import frontmatter, merge
 
 log = logging.getLogger("pipeline")
 
 GIT_TIMEOUT = 30
 REMOTE_REF_TEMPLATE = "refs/remotes/vaultsync/{branch}"
+RESOLVABLE_FOLDERS = {"07-People", "11-Companies", "12-Conversations", "06-Todos"}
 
 
 @dataclass
 class SyncResult:
-    status: str            # ok | no-remote | not-a-repo | conflict | unrelated-histories | error
+    status: str            # ok | resolved | no-remote | not-a-repo | conflict | unrelated-histories | error
     detail: str = ""        # plain-English — goes in the event log and the Integrations card
     ahead: int = 0
     behind: int = 0
@@ -108,6 +113,107 @@ def _snapshot_local_changes(vault: Path) -> None:
     _git(vault, ["commit", "-q", "-m", "vault sync: local snapshot"])
 
 
+def resolve_conflict(ours: str, theirs: str, base: str) -> str | None:
+    """Three-way text resolve for one conflicted note, using C1's merge
+    rules (pipeline/merge.py) instead of picking a side. Returns None when
+    the file isn't resolvable this way (unparseable frontmatter on either
+    side) — the caller aborts the rebase exactly as before in that case."""
+    base_fm, base_body = frontmatter.parse(base)
+    ours_fm, ours_body = frontmatter.parse(ours)
+    theirs_fm, theirs_body = frontmatter.parse(theirs)
+    if not ours_fm or not theirs_fm:
+        return None
+
+    today = date.today().isoformat()
+    result_fm = dict(base_fm)
+    suggestions: list[str] = []
+    for key in set(ours_fm) | set(theirs_fm):
+        ours_value = ours_fm.get(key)
+        if ours_value not in (None, ""):
+            result_fm, s = merge.apply_field(result_fm, key, ours_value,
+                                              source="vault", origin="human", today=today)
+            if s:
+                suggestions.append(s)
+        theirs_value = theirs_fm.get(key)
+        if theirs_value not in (None, ""):
+            result_fm, s = merge.apply_field(result_fm, key, theirs_value,
+                                              source="vault", origin="human", today=today)
+            if s:
+                suggestions.append(s)
+
+    result_body = base_body
+    for side_body in (ours_body, theirs_body):
+        for line in side_body.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("- ") or stripped in base_body:
+                continue
+            marker_match = re.search(r"(<!--\s*\S+:\S+\s*-->)\s*$", stripped)
+            marker = marker_match.group(1) if marker_match else stripped
+            if marker in result_body:
+                continue
+            section = _section_for_line(side_body, line)
+            if section is None:
+                continue
+            text = stripped[: marker_match.start()].rstrip() if marker_match else stripped
+            result_body = merge.append_line(result_body, section, text,
+                                            marker_match.group(1) if marker_match else "")
+
+    for suggestion in suggestions:
+        result_body = merge.append_line(result_body, "Updates", suggestion, "")
+
+    return frontmatter.serialize(result_fm, result_body)
+
+
+def _section_for_line(body: str, line: str) -> str | None:
+    idx = body.find(line)
+    if idx == -1:
+        return None
+    heading_idx = body.rfind("\n## ", 0, idx)
+    if heading_idx == -1:
+        return None
+    heading_line = body[heading_idx + 1:body.index("\n", heading_idx + 1)]
+    return heading_line.removeprefix("## ").strip()
+
+
+def _try_resolve_conflicts(vault: Path) -> bool:
+    """Attempt to auto-resolve every conflicted file via C1's merge rules.
+    Returns True (rebase continued) only when EVERY conflicted path is
+    under RESOLVABLE_FOLDERS and resolves cleanly — a single unresolvable
+    file aborts the whole attempt, leaving the caller to `rebase --abort`
+    exactly as before. Never partially applies."""
+    listing = _git(vault, ["diff", "--name-only", "--diff-filter=U"])
+    if listing.returncode != 0:
+        return False
+    conflicted = [line for line in listing.stdout.splitlines() if line.strip()]
+    if not conflicted:
+        return False
+    if not all(Path(p).parts and Path(p).parts[0] in RESOLVABLE_FOLDERS for p in conflicted):
+        return False
+
+    resolutions: dict[str, str] = {}
+    for rel_path in conflicted:
+        base = _show_stage(vault, rel_path, 1)
+        ours = _show_stage(vault, rel_path, 2)
+        theirs = _show_stage(vault, rel_path, 3)
+        if base is None or ours is None or theirs is None:
+            return False
+        resolved = resolve_conflict(ours, theirs, base)
+        if resolved is None:
+            return False
+        resolutions[rel_path] = resolved
+
+    for rel_path, content in resolutions.items():
+        (vault / rel_path).write_text(content, encoding="utf-8")
+        _git(vault, ["add", rel_path])
+    continue_result = _git(vault, ["rebase", "--continue"])
+    return continue_result.returncode == 0
+
+
+def _show_stage(vault: Path, rel_path: str, stage: int) -> str | None:
+    result = _git(vault, ["show", f":{stage}:{rel_path}"])
+    return result.stdout if result.returncode == 0 else None
+
+
 def sync(vault: Path, config) -> SyncResult:
     """One sync pass. Never raises — called from the watcher's --loop tick
     and --backlog batches, same never-abort contract as enrich.retry_pending."""
@@ -142,6 +248,7 @@ def _sync(vault: Path, config) -> SyncResult:
 
     _snapshot_local_changes(vault)
 
+    was_resolved = False
     if not remote_is_empty:
         # `git rebase` — unlike `git merge` — does NOT refuse unrelated
         # histories on its own; it just replays every local commit onto the
@@ -156,12 +263,14 @@ def _sync(vault: Path, config) -> SyncResult:
 
         rebase = _git(vault, ["rebase", ref])
         if rebase.returncode != 0:
-            _git(vault, ["rebase", "--abort"])
-            return SyncResult(
-                "conflict",
-                "The vault and the remote both changed the same note. The rebase was aborted "
-                "and your vault is untouched — pull normally, resolve the conflict by hand "
-                "(in Obsidian or git), then sync again.")
+            was_resolved = _try_resolve_conflicts(vault)
+            if not was_resolved:
+                _git(vault, ["rebase", "--abort"])
+                return SyncResult(
+                    "conflict",
+                    "The vault and the remote both changed the same note. The rebase was aborted "
+                    "and your vault is untouched — pull normally, resolve the conflict by hand "
+                    "(in Obsidian or git), then sync again.")
 
     push = _git(vault, ["push", url, f"HEAD:{branch}"])
     if push.returncode != 0:
@@ -174,4 +283,6 @@ def _sync(vault: Path, config) -> SyncResult:
     # simply HEAD now, no need for a second fetch to know we're even
     _git(vault, ["update-ref", ref, "HEAD"])
     ahead, behind = ahead_behind(vault, branch)
-    return SyncResult("ok", "Vault synced.", ahead=ahead, behind=behind)
+    status = "resolved" if was_resolved else "ok"
+    detail = "Vault synced (auto-resolved a conflict)." if was_resolved else "Vault synced."
+    return SyncResult(status, detail, ahead=ahead, behind=behind)

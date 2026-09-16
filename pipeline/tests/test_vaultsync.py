@@ -11,7 +11,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from pipeline import vaultsync
+from pipeline import frontmatter, vaultsync
 
 
 def _run(*args, cwd=None):
@@ -259,3 +259,113 @@ def test_ahead_behind_reflects_unsynced_local_commits(tmp_path, monkeypatch, bar
     _run("add", "-A", cwd=vault)
     _run("commit", "-q", "-m", "not yet synced", cwd=vault)
     assert vaultsync.ahead_behind(vault, "main") == (1, 0)
+
+
+# ---- resolve_conflict (D3) -------------------------------------------------
+
+def test_resolve_conflict_returns_none_for_unparseable_frontmatter():
+    assert vaultsync.resolve_conflict("no frontmatter here", "also none", "base") is None
+
+
+def test_resolve_conflict_merges_fill_field_as_suggestion():
+    base = "---\nid: 1\ncompany: \n---\n# P\n\n## Updates\n\n"
+    ours = "---\nid: 1\ncompany: Studio X\n---\n# P\n\n## Updates\n\n"
+    theirs = "---\nid: 1\ncompany: Acme\n---\n# P\n\n## Updates\n\n"
+    resolved = vaultsync.resolve_conflict(ours, theirs, base)
+    fm, body = frontmatter.parse(resolved)
+    # first writer to fill wins the field; the second becomes a suggestion
+    assert fm["company"] in ("Studio X", "Acme")
+    assert "## Updates" in body
+
+
+def test_resolve_conflict_unions_channels_from_both_sides():
+    base = "---\nid: 1\nchannels: {}\n---\nBody\n"
+    ours = "---\nid: 1\nchannels: {email: a@b.c}\n---\nBody\n"
+    theirs = "---\nid: 1\nchannels: {whatsapp: +971555}\n---\nBody\n"
+    resolved = vaultsync.resolve_conflict(ours, theirs, base)
+    fm, _ = frontmatter.parse(resolved)
+    assert fm["channels"] == {"email": "a@b.c", "whatsapp": "+971555"}
+
+
+def test_resolve_conflict_keeps_appended_lines_from_both_sides():
+    base = "---\nid: 1\n---\n# P\n\n## Interaction log\n\n"
+    ours = "---\nid: 1\n---\n# P\n\n## Interaction log\n\n- 2026-09-16 — called <!-- bc:a -->\n"
+    theirs = "---\nid: 1\n---\n# P\n\n## Interaction log\n\n- 2026-09-16 — noted <!-- vq:b -->\n"
+    resolved = vaultsync.resolve_conflict(ours, theirs, base)
+    assert "<!-- bc:a -->" in resolved
+    assert "<!-- vq:b -->" in resolved
+
+
+# ---- sync() auto-resolves a real rebase conflict --------------------------
+
+def test_sync_auto_resolves_conflicting_person_note(bare_remote, tmp_path):
+    origin = _init_vault(tmp_path / "origin")
+    (origin / "07-People").mkdir()
+    note = origin / "07-People" / "priya.md"
+    note.write_text("---\nid: 1\nchannels: {}\n---\n# Priya\n\n## Interaction log\n\n")
+    _run("add", "-A", cwd=origin)
+    _run("commit", "-q", "-m", "seed", cwd=origin)
+    _run("push", "-q", f"file://{bare_remote}", "HEAD:main", cwd=origin)
+
+    a = _clone(bare_remote, tmp_path / "a")
+    b = _clone(bare_remote, tmp_path / "b")
+
+    (a / "07-People" / "priya.md").write_text(
+        "---\nid: 1\nchannels: {email: a@b.c}\n---\n# Priya\n\n## Interaction log\n\n"
+        "- 2026-09-16 — called from A <!-- bc:a -->\n")
+    _run("add", "-A", cwd=a)
+    _run("commit", "-q", "-m", "a edits", cwd=a)
+    _run("push", "-q", f"file://{bare_remote}", "HEAD:main", cwd=a)
+
+    (b / "07-People" / "priya.md").write_text(
+        "---\nid: 1\nchannels: {whatsapp: +971555}\n---\n# Priya\n\n## Interaction log\n\n"
+        "- 2026-09-16 — noted from B <!-- vq:b -->\n")
+    _run("add", "-A", cwd=b)
+    _run("commit", "-q", "-m", "b edits", cwd=b)
+
+    cfg = config({"remote": f"file://{bare_remote}"})
+    result = vaultsync.sync(b, cfg)
+
+    assert result.status == "resolved"
+    merged = (b / "07-People" / "priya.md").read_text()
+    fm, body = frontmatter.parse(merged)
+    assert fm["channels"] == {"email": "a@b.c", "whatsapp": "+971555"}
+    assert "<!-- bc:a -->" in body
+    assert "<!-- vq:b -->" in body
+
+
+def test_sync_still_aborts_on_unresolvable_conflict(bare_remote, tmp_path):
+    origin = _init_vault(tmp_path / "origin")
+    (origin / "attachments").mkdir()
+    photo = origin / "attachments" / "img.txt"
+    photo.write_text("binary-ish content v1")
+    _run("add", "-A", cwd=origin)
+    _run("commit", "-q", "-m", "seed", cwd=origin)
+    _run("push", "-q", f"file://{bare_remote}", "HEAD:main", cwd=origin)
+
+    a = _clone(bare_remote, tmp_path / "a")
+    b = _clone(bare_remote, tmp_path / "b")
+
+    (a / "attachments" / "img.txt").write_text("binary-ish content v2 from A")
+    _run("add", "-A", cwd=a)
+    _run("commit", "-q", "-m", "a edits", cwd=a)
+    _run("push", "-q", f"file://{bare_remote}", "HEAD:main", cwd=a)
+
+    (b / "attachments" / "img.txt").write_text("binary-ish content v2 from B")
+    _run("add", "-A", cwd=b)
+    _run("commit", "-q", "-m", "b edits", cwd=b)
+
+    cfg = config({"remote": f"file://{bare_remote}"})
+    result = vaultsync.sync(b, cfg)
+
+    assert result.status == "conflict"
+    assert (b / "attachments" / "img.txt").read_text() == "binary-ish content v2 from B"
+
+
+def test_path_remote_untouched_by_url_authing():
+    assert vaultsync._authed_url("/vault.git", "some-token") == "/vault.git"
+
+
+def test_ssh_remote_untouched_by_url_authing():
+    remote = "ssh://root@2.29.35.159/root/vault.git"
+    assert vaultsync._authed_url(remote, "some-token") == remote
