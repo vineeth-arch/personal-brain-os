@@ -1373,14 +1373,14 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         events = EventLog(db_path, Path(config.vault_path))
         try:
             events.log(str(config.vault_path), "vault_sync",
-                      "ok" if result.status == "ok" else "failed",
+                      result.status if result.status in ("ok", "resolved") else "failed",
                       message=f"status={result.status} ahead={result.ahead} behind={result.behind}"
                               + (f" — {result.detail}" if result.detail else ""))
         finally:
             events.close()
         integrations.bust_cache(app.state)
-        return {"ok": result.status == "ok", "status": result.status, "detail": result.detail,
-                "ahead": result.ahead, "behind": result.behind}
+        return {"ok": result.status in ("ok", "resolved"), "status": result.status,
+                "detail": result.detail, "ahead": result.ahead, "behind": result.behind}
 
     # ---- integrations ----------------------------------------------------------------
 

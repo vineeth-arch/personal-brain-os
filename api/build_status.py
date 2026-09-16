@@ -161,11 +161,12 @@ def _probe_vault_sync_configured(app_root: Path, item: dict, config, _db):
 def _probe_vault_sync_healthy(app_root: Path, item: dict, config, db_path: Path):
     """Sync being CONFIGURED is a separate question (covered by
     deploy-tunnel-style config checks elsewhere) — this probe only answers
-    "is it actually working right now", so an unconfigured or never-synced
-    vault reads False here, same convention as every other not-yet-wired
-    milestone in this file. Read-only: never creates events.db (matches
-    _processed_count's convention below), since a status probe must not
-    have the side effect of creating state."""
+    "is it actually working right now". An unconfigured vault reads True
+    ("not applicable" — same as _probe_vault_sync_configured's own framing
+    for single-machine setups, which never need this at all); a configured
+    but never-synced or stale vault reads False. Read-only: never creates
+    events.db (matches _processed_count's convention below), since a
+    status probe must not have the side effect of creating state."""
     if config is None:
         return False, "config.json doesn't exist yet."
     from pipeline import vaultsync

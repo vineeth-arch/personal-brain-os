@@ -502,7 +502,7 @@ def _check_vault_git_sync(config, db_path: Path) -> dict:
 
     ts, status, message = last
     when = ts[11:16] if len(ts) >= 16 else ts
-    if status != "ok":
+    if status not in ("ok", "resolved"):
         card.update(status="warn", badge="Sync failed",
                     detail=f"The last attempt ({when}) didn't complete.",
                     error={
