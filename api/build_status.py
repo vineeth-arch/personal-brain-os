@@ -158,6 +158,30 @@ def _probe_vault_sync_configured(app_root: Path, item: dict, config, _db):
                                   "optional on a single-machine setup.")
 
 
+def _probe_vault_sync_healthy(app_root: Path, item: dict, config, db_path: Path):
+    """Sync being CONFIGURED is a separate question (covered by
+    deploy-tunnel-style config checks elsewhere) — this probe only answers
+    "is it actually working right now", so an unconfigured or never-synced
+    vault reads False here, same convention as every other not-yet-wired
+    milestone in this file."""
+    if config is None:
+        return False, "config.json doesn't exist yet."
+    from pipeline.events import EventLog
+    try:
+        events = EventLog(db_path, config.vault_path)
+        last = events.last_vault_sync_ok()
+    except Exception:
+        return False, "events.db couldn't be read."
+    if not last:
+        return False, "The vault has never synced successfully yet."
+    from datetime import datetime
+    age_hours = (datetime.now() - datetime.fromisoformat(last)).total_seconds() / 3600
+    max_age = item.get("max_age_hours", 2)
+    ok = age_hours <= max_age
+    return ok, (f"Last healthy sync {age_hours:.1f}h ago." if ok
+                else f"Last healthy sync was {age_hours:.1f}h ago — over the {max_age}h window.")
+
+
 def _probe_whisper_model_present(app_root: Path, item: dict, config, _db):
     """Pass H2: the binary being runnable (wire-whisper) doesn't prove the
     MODEL file is actually on this machine — Railway's bootstrap can
@@ -250,6 +274,7 @@ _PROBES = {
     "git_log_contains": _probe_git_log_contains,
     "vault_query": _probe_vault_query,
     "vault_sync_configured": _probe_vault_sync_configured,
+    "vault_sync_healthy": _probe_vault_sync_healthy,
     "whisper_model_present": _probe_whisper_model_present,
 }
 

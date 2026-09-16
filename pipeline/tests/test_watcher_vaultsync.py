@@ -9,12 +9,12 @@ from types import SimpleNamespace
 
 import pytest
 
-from pipeline import vaultsync, watcher
+from pipeline import errors, vaultsync, watcher
 from pipeline.events import EventLog
 
 
 def config(vault_path: Path):
-    return SimpleNamespace(vault_path=vault_path, raw={})
+    return SimpleNamespace(vault_path=vault_path, raw={}, ntfy_url=None, ntfy_topic=None)
 
 
 @pytest.fixture(autouse=True)
@@ -69,4 +69,23 @@ def test_sync_vault_logs_a_conflict_as_failed_but_never_raises(tmp_path, monkeyp
     status, message = rows[0]
     assert status == "failed" and "status=conflict" in message
     assert "both changed the same note" in message
+    events.close()
+
+
+def test_sync_vault_ntfy_on_conflict_once_per_window(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(errors, "ntfy", lambda *a, **k: calls.append(a))
+    monkeypatch.setenv("VAULT_GIT_REMOTE", "https://example.com/vault.git")
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    events = EventLog(tmp_path / "events.db", vault)
+
+    monkeypatch.setattr(
+        vaultsync, "sync",
+        lambda v, cfg: vaultsync.SyncResult("conflict", "The vault and the remote both changed the same note."))
+
+    watcher.sync_vault(config(vault), events)
+    watcher.sync_vault(config(vault), events)   # same 6-hour window — throttled
+
+    assert len(calls) == 1
     events.close()

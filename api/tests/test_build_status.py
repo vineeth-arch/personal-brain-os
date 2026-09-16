@@ -9,13 +9,16 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
 from api import build_status
 from api.build_status import (_PROBES, _probe_binary_runs, _probe_config_field_contains,
                               _probe_file_contains, _probe_file_exists, _probe_url_ok,
-                              _probe_vault_sync_configured, _probe_whisper_model_present)
+                              _probe_vault_sync_configured, _probe_vault_sync_healthy,
+                              _probe_whisper_model_present)
+from pipeline.events import EventLog
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -142,6 +145,7 @@ def test_every_manifest_item_carries_the_fields_its_probe_needs():
         "vault_query": lambda i: i.get("query"),
         "endpoint_ok": lambda i: True,
         "vault_sync_configured": lambda i: True,
+        "vault_sync_healthy": lambda i: True,
         "whisper_model_present": lambda i: True,
     }
     for item in manifest["items"]:
@@ -249,6 +253,52 @@ def test_url_ok_no_public_url_set_makes_no_network_call(monkeypatch):
 
 def test_url_ok_no_config_at_all():
     ok, detail = _probe_url_ok(REPO_ROOT, {}, None, None)
+    assert ok is False and "config.json doesn't exist" in detail
+
+
+# ---- Task 4: vault_sync_healthy --------------------------------------------
+
+def test_vault_sync_healthy_true_when_recent(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    db_path = tmp_path / "events.db"
+    events = EventLog(db_path, vault)
+    events.log(str(vault), "vault_sync", "ok", message="status=ok ahead=0 behind=0")
+    events.close()
+
+    config = SimpleNamespace(vault_path=vault, raw={})
+    ok, detail = _probe_vault_sync_healthy(REPO_ROOT, {"max_age_hours": 2}, config, db_path)
+    assert ok is True and "ago" in detail
+
+
+def test_vault_sync_healthy_false_when_stale(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    db_path = tmp_path / "events.db"
+    events = EventLog(db_path, vault)
+    stale = (datetime.now() - timedelta(hours=5)).isoformat(timespec="seconds")
+    events.conn.execute(
+        "INSERT INTO events (timestamp, file, stage, status, message) VALUES (?,?,?,?,?)",
+        (stale, str(vault), "vault_sync", "ok", "status=ok ahead=0 behind=0"))
+    events.conn.commit()
+    events.close()
+
+    config = SimpleNamespace(vault_path=vault, raw={})
+    ok, detail = _probe_vault_sync_healthy(REPO_ROOT, {"max_age_hours": 2}, config, db_path)
+    assert ok is False and "over the" in detail
+
+
+def test_vault_sync_healthy_false_when_never_synced(tmp_path):
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    empty_db_path = tmp_path / "empty-events.db"
+    config = SimpleNamespace(vault_path=vault, raw={})
+    ok, detail = _probe_vault_sync_healthy(REPO_ROOT, {}, config, empty_db_path)
+    assert ok is False and "never synced" in detail
+
+
+def test_vault_sync_healthy_no_config_at_all(tmp_path):
+    ok, detail = _probe_vault_sync_healthy(REPO_ROOT, {}, None, tmp_path / "events.db")
     assert ok is False and "config.json doesn't exist" in detail
 
 

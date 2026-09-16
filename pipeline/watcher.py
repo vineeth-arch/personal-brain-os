@@ -480,16 +480,23 @@ def _print_summary(results: list[Result]) -> None:
 
 def sync_vault(config, events: EventLog) -> None:
     """Push/pull the vault's own git history to its configured remote (Pass
-    H1 — the island fix, F1). A quiet no-op when VAULT_GIT_REMOTE isn't set
-    (most local/dev deploys); never raises — vaultsync.sync's own contract,
-    same "a tick may fail, the loop may not" rule as everything else here."""
+    H1 — the island fix, F1; conflict auto-resolution added in D3). A quiet
+    no-op when VAULT_GIT_REMOTE isn't set; never raises."""
     if vaultsync.remote_config(config) is None:
         return
     result = vaultsync.sync(Path(config.vault_path), config)
     events.log(str(config.vault_path), "vault_sync",
-              "ok" if result.status == "ok" else "failed",
+              "ok" if result.status in ("ok", "resolved") else "failed",
               message=f"status={result.status} ahead={result.ahead} behind={result.behind}"
                       + (f" — {result.detail}" if result.detail else ""))
+    if result.status == "conflict":
+        window_key = f"vaultsync-alert-{int(time.time() // 21600)}"
+        if not events.reminder_fired(window_key):
+            errors.ntfy(config.ntfy_url, config.ntfy_topic,
+                        "Vault sync is stuck — two machines edited the same note "
+                        "in a way that couldn't be auto-merged. Open Pipeline to see it.",
+                        title="Brain Cockpit — vault sync stuck")
+            events.mark_reminder(window_key)
 
 
 def drain_tick(config, events: EventLog) -> None:
