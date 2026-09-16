@@ -163,19 +163,28 @@ def _probe_vault_sync_healthy(app_root: Path, item: dict, config, db_path: Path)
     deploy-tunnel-style config checks elsewhere) — this probe only answers
     "is it actually working right now", so an unconfigured or never-synced
     vault reads False here, same convention as every other not-yet-wired
-    milestone in this file."""
+    milestone in this file. Read-only: never creates events.db (matches
+    _processed_count's convention below), since a status probe must not
+    have the side effect of creating state."""
     if config is None:
         return False, "config.json doesn't exist yet."
-    from pipeline.events import EventLog
+    if not Path(db_path).exists():
+        return False, "The vault has never synced successfully yet."
     try:
-        events = EventLog(db_path, config.vault_path)
-        last = events.last_vault_sync_ok()
-    except Exception:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            cur = conn.execute(
+                "SELECT timestamp FROM events WHERE stage='vault_sync' "
+                "AND status IN ('ok','resolved') ORDER BY id DESC LIMIT 1")
+            row = cur.fetchone()
+        finally:
+            conn.close()
+    except sqlite3.Error:
         return False, "events.db couldn't be read."
-    if not last:
+    if not row:
         return False, "The vault has never synced successfully yet."
     from datetime import datetime
-    age_hours = (datetime.now() - datetime.fromisoformat(last)).total_seconds() / 3600
+    age_hours = (datetime.now() - datetime.fromisoformat(row[0])).total_seconds() / 3600
     max_age = item.get("max_age_hours", 2)
     ok = age_hours <= max_age
     return ok, (f"Last healthy sync {age_hours:.1f}h ago." if ok
