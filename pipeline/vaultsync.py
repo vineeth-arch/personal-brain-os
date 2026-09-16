@@ -23,6 +23,7 @@ never leaves a vault half-migrated.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -37,7 +38,19 @@ log = logging.getLogger("pipeline")
 
 GIT_TIMEOUT = 30
 REMOTE_REF_TEMPLATE = "refs/remotes/vaultsync/{branch}"
-RESOLVABLE_FOLDERS = {"07-People", "11-Companies", "12-Conversations", "06-Todos"}
+RESOLVABLE_FOLDERS = {"07-People", "11-Companies", "12-Conversations"}
+# 06-Todos is deliberately excluded — daily todo files have no frontmatter
+# (pipeline/todos.py writes plain checkbox lines), so resolve_conflict's
+# frontmatter.parse() would always bail there anyway; excluding it up
+# front avoids implying a resolution path that doesn't exist.
+
+
+def _synth_marker(text: str) -> str:
+    """A stable marker for a line/suggestion that has no <!-- --> of its
+    own (e.g. an owner's free-text edit, or a Fill-collision suggestion) —
+    merge.append_line's idempotency check needs a non-empty marker or it's
+    a silent no-op ("" is a substring of every string)."""
+    return f"<!-- vs:{hashlib.sha1(text.encode()).hexdigest()[:10]} -->"
 
 
 @dataclass
@@ -124,6 +137,12 @@ def resolve_conflict(ours: str, theirs: str, base: str) -> str | None:
     if not ours_fm or not theirs_fm:
         return None
 
+    base_lines = {ln for ln in base_body.splitlines() if ln.strip()}
+    ours_lines = {ln for ln in ours_body.splitlines() if ln.strip()}
+    theirs_lines = {ln for ln in theirs_body.splitlines() if ln.strip()}
+    if not base_lines <= ours_lines or not base_lines <= theirs_lines:
+        return None  # one side removed or modified an existing line — not safe to auto-merge
+
     today = date.today().isoformat()
     result_fm = dict(base_fm)
     suggestions: list[str] = []
@@ -141,25 +160,24 @@ def resolve_conflict(ours: str, theirs: str, base: str) -> str | None:
             if s:
                 suggestions.append(s)
 
-    result_body = base_body
-    for side_body in (ours_body, theirs_body):
+    result_body = ours_body
+    for side_body in (theirs_body,):
         for line in side_body.splitlines():
             stripped = line.strip()
-            if not stripped.startswith("- ") or stripped in base_body:
+            if not stripped or stripped in base_body or stripped in result_body:
                 continue
             marker_match = re.search(r"(<!--\s*\S+:\S+\s*-->)\s*$", stripped)
-            marker = marker_match.group(1) if marker_match else stripped
+            marker = marker_match.group(1) if marker_match else _synth_marker(stripped)
             if marker in result_body:
                 continue
-            section = _section_for_line(side_body, line)
-            if section is None:
-                continue
+            section = _section_for_line(side_body, line) or "Updates"
             text = stripped[: marker_match.start()].rstrip() if marker_match else stripped
-            result_body = merge.append_line(result_body, section, text,
-                                            marker_match.group(1) if marker_match else "")
+            result_body = merge.append_line(result_body, section, text, marker)
 
     for suggestion in suggestions:
-        result_body = merge.append_line(result_body, "Updates", suggestion, "")
+        marker = _synth_marker(suggestion)
+        if marker not in result_body:
+            result_body = merge.append_line(result_body, "Updates", suggestion, marker)
 
     return frontmatter.serialize(result_fm, result_body)
 
@@ -187,7 +205,8 @@ def _try_resolve_conflicts(vault: Path) -> bool:
     conflicted = [line for line in listing.stdout.splitlines() if line.strip()]
     if not conflicted:
         return False
-    if not all(Path(p).parts and Path(p).parts[0] in RESOLVABLE_FOLDERS for p in conflicted):
+    if not all(Path(p).suffix == ".md" and Path(p).parts and Path(p).parts[0] in RESOLVABLE_FOLDERS
+               for p in conflicted):
         return False
 
     resolutions: dict[str, str] = {}
@@ -263,7 +282,10 @@ def _sync(vault: Path, config) -> SyncResult:
 
         rebase = _git(vault, ["rebase", ref])
         if rebase.returncode != 0:
-            was_resolved = _try_resolve_conflicts(vault)
+            try:
+                was_resolved = _try_resolve_conflicts(vault)
+            except Exception:
+                was_resolved = False
             if not was_resolved:
                 _git(vault, ["rebase", "--abort"])
                 return SyncResult(

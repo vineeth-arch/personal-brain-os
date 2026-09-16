@@ -276,6 +276,7 @@ def test_resolve_conflict_merges_fill_field_as_suggestion():
     # first writer to fill wins the field; the second becomes a suggestion
     assert fm["company"] in ("Studio X", "Acme")
     assert "## Updates" in body
+    assert "Studio X → Acme" in body or "Acme → Studio X" in body
 
 
 def test_resolve_conflict_unions_channels_from_both_sides():
@@ -369,3 +370,48 @@ def test_path_remote_untouched_by_url_authing():
 def test_ssh_remote_untouched_by_url_authing():
     remote = "ssh://root@2.29.35.159/root/vault.git"
     assert vaultsync._authed_url(remote, "some-token") == remote
+
+
+# ---- Fix round 1 — Task 3 review fixes -------------------------------------
+
+def test_resolve_conflict_returns_none_when_a_side_edits_existing_prose():
+    base = "---\nid: 1\n---\n# P\n\n## Context\n\nMet at a conference.\n"
+    ours = "---\nid: 1\n---\n# P\n\n## Context\n\nMet at a conference in Dubai.\n"
+    theirs = "---\nid: 1\n---\n# P\n\n## Context\n\nMet at a conference. Runs ops at Acme.\n"
+    assert vaultsync.resolve_conflict(ours, theirs, base) is None
+
+
+def test_sync_aborts_cleanly_on_non_utf8_conflicted_file(bare_remote, tmp_path):
+    origin = _init_vault(tmp_path / "origin")
+    (origin / "07-People").mkdir()
+    note = origin / "07-People" / "weird.md"
+    note.write_bytes(b"\xff\xfe garbage not utf8")
+    _run("add", "-A", cwd=origin)
+    _run("commit", "-q", "-m", "seed", cwd=origin)
+    _run("push", "-q", f"file://{bare_remote}", "HEAD:main", cwd=origin)
+
+    a = _clone(bare_remote, tmp_path / "a")
+    b = _clone(bare_remote, tmp_path / "b")
+
+    (a / "07-People" / "weird.md").write_bytes(b"\xff\xfe version A")
+    _run("add", "-A", cwd=a)
+    _run("commit", "-q", "-m", "a edits", cwd=a)
+    _run("push", "-q", f"file://{bare_remote}", "HEAD:main", cwd=a)
+
+    (b / "07-People" / "weird.md").write_bytes(b"\xff\xfe version B")
+    _run("add", "-A", cwd=b)
+    _run("commit", "-q", "-m", "b edits", cwd=b)
+
+    cfg = config({"remote": f"file://{bare_remote}"})
+    result = vaultsync.sync(b, cfg)
+
+    assert result.status in ("conflict", "error")
+    # the rebase must never be left in progress, regardless of which status is returned
+    rebase_merge_dir = b / ".git" / "rebase-merge"
+    rebase_apply_dir = b / ".git" / "rebase-apply"
+    assert not rebase_merge_dir.exists()
+    assert not rebase_apply_dir.exists()
+
+
+def test_resolvable_folders_excludes_todos():
+    assert "06-Todos" not in vaultsync.RESOLVABLE_FOLDERS
