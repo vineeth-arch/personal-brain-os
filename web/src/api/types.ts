@@ -32,7 +32,7 @@ export const NOTE_TYPES = [
 ] as const;
 export type NoteType = (typeof NOTE_TYPES)[number];
 
-// The 8 capture/routing TAGS (pipeline/classify.py TAG_TO_TYPE,
+// The 10 capture/routing TAGS (pipeline/classify.py TAG_TO_TYPE,
 // SCHEMA-REFERENCE.md §4). Not note types — #idea routes to type "musing".
 export const CAPTURE_TAGS = [
   "todo",
@@ -43,6 +43,8 @@ export const CAPTURE_TAGS = [
   "resource",
   "decision",
   "project",
+  "musing",
+  "conversation",
 ] as const;
 export type CaptureTag = (typeof CAPTURE_TAGS)[number];
 

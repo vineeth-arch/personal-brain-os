@@ -37,7 +37,7 @@ duration\_min:             \# audio captures only — how long the recording ran
 ## **4\. CONTROLLED VOCABULARY**
 
 * All `tags` come from `_System/vocabulary.md`. Don't invent synonyms ("AI" vs "a.i."). Add new tags to vocabulary.md deliberately, prune in review.  
-* **Capture/routing tags (8 max):** `#todo #idea #journal #learning #person #resource #decision #project`. A tag present at capture routes the note for FREE (no AI classify).
+* **Capture/routing tags (10 max):** `#todo #idea #journal #learning #person #resource #decision #project #musing #conversation`. A tag present at capture routes the note for FREE (no AI classify).
 
 ## **5\. TYPED EDGES (fix the vocabulary now; auto-compile is Phase 2\)**
 
@@ -160,7 +160,7 @@ duration\_min:
 
 Body: the speaker-labelled transcript **verbatim and whole** (§8), plus `## Summary` when the capture device produced one, marked `<!-- origin: ai · plaud -->` so the provenance firewall (§1) still holds inside the note.
 
-A conversation is recognised by its transcript carrying two or more speakers, not by a capture tag — §4 caps those at eight and none is added here. `attendees` is the one field the pipeline may **suggest** but never write: it is filled when a human confirms the note in triage, which is also what appends the dated line to each attendee's `## Interaction log` (§7 Person). That keeps CLAUDE.md §3 intact — no AI bulk-write reaches a person note unreviewed.
+A conversation is recognised either by an explicit `#conversation` capture tag or, absent one, by its transcript carrying two or more speakers — the speaker-count check is a fallback, not the only way in. `attendees` is the one field the pipeline may **suggest** but never write: it is filled when a human confirms the note in triage, which is also what appends the dated line to each attendee's `## Interaction log` (§7 Person). That keeps CLAUDE.md §3 intact — no AI bulk-write reaches a person note unreviewed.
 
 ## **8\. CAPTURE / PROCESSING RULES**
 

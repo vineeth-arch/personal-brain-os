@@ -215,9 +215,10 @@ app:
      alongside the server's own downscale.
    - **Ask for Input** (Text, allow empty) → prompt **"Add a thought?"** →
      save as `Thought`.
-   - **Choose from Menu** with the 8 capture tags (`todo idea journal
-     learning person resource decision project`) plus **"No tag — let AI
-     decide"** → save the choice (blank for "no tag") as `Tag`.
+   - **Choose from Menu** with the 10 capture tags (`todo idea journal
+     learning person resource decision project musing conversation`) plus
+     **"No tag — let AI decide"** → save the choice (blank for "no tag") as
+     `Tag`.
    - **Get Contents of URL**:
      - URL: `https://cockpit.yourdomain.com/api/capture/image`
      - Method: POST
@@ -227,7 +228,7 @@ app:
 
    **B — Otherwise: the input is a URL or text (a shared link, or Safari "Share as Text"):**
    - **Ask for Input** (Text, allow empty) → **"Add a thought?"** → `Thought`.
-   - **Choose from Menu** → same 8 tags + "No tag" → `Tag`.
+   - **Choose from Menu** → same 10 tags + "No tag" → `Tag`.
    - **Get Contents of URL**:
      - URL: `https://cockpit.yourdomain.com/api/capture`
      - Method: POST
@@ -252,6 +253,45 @@ whiteboard photo, for instance, gets its action items pulled into today's
 todo file exactly like a voice memo would. See `DEFERRED.md` for what this
 pass intentionally left out (video/reel *content* understanding, Apify for
 real Instagram captions, editing extracted fields from the cockpit).
+
+### The Action Button Shortcut (capture from a locked screen)
+
+The share-sheet Shortcut above needs the phone unlocked to reach the share
+sheet. If you want to capture a quick voice thought without unlocking —
+walking, driving, hands full — bind a second Shortcut to the iPhone **Action
+Button** instead:
+
+1. **Settings → Action Button** (or **Settings → Accessibility → Action
+   Button** on models without a dedicated section) → set the action to
+   **Shortcut** → pick a new Shortcut (build it in the Shortcuts app first).
+2. Build the Shortcut:
+   - **Record Audio** — this is one of the actions Apple allows to run from
+     the Action Button without a full unlock.
+   - **Ask for Input** (Text, allow empty) → **"Add a thought?"** → save as
+     `Thought`.
+   - **Choose from Menu** with the same 10 capture tags (`todo idea journal
+     learning person resource decision project musing conversation`) plus
+     **"No tag — let AI decide"** → save the choice (blank for "no tag") as
+     `Tag`.
+   - **Get Contents of URL**:
+     - URL: `https://cockpit.yourdomain.com/api/capture/audio?tag=<Tag>`
+     - Method: POST
+     - Headers: `Authorization: Bearer <your access token>`
+     - Request Body: the recorded audio file, raw (this mirrors the
+       cockpit's own mic-button endpoint — same contract, no multipart).
+3. **Show Notification** — "Captured ✅" — same instant-trust pattern as the
+   other two capture paths.
+
+**⚠️ Same caveat as the share-sheet Shortcut**: the access token lives in
+plain text inside this Shortcut too. Don't share or AirDrop this Shortcut
+file, and rotate `api.auth_token` if you ever suspect it leaked.
+
+**Real caveat, not a formality**: whether an Action-Button Shortcut can make
+a network call *before* Face ID/passcode unlock depends on iOS's own
+automation-when-locked settings, which vary by iOS version and how the
+Shortcut is configured. If it prompts for unlock the first time, that's iOS
+gating it, not a bug in this setup — the Shortcut still runs the moment you
+unlock.
 
 ## 8. Connect a Plaud Note Pro (optional, 10 min)
 

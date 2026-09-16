@@ -13,20 +13,21 @@ from .errors import StageError
 # The 13 note TYPES (SCHEMA-REFERENCE.md §2) — a distinct vocabulary from tags.
 # "company" is never voice-captured or classified by the LLM router — it only
 # ever arrives from handshake or manual creation — but it has to be in this
-# list or validate_classification() and route() would both reject it.
+# list or validate_classification() and route() would both reject it, and it
+# has no capture tag.
 # "conversation" IS reachable by the router (an undiarized meeting recording is
-# a fair guess for it), but the usual path is deterministic: a Plaud bundle
-# whose transcript carries two or more speakers is a conversation without
-# spending a model call. Like company, it has no capture tag — §4 caps those
-# at eight and a conversation is recognised by its speakers, not by a hashtag.
+# a fair guess for it); it also has an explicit capture tag (#conversation),
+# and absent one, a Plaud bundle whose transcript carries two or more speakers
+# is a conversation without spending a model call — that fallback still applies.
 NOTE_TYPES = ["musing", "learning", "todo", "journal", "project", "person",
               "resource", "decision", "principle", "insight", "reflection",
               "company", "conversation"]
 
-# The 8 capture/routing TAGS (SCHEMA-REFERENCE.md §4) → the note type they route to.
+# The 10 capture/routing TAGS (SCHEMA-REFERENCE.md §4) → the note type they route to.
 TAG_TO_TYPE = {
     "todo": "todo", "idea": "musing", "journal": "journal", "learning": "learning",
     "person": "person", "resource": "resource", "decision": "decision", "project": "project",
+    "musing": "musing", "conversation": "conversation",
 }
 
 _HASHTAG = re.compile(r"#([\w-]+)")

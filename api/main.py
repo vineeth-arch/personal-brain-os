@@ -683,7 +683,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         if not notes.valid_tag(body.tag):
             raise Envelope(
                 400, "That's not a capture tag the pipeline knows.",
-                f"'{body.tag}' isn't one of the 8 capture tags in SCHEMA-REFERENCE.md.",
+                f"'{body.tag}' isn't one of the 10 capture tags in SCHEMA-REFERENCE.md.",
                 "Pick one of the tag chips, or send no tag and let the classifier decide.")
         # Task F3 (outbox idempotency): a client that couldn't tell whether
         # its first attempt landed can safely resend with the same
@@ -719,7 +719,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         if not notes.valid_tag(tag):
             raise Envelope(
                 400, "That's not a capture tag the pipeline knows.",
-                f"'{tag}' isn't one of the 8 capture tags in SCHEMA-REFERENCE.md.",
+                f"'{tag}' isn't one of the 10 capture tags in SCHEMA-REFERENCE.md.",
                 "Pick one of the tag chips, or send no tag and let the classifier decide.")
 
         # Task F3 (outbox idempotency): checked BEFORE reserving a filename
@@ -791,7 +791,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         if not notes.valid_tag(tag):
             raise Envelope(
                 400, "That's not a capture tag the pipeline knows.",
-                f"'{tag}' isn't one of the 8 capture tags in SCHEMA-REFERENCE.md.",
+                f"'{tag}' isn't one of the 10 capture tags in SCHEMA-REFERENCE.md.",
                 "Pick one of the tag chips, or send no tag and let it become a resource.")
 
         # Task F3 (outbox idempotency): checked BEFORE reserving a filename

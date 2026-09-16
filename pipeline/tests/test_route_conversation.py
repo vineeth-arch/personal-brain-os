@@ -70,7 +70,26 @@ def test_conversation_routes_to_its_own_folder(tmp_path):
     assert "[00:01] Ana: hello" in text          # transcript kept verbatim (§8)
 
 
-def test_conversation_has_no_capture_tag():
-    """§4 caps capture tags at eight; a conversation is recognised by speakers."""
-    assert "conversation" not in classify.TAG_TO_TYPE
-    assert len(classify.TAG_TO_TYPE) == 8
+def test_conversation_has_a_capture_tag():
+    """§4 caps capture tags at ten; #conversation routes here directly."""
+    assert classify.TAG_TO_TYPE["conversation"] == "conversation"
+    assert len(classify.TAG_TO_TYPE) == 10
+
+
+class _TaggedItem:
+    def __init__(self, tag: str):
+        self.tag = tag
+        self.name = "capture"
+
+
+def test_musing_and_conversation_free_route_by_tag():
+    """New §4 tags free-route without spending a model call, like the rest."""
+    assert classify.free_route_tag(_TaggedItem("musing"), "") == "musing"
+    assert classify.free_route_tag(_TaggedItem("conversation"), "") == "conversation"
+
+
+def test_typescript_capture_tags_match_python():
+    """CAPTURE_TAGS (web) must never silently drift from TAG_TO_TYPE (pipeline)."""
+    ts = (REPO / "web" / "src" / "api" / "types.ts").read_text(encoding="utf-8")
+    block = ts.split("export const CAPTURE_TAGS = [", 1)[1].split("] as const;", 1)[0]
+    assert set(re.findall(r'"(\w+)"', block)) == set(classify.TAG_TO_TYPE)
