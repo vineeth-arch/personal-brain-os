@@ -94,7 +94,15 @@ def _authed_url(remote: str, token: str) -> str:
 
 
 def _git(vault: Path, args: list[str]) -> subprocess.CompletedProcess:
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_EDITOR": "true"}
+    # A fresh clone (the server's one-time merge, a new machine) has no git
+    # identity configured, and neither `git commit` (the local-snapshot step
+    # below) nor `git rebase` (which recommits every replayed commit) will
+    # run without one — every sync fails as a false "conflict" until this is
+    # set globally on the machine. Env vars fix it for every git call here
+    # without needing a one-time `git config` step on every deploy.
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_EDITOR": "true",
+           "GIT_AUTHOR_NAME": "Brain Cockpit", "GIT_AUTHOR_EMAIL": "cockpit@localhost",
+           "GIT_COMMITTER_NAME": "Brain Cockpit", "GIT_COMMITTER_EMAIL": "cockpit@localhost"}
     return subprocess.run(["git", "-C", str(vault), *args],
                           capture_output=True, text=True, timeout=GIT_TIMEOUT, env=env)
 

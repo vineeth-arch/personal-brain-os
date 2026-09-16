@@ -161,6 +161,29 @@ def test_sync_round_trips_a_commit_made_elsewhere(tmp_path, monkeypatch, bare_re
     assert (vault_a / "b.md").exists(), "machine A never pulled B's note on its next sync"
 
 
+def test_sync_works_with_no_git_identity_configured_anywhere(tmp_path, monkeypatch, bare_remote):
+    """A fresh `git clone` (the server's one-time Step 0 merge, or any new
+    machine) has no user.name/user.email — locally or globally. Without
+    _git() forcing GIT_AUTHOR_*/GIT_COMMITTER_* itself, both the local
+    snapshot commit and every rebase-replayed commit fail silently, and a
+    real sync attempt on such a machine is misreported as a "conflict" on
+    every tick forever (the bug this test guards against)."""
+    monkeypatch.setenv("VAULT_GIT_REMOTE", f"file://{bare_remote}")
+    monkeypatch.setenv("HOME", str(tmp_path / "no-gitconfig-here"))  # no ~/.gitconfig fallback
+
+    vault = tmp_path / "vault"
+    vault.mkdir()
+    _run("init", "-q", cwd=vault)  # deliberately no user.name / user.email
+    (vault / "note.md").write_text("hello", encoding="utf-8")
+
+    result = vaultsync.sync(vault, config())
+    assert result.status == "ok"
+
+    log = subprocess.run(["git", "--git-dir", str(bare_remote), "log", "-1", "--format=%s", "main"],
+                         capture_output=True, text=True)
+    assert log.stdout.strip() == "vault sync: local snapshot"
+
+
 def test_conflict_aborts_rebase_and_leaves_vault_untouched(tmp_path, monkeypatch, bare_remote):
     monkeypatch.setenv("VAULT_GIT_REMOTE", f"file://{bare_remote}")
 
