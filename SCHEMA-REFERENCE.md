@@ -112,12 +112,14 @@ company:
 channels: {whatsapp:, email:, linkedin:}  
 dex\_id:  
 dex\_deeplink:  
+handshake\_id:  
+outreach\_id:  
 cadence\_days:  
 last\_contact:  
 warmth\_stage:             \# identified | researched | engaging | conversing | warm | ready  
 status: active            \# active | cold | dormant
 
-Body: `## Context` · `## Needs` · `## Interaction log` (append-only, dated) · `## Next action`.
+Body: `## Context` · `## Needs` · `## Facts` (append-only, dated — one fact per line, citing its source with `derived-from::` when it comes from a conversation note) · `## Interaction log` (append-only, dated) · `## Next action` · `## Updates` (append-only, dated — proposed field changes from another app that would overwrite an already-filled value; never applied automatically, see the merge-rules table below).
 
 ### **Company (`11-Companies`) — written and updated by handshake**
 
@@ -125,9 +127,27 @@ yaml
 type: company  
 name:  
 domain:  
+handshake\_id:  
+outreach\_id:  
 status: active            \# active | archived
 
 Body: `## About` · `## People` (one line per person, `- [[person-slug]] — role (from date)`) · `## Facts` (append-only, dated) · `## Projects`. Person notes back-link via frontmatter `company: "[[company-slug]]"` (already `PATCHABLE` on the person side).
+
+### Cross-app merge rules (multiple writers, one note)
+
+Person and company notes can be enriched by more than one system (the cockpit pipeline, Handshake, the outreach cockpit). No writer ever overwrites another's or the owner's data. Every field/section falls into one of five kinds:
+
+| Kind | Rule |
+| ----- | ----- |
+| Set-once | written at creation, never changed (`id, type, created, source, origin`) |
+| Fill | set only if blank; if already set to a different value, the new value is appended as a dated suggestion under `## Updates` instead of applied |
+| Union | merges without removing — a second value for the same field becomes a list (`channels, tags, dex_id, handshake_id, outreach_id, …`) |
+| Forward-only | only moves forward in time (`last_contact`) |
+| Append | add dated lines, never edit or delete existing ones (`## Context, ## Needs, ## Facts, ## Interaction log, ## Updates`) |
+
+The one thing that DOES replace a Filled value: the owner editing it directly (in Obsidian or the cockpit). That always applies, and appends `- {date} · {field}: {old} → {new} (owner)` under `## Updates` so the history is never lost.
+
+Appended lines end with an idempotency marker (`<!-- bc:… -->` for cockpit, `<!-- vq:… -->` for Handshake) so re-applying the same fact twice is a no-op.
 
 ### **Conversation (`12-Conversations`) — a recording with more than one voice**
 
@@ -155,6 +175,7 @@ A conversation is recognised by its transcript carrying two or more speakers, no
 * Note files: `YYYY-MM-DD-kebab-title.md` (the `id` in frontmatter is the durable handle; the filename is for humans).  
 * Daily notes: `01-Journal/YYYY-MM-DD.md`. Todos: `06-Todos/YYYY-MM-DD.md`. Reflections: `08-Reflections/YYYY-MM-DD-weekly-reflection.md`.
 * **Exception:** `07-People/` and `11-Companies/` notes written by **handshake** use a stable entity slug (`kebab-name.md`, no date prefix) instead — handshake's own sync stores the resolved path once and reuses it, and a predictable slug is the fallback if that ever has to be recomputed. This is a handshake-side convention, not a requirement on the folder itself: the cockpit's own person-note writer (`pipeline/relationships.py new_person_note`) still uses the standard `YYYY-MM-DD-kebab-name.md` form, and resolves people by frontmatter `id`, never by filename — so both conventions can coexist in `07-People/` without conflict. Expect the folder to hold both filename shapes.
+* The vault's own `.gitignore` excludes `.obsidian/workspace*.json`, `.obsidian/cache`, `.trash/`, and `.DS_Store` — these churn on every Obsidian focus/close and would conflict on nearly every sync between two machines.
 
 **Type → folder** (mirrors `pipeline/route.py` `TYPE_FOLDER` exactly — **keep the two in sync**; any change here or there must change both in the same commit):
 
