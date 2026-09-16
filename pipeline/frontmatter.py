@@ -11,6 +11,16 @@ from __future__ import annotations
 
 import re
 
+
+class BlockList(list):
+    """A list value parsed from YAML block-list syntax (`key:\\n  - item`),
+    as opposed to inline `[a, b]` syntax. serialize() uses this marker to
+    preserve the source shape — an untouched note must round-trip with its
+    original formatting, never silently reformatted (D6's core guarantee).
+    isinstance(x, list) is still True for a BlockList, so every existing
+    caller that checks `isinstance(value, list)` keeps working unchanged."""
+
+
 ALWAYS_LIST = frozenset({"categories", "subjects", "tags"})
 
 _FM_DELIM = "---\n"
@@ -86,7 +96,7 @@ def parse(text: str) -> tuple[dict, str]:
             while i < len(lines) and _BLOCK_ITEM_RE.match(lines[i]):
                 items.append(_unquote(_BLOCK_ITEM_RE.match(lines[i]).group(1)))
                 i += 1
-            fm[key] = items
+            fm[key] = BlockList(items)
             continue
         else:
             fm[key] = _unquote(rest)
@@ -98,22 +108,16 @@ def serialize(frontmatter: dict, body: str) -> str:
     lines = ["---"]
     for key, value in frontmatter.items():
         if isinstance(value, list):
-            # Check if any value needs quoting; if so, use block format
-            quoted_values = [_quote_if_needed(v) for v in value]
-            needs_quoting = any('"' in qv for qv in quoted_values)
-
-            if key in ALWAYS_LIST or len(value) != 1:
-                if needs_quoting:
-                    # Block format for values that need quoting
-                    lines.append(f"{key}:")
-                    for v in value:
-                        lines.append(f'  - {_quote_if_needed(v)}')
-                else:
-                    # Inline format for simple values
-                    inner = ", ".join(quoted_values)
-                    lines.append(f"{key}: [{inner}]")
+            is_block = isinstance(value, BlockList)
+            if not is_block and key not in ALWAYS_LIST and len(value) == 1:
+                lines.append(f"{key}: {_quote_if_needed(value[0])}")
+            elif is_block:
+                lines.append(f"{key}:")
+                for item in value:
+                    lines.append(f"  - {_quote_if_needed(item)}")
             else:
-                lines.append(f"{key}: {quoted_values[0]}")
+                inner = ", ".join(_quote_if_needed(v) for v in value)
+                lines.append(f"{key}: [{inner}]")
         elif isinstance(value, dict):
             inner = ", ".join(f"{k}: {v}" for k, v in value.items())
             lines.append(f"{key}: {{{inner}}}")

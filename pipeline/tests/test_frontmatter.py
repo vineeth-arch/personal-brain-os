@@ -105,3 +105,19 @@ def test_plain_scalar_with_colon_but_no_space_not_quoted():
     fm, body = frontmatter.parse(text)
     assert fm["url"] == "https://example.com/a:b"
     assert frontmatter.serialize(fm, body) == text
+
+
+def test_inline_list_with_quotable_element_stays_inline():
+    # a quotable element must NOT force the whole list to block form —
+    # shape is preserved from the source, never inferred from content
+    text = '---\nid: 1\ntags: ["work: urgent", other]\n---\nBody\n'
+    fm, body = frontmatter.parse(text)
+    assert fm["tags"] == ["work: urgent", "other"]
+    assert frontmatter.serialize(fm, body) == text
+
+
+def test_single_item_block_list_on_ordinary_key_stays_block():
+    text = '---\nid: 1\nattendees:\n  - "[[123]]"\n---\nBody\n'
+    fm, body = frontmatter.parse(text)
+    assert fm["attendees"] == ["[[123]]"]
+    assert frontmatter.serialize(fm, body) == text
