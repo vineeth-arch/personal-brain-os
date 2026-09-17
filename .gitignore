@@ -32,3 +32,4 @@ backups/
 
 # /api/build disk snapshot (disposable, regenerated on demand)
 .build-snapshot.json
+graphify-out/
