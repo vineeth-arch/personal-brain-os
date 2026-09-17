@@ -22,8 +22,8 @@ from datetime import date
 from pathlib import Path
 
 from . import (archive, classify as classify_mod, config as config_mod, dex, echo as echo_mod,
-               embeddings, enrich, errors, extract, gmailpull, ingest, intake, plaud, related,
-               relationships, route, split as split_mod, todos, transliterate, vaultsync,
+               embeddings, enrich, errors, extract, gmailpull, ingest, intake, plaud,
+               proposals as proposals_mod, related, relationships, route, split as split_mod, todos, transliterate, vaultsync,
                vision as vision_mod)
 from .events import EventLog
 from . import transcribe as transcribe_mod
@@ -70,6 +70,7 @@ class Deps:
     transliterate_fn: object = None   # caller(text, block) -> str; None = the configured engine
     vision_caller: object = None      # caller(image_path, mime, key) -> raw text; None = real Claude
     split_llm: object = None          # llm_fn(body, config) -> dict | None; None = real Haiku
+    proposals_llm: object = None      # llm_fn(prompt, config) -> dict | None; None = the router
     sleep: object = time.sleep        # retry backoff seam (tests inject a recorder)
 
 
@@ -204,6 +205,7 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
         # this way every kind computes it exactly once — same value either way,
         # since it depends only on item.captured.
         note_id = item.captured.strftime("%Y%m%d%H%M%S")
+        suggested: dict[str, str] = {}   # speaker → person id, conversations only
 
         # D13: a capture tag wins over automatic link-detection. Without this,
         # "#journal ... here's the article https://..." was silently pulled
@@ -309,6 +311,15 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
                               message=json.dumps({"suggested": suggested}))
             else:
                 cls = classify_mod.classify(item, transcript, config, deps.classifier_fn)
+                # A capture ABOUT someone already in 07-People must not mint a
+                # second note for them — park it; what it says reaches their
+                # real note through Stage 5b's proposals instead.
+                if cls.type == "person" and not cls.needs_review:
+                    title = " ".join(cls.title.lower().split())
+                    if any(" ".join(p.name.lower().split()) == title
+                           for p in relationships.load_people(config.vault_path)):
+                        cls.needs_review = True
+                        cls.evidence = "already in 07-People — facts proposed to their note instead"
             status = "needs_review" if cls.needs_review else "ok"
             provider_note = f" provider={cls.provider}" if cls.provider else ""
             evidence_note = f' evidence="{cls.evidence}"' if cls.evidence else ""
@@ -376,6 +387,21 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
             n = extract.extract(transcript, note_id, item.captured, config, llm_fn=deps.extract_llm)
             events.log(fkey, "extract", "ok", int((time.monotonic() - t0) * 1000),
                        message=f"{len(n)} action item(s)")
+
+            # Stage 5b — relationship memory (Pass RM). Proposals only: each
+            # is an events.db suggestion a human approves in Triage
+            # (api/notes.py::apply_person_proposal). No person note is touched.
+            t0 = time.monotonic()
+            found = proposals_mod.propose(
+                transcript, relationships.load_people(config.vault_path),
+                item.captured.date(), config,
+                extra_ids=tuple(suggested.values()), llm_fn=deps.proposals_llm)
+            for i, p in enumerate(found):
+                events.log(fkey, "person_proposal", "needs_review",
+                           message=proposals_mod.dumps(p, note_id=note_id, index=i,
+                                                       title=cls.title))
+            events.log(fkey, "proposals", "ok", int((time.monotonic() - t0) * 1000),
+                       message=f"{len(found)} proposal(s)")
 
             # Stage 6 — archive the source. An image was already moved into
             # the vault's attachments/ above — that IS its permanent home, so

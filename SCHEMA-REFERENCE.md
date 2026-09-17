@@ -119,25 +119,35 @@ last\_contact:
 warmth\_stage:             \# identified | researched | engaging | conversing | warm | ready  
 status: active            \# active | cold | dormant
 
-Body: `## Context` · `## Needs` · `## Facts` (append-only, dated — one fact per line, citing its source with `derived-from::` when it comes from a conversation note) · `## Interaction log` (append-only, dated) · `## Next action` · `## Updates` (append-only, dated — proposed field changes from another app that would overwrite an already-filled value; never applied automatically, see the merge-rules table below).
+Body: `## Context` · `## Needs` · `## Facts` (append-only, dated — one fact per line, citing its source with `derived-from::` when it comes from a conversation note) · `## Interpretations` (append-only, dated — readings, not statements; kept apart from `## Facts` so a guess never reads as a fact) · `## Interaction log` (append-only, dated) · `## Next action` · `## Updates` (append-only, dated — proposed field changes from another app that would overwrite an already-filled value; never applied automatically, see the merge-rules table below).
 
 #### Handshake proposal types → sections
 
-Handshake reads WhatsApp and *proposes*; each proposal lands in one of the
-sections above, subject to the merge-rules table below (a proposal never
-overwrites a Filled value — it appends under `## Updates` instead):
+Handshake (reading WhatsApp) and the cockpit pipeline (reading voice and text
+captures, `pipeline/proposals.py`) both *propose*; a human approves every
+proposal before it is written. Each lands in the sections below, subject to the
+merge-rules table (a proposal never overwrites a Filled value — it appends
+under `## Updates` instead). `pipeline/proposals.py` `SECTIONS` mirrors this
+table exactly — **keep the two in sync** (a test parses this table).
 
 | Proposal | Means | Lands in |
 | ----- | ----- | ----- |
-| fact / interpretation | stated vs. inferred — never merged in one list | `## Facts` (fact) / `## Context` (interpretation, labeled as such) |
-| commitment\_mine / commitment\_theirs | a promise, either side | `## Interaction log` · `## Next action` |
+| fact | something stated | `## Facts` |
+| interpretation | a reading, not a statement | `## Interpretations` |
+| commitment\_mine | a promise the owner made | `## Interaction log` · `## Next action` |
+| commitment\_theirs | a promise they made (check in the day after its date) | `## Interaction log` · `## Next action` |
 | follow\_up | something the owner must do | `## Next action` |
-| personal\_detail (topic) | people, health, home, interests, preferences, favours | `## Context` or `## Needs` |
-| upcoming (date) | an event in their life | `## Next action` (resurface day after) |
-| milestone | new job, baby, move, award | `## Next action` (same day) |
+| personal\_detail | family, health, home, interests, preference, favour (topic-prefixed) | `## Context` |
+| upcoming | an event in their life → "Ask how it went" dated the day after | `## Next action` |
+| milestone | new job, baby, move, award → congratulate, dated today | `## Next action` |
 | need | what they're looking for | `## Needs` |
 | company\_knowledge | durable org facts | company note `## Facts` |
-| person\_update | a durable attribute | `## Context` |
+| person\_update | a durable attribute (`company`/`relationship` go through Fill) | `## Context` |
+
+`## Next action` lines lead with their due date (`- 2026-10-13 · Ask how it
+went: …`) so the People screen and morning digest surface them on that day; an
+undated promise of theirs is written `- open · …`. Every approved line ends
+with `derived-from:: [[capture-id]] (ai, approved)` and a `<!-- bc:… -->` marker.
 
 ### **Company (`11-Companies`) — written and updated by handshake**
 

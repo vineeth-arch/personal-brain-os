@@ -614,3 +614,65 @@ def test_link_capture_cover_download_off_logs_false(tmp_path, monkeypatch):
     conn.close()
     assert "cover_downloaded=false" in row[0]
     events.close()
+
+
+# ---- Pass RM: relationship memory from captures ----------------------------------
+
+def _priya(vault: Path) -> Path:
+    folder = vault / "07-People"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / "2026-07-01-priya-raman.md"
+    path.write_text(
+        "---\nid: 20260701090000\ntype: person\ncreated: 2026-07-01\nsource: manual\n"
+        "origin: human\nstatus: active\n---\n\n# Priya Raman\n\n## Context\n\n\n"
+        "## Next action\n\n", encoding="utf-8")
+    return path
+
+
+def test_a_memo_about_a_known_person_proposes_and_never_writes(tmp_path, monkeypatch):
+    config, events = _related_env(tmp_path)
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+    priya = _priya(config.vault_path)
+    before = priya.read_text(encoding="utf-8")
+    (config.inbox_path / "capture.txt").write_text(
+        "Met Priya today, she's moving to Dubai on 12 October.\n", encoding="utf-8")
+
+    prompts = []
+
+    def proposals_llm(prompt, cfg):
+        prompts.append(prompt)
+        return {"proposals": [{"type": "upcoming", "person_id": "20260701090000",
+                               "text": "moving to Dubai", "date": "2026-10-12"}]}
+
+    deps = watcher.Deps(transcriber=None, proposals_llm=proposals_llm,
+                        classifier_fn=lambda t, c: {"type": "journal", "confidence": 0.95,
+                                                    "title": "coffee with priya"})
+    results = watcher.run_once(config, events, deps)
+    events.close()
+    assert results[0].status != "failed"
+    assert "20260701090000: Priya Raman" in prompts[0]
+    assert priya.read_text(encoding="utf-8") == before      # review-gated
+
+    conn = sqlite3.connect(tmp_path / "events.db")
+    rows = conn.execute("SELECT status, message FROM events "
+                        "WHERE stage = 'person_proposal'").fetchall()
+    conn.close()
+    assert len(rows) == 1 and rows[0][0] == "needs_review"
+    assert '"type": "upcoming"' in rows[0][1] and '"index": 0' in rows[0][1]
+
+
+def test_a_person_capture_for_someone_known_is_parked_not_duplicated(tmp_path, monkeypatch):
+    config, events = _related_env(tmp_path)
+    monkeypatch.setattr(watcher, "DB_PATH", tmp_path / "events.db")
+    monkeypatch.setattr(watcher, "HEARTBEAT_PATH", tmp_path / ".watcher-heartbeat")
+    _priya(config.vault_path)
+    (config.inbox_path / "capture.txt").write_text("Priya Raman — architect, Dubai.\n",
+                                                   encoding="utf-8")
+    deps = watcher.Deps(transcriber=None, proposals_llm=lambda p, c: {"proposals": []},
+                        classifier_fn=lambda t, c: {"type": "person", "confidence": 0.95,
+                                                    "title": "Priya Raman"})
+    watcher.run_once(config, events, deps)
+    events.close()
+    assert len(list((config.vault_path / "07-People").glob("*.md"))) == 1
+    assert len(list((config.vault_path / "00-Inbox").glob("*.md"))) == 1

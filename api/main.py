@@ -239,6 +239,12 @@ class SplitDecisionBody(BaseModel):
     decision: str
 
 
+class ProposalDecisionBody(BaseModel):
+    decision: str                   # remember | skip
+    date: str | None = None         # edit the date before remembering
+    topic: str | None = None        # edit a personal_detail's topic
+
+
 # ---- micro-step breakdown (B10): prompt + validator, mirroring
 # classify.py's build_prompt/validate_classification split ----------------
 
@@ -393,6 +399,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
             "accuracy": service.accuracy(db_path),
             "trust": service.trust(db_path),
             "split_proposals": notes.list_split_proposals(db_path),
+            "person_proposals": notes.list_person_proposals(Path(config.vault_path), db_path),
         }
 
     @app.get("/api/failed")
@@ -657,6 +664,50 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         finally:
             events.close()
         return {"ok": True, "decision": body.decision, "child_ids": child_ids}
+
+    @app.post("/api/review/proposal/{proposal_id}")
+    def review_person_proposal(proposal_id: int, body: ProposalDecisionBody,
+                               config=Depends(require_token)):
+        if body.decision not in ("remember", "skip"):
+            raise Envelope(
+                400, "That's not a decision the server understands.",
+                f"'{body.decision}' isn't remember or skip.",
+                "Tap Remember or Skip.")
+        found = notes.find_person_proposal(db_path, proposal_id)
+        if found is None:
+            raise Envelope(
+                404, "That card isn't waiting anymore.",
+                "It was already decided (possibly from another device), or the id is unknown.",
+                "Refresh the triage screen.")
+        file_key, proposal = found
+        written = None
+        if body.decision == "remember":
+            try:
+                written = notes.apply_person_proposal(
+                    Path(config.vault_path), proposal,
+                    date_override=body.date or None, topic_override=body.topic)
+            except ValueError:
+                raise Envelope(
+                    400, "That date couldn't be read.",
+                    f"'{body.date}' isn't a date in YYYY-MM-DD form.",
+                    "Pick the date again and tap Remember.")
+            except LookupError as e:
+                if e.args and e.args[0] == "company":
+                    raise Envelope(
+                        409, "There's no company note to remember this on.",
+                        "This person's company has no note in 11-Companies yet.",
+                        "Skip this card, or create the company note and tap Remember again.")
+                raise Envelope(
+                    404, "That person isn't in the vault anymore.",
+                    "Their note may have been moved or deleted since the capture.",
+                    "Skip this card.")
+        events = EventLog(db_path, Path(config.vault_path))
+        try:
+            events.log(file_key, "person_proposal", "ok",
+                       message=f"proposal_id={proposal_id} decision={body.decision}")
+        finally:
+            events.close()
+        return {"ok": True, "decision": body.decision, "written": written}
 
     @app.post("/api/capture", status_code=201)
     def capture(request: Request, body: CaptureBody, config=Depends(require_token)):

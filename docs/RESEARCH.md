@@ -319,6 +319,7 @@ you touch a note anyway, never a standing chore
 | B9 | Daily digest push via ntfy (status + resurfaced note + queue count) — the system visits you | Push-don't-pull (Whisper Memos, Readwise; [Brunell](https://medium.com/@raymond_44620/i-deleted-47-productivity-apps-in-30-days-heres-what-actually-worked-for-my-adhd-brain-52c292c6ba6b)) |
 | B10 | Goblin-style micro-step breakdown, on request, for extracted todos (with a "how hard does this feel?" dial) | Emotional-friction design ([goblin.tools](https://goblin.tools/ToDo)) |
 | B11 | Surface the trust boundary in the UI: a quiet "nothing enters your vault without you — N notes gated this month" line | Automation-consent differentiation (Otter case; constitution §3–4) |
+| B12 | Relationship memory: what a voice/text capture says about a known person is proposed as typed cards (fact · interpretation · commitment_mine/theirs · follow_up · personal_detail · upcoming · milestone · need · company_knowledge · person_update), each landing in the person-note section named by SCHEMA-REFERENCE.md §7's taxonomy table, approved in Triage; `upcoming` resurfaces as "Ask how it went" the day after | Recall gap (#2): recording isn't remembering — bringing back what someone told you *is* the touch. Facts and interpretations stay apart so a guess never reads as a fact (trust calibration, principle 12) |
 
 **A note on the current streak card (built in Pass 3):** it already follows the
 safer half of the guidance — filled dots for captured days, *hollow rings* (not

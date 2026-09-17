@@ -75,6 +75,8 @@ def detail(vault_path: Path, person_id: str, today: date | None = None) -> dict 
     return {**summary(person, today),
             "context": person.sections.get("Context", ""),
             "needs": person.sections.get("Needs", ""),
+            "facts": person.sections.get("Facts", ""),
+            "interpretations": person.sections.get("Interpretations", ""),
             "interaction_log": person.interaction_log()}
 
 

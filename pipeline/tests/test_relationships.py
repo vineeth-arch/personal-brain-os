@@ -235,3 +235,28 @@ def test_people_section_says_never_contacted_rather_than_guessing(vault):
 
 def test_a_missing_people_folder_is_a_quiet_no_op(tmp_path):
     assert morning.people_section(cfg(tmp_path), TODAY) == []
+
+
+# ---- Pass RM: the merge rules on the cockpit's own writers ------------------------
+
+def test_log_contact_twice_is_one_line_and_never_moves_last_contact_back(vault):
+    path = person_note(vault / rel.PEOPLE_FOLDER, "Priya Raman", last_contact="2026-08-10")
+    person = rel.parse_person(path)
+    path.write_text(rel.log_contact(person, "lunch", date(2026, 8, 5)), encoding="utf-8")
+    person = rel.parse_person(path)
+    path.write_text(rel.log_contact(person, "lunch", date(2026, 8, 5)), encoding="utf-8")
+    person = rel.parse_person(path)
+    assert person.interaction_log().count("lunch") == 1
+    assert person.last_contact == date(2026, 8, 10)          # forward-only
+    assert "<!--" not in person.interaction_log()            # marker hidden from readers
+    assert "<!-- bc:" in path.read_text(encoding="utf-8")     # but kept in the file
+
+
+def test_a_dated_next_action_settles_once_contact_is_logged_on_or_after_it(vault):
+    path = person_note(vault / rel.PEOPLE_FOLDER, "Priya Raman", last_contact="2026-08-01",
+                       next_action="- 2026-08-15 · Ask how it went: the move")
+    person = rel.parse_person(path)
+    assert rel.commitment_due(person, TODAY)
+    path.write_text(rel.log_contact(person, "asked about the move", date(2026, 8, 16)),
+                    encoding="utf-8")
+    assert not rel.commitment_due(rel.parse_person(path), TODAY)

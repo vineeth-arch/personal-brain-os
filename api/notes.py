@@ -20,6 +20,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from pipeline import classify, embeddings, relationships, route
+from pipeline import proposals as proposals_mod
 from pipeline import resurface as resurface_mod
 from pipeline.enrich import insight_text as _insight_text
 from pipeline.events import EventLog
@@ -1324,3 +1325,117 @@ def execute_split(vault: Path, note_id: str, segments: list[dict]) -> list[str]:
     path.write_text(_restamp(text, note_type, "archived"), encoding="utf-8")
     git_commit_vault(vault, f"api: split {note_id} into {len(segments)} notes")
     return child_ids
+
+
+# ---- person proposals (Pass RM) ---------------------------------------------
+# The watcher logs one stage='person_proposal' status='needs_review' row per
+# proposal; a decision is a later status='ok' row naming that row's id. The
+# row id IS the proposal id. Suggestions only — the note text they came from
+# stays in the vault (CLAUDE.md §1).
+
+def _proposal_rows(db_path: Path) -> list[tuple[int, str, str]]:
+    """(id, file, message) for every proposal no decision row has answered."""
+    if not db_path.exists():
+        return []
+    try:
+        conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT id, file, status, message FROM events "
+                "WHERE stage = 'person_proposal' ORDER BY id").fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        log.exception("person proposal query failed")
+        return []
+    decided = set()
+    for _id, _file, status, message in rows:
+        if status == "ok":
+            m = re.search(r"proposal_id=(\d+)", message or "")
+            if m:
+                decided.add(int(m.group(1)))
+    return [(i, f, m) for i, f, s, m in rows if s == "needs_review" and i not in decided]
+
+
+def find_person_proposal(db_path: Path, proposal_id: int) -> tuple[str, dict] | None:
+    for row_id, file_key, message in _proposal_rows(db_path):
+        if row_id == proposal_id:
+            try:
+                return file_key, json.loads(message)
+            except (json.JSONDecodeError, TypeError):
+                return None
+    return None
+
+
+def list_person_proposals(vault: Path, db_path: Path, today: date | None = None) -> list[dict]:
+    """Pending proposals, each saying what it will become BEFORE the decision
+    (relationship-os-patterns: "Proposals are decisions about memory")."""
+    today = today or date.today()
+    people = {p.id: p for p in relationships.load_people(vault)}
+    out = []
+    for row_id, _file, message in _proposal_rows(db_path):
+        try:
+            p = json.loads(message)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        person = people.get(p.get("person_id", ""))
+        if person is None or p.get("type") not in proposals_mod.SECTIONS:
+            continue
+        result = proposals_mod.outcome(p, today)
+        out.append({
+            "id": row_id,
+            "type": p["type"],
+            "person_id": person.id,
+            "person_name": person.name,
+            "text": p.get("text", ""),
+            "topic": p.get("topic", ""),
+            "date": p.get("date"),
+            "section": "company Facts" if p["type"] == "company_knowledge" else result["section"],
+            "line": result["line"],
+            "due": result["due"],
+            "note_id": p.get("note_id", ""),
+            "note_title": p.get("title", ""),
+        })
+    return out
+
+
+def _company_note(vault: Path, company: str) -> Path | None:
+    name = company.strip().strip('"').strip("[]").strip()
+    if not name:
+        return None
+    folder = vault / route.TYPE_FOLDER["company"]
+    candidate = folder / f"{relationships.slug(name)}.md"
+    if candidate.exists():
+        return candidate
+    for path in sorted(folder.glob("*.md")) if folder.is_dir() else []:
+        fm, _body = parse_frontmatter(read_note(path) or "")
+        if fm.get("type") == "company" and fm.get("name", "").lower() == name.lower():
+            return path
+    return None
+
+
+def apply_person_proposal(vault: Path, proposal: dict, *, date_override: str | None = None,
+                          topic_override: str | None = None, today: date | None = None) -> str:
+    """Write one approved proposal and commit. Returns the written file's name.
+    LookupError: the person (or their company note) isn't in the vault."""
+    today = today or date.today()
+    p = dict(proposal)
+    if date_override:
+        p["date"] = date.fromisoformat(date_override).isoformat()
+    if topic_override is not None and p.get("type") == "personal_detail":
+        p["topic"] = topic_override if topic_override in proposals_mod.TOPICS else ""
+    person = relationships.find_person(vault, p.get("person_id", ""))
+    if person is None:
+        raise LookupError("person")
+    target = person.path
+    if p["type"] == "company_knowledge":
+        target = _company_note(vault, person.company)
+        if target is None:
+            raise LookupError("company")
+    text = proposals_mod.apply(target.read_text(encoding="utf-8"), p,
+                               note_id=p.get("note_id", ""), index=int(p.get("index", 0)),
+                               today=today)
+    target.write_text(text, encoding="utf-8")
+    git_commit_vault(vault, f"api: remembered {p['type']} for {person.name} "
+                            f"(from {p.get('note_id', '')}, approved)")
+    return target.name

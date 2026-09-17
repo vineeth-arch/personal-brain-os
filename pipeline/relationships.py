@@ -14,6 +14,7 @@ to anyone — it prepares, the human sends (CLAUDE.md §4).
 """
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
@@ -122,6 +123,17 @@ def _parse_date(raw: str) -> date | None:
         return None
 
 
+_MARKER = re.compile(r"[ \t]*<!--.*?-->")
+_CITE = re.compile(r"[ \t]*· derived-from:: \[\[[^\]]*\]\] \(ai, approved\)")
+
+
+def _readable(text: str) -> str:
+    """Section text as a person reads it: idempotency markers dropped, the
+    capture citation shortened to "· ai" (provenance stays visible, quietly).
+    The FILE keeps both — this is the parsed view only."""
+    return _CITE.sub(" · ai", _MARKER.sub("", text)).strip()
+
+
 def _sections(body: str) -> dict[str, str]:
     """Body → {H2 heading: text}. Mirrors api/notes._sections, keyed for lookup."""
     out: dict[str, str] = {}
@@ -129,12 +141,12 @@ def _sections(body: str) -> dict[str, str]:
     for line in body.splitlines():
         if line.strip().startswith("## "):
             if heading:
-                out[heading] = "\n".join(buf).strip()
+                out[heading] = _readable("\n".join(buf))
             heading, buf = line.strip()[3:].strip(), []
         else:
             buf.append(line)
     if heading:
-        out[heading] = "\n".join(buf).strip()
+        out[heading] = _readable("\n".join(buf))
     return out
 
 
@@ -214,7 +226,9 @@ _TODAY_WORDS = re.compile(r"\b(today|now|overdue|asap|this morning|tonight)\b", 
 
 
 def commitment_due(person: Person, today: date) -> bool:
-    """A "Next action" that names today, or a dated line already past."""
+    """A "Next action" that names today, or a dated line already past that
+    hasn't been answered — logging contact on or after its date settles it,
+    so an old "Ask how it went" doesn't flag the person forever."""
     text = person.next_action()
     if not text:
         return False
@@ -222,7 +236,7 @@ def commitment_due(person: Person, today: date) -> bool:
         return True
     for match in re.findall(r"\d{4}-\d{2}-\d{2}", text):
         due = _parse_date(match)
-        if due and due <= today:
+        if due and due <= today and (person.last_contact is None or person.last_contact < due):
             return True
     return False
 
@@ -313,15 +327,32 @@ def _append_to_section(text: str, heading: str, line: str) -> str:
     return "\n".join(out).rstrip() + "\n"
 
 
+def append_marked(text: str, heading: str, line: str, marker: str) -> str:
+    """SCHEMA §7 Append rule: the line carries an idempotency marker, so
+    writing the same thing twice is a no-op. Line-exact heading match via
+    _append_to_section (not merge.append_line's substring test)."""
+    if marker in text:
+        return text
+    return _append_to_section(text, heading, f"{line} {marker}")
+
+
+def _marker(*parts: str) -> str:
+    digest = hashlib.sha1("\x1f".join(parts).encode("utf-8")).hexdigest()[:10]
+    return f"<!-- bc:{digest} -->"
+
+
 def log_contact(person: Person, note: str, when: date, *, channel: str = "") -> str:
-    """Append a dated line to the interaction log and reset last_contact.
+    """Append a dated line to the interaction log and move last_contact
+    forward (never back — SCHEMA §7 Forward-only).
 
     Returns the new file text (the caller writes it and commits the vault)."""
     text = person.path.read_text(encoding="utf-8")
     detail = note.strip() or "Reached out."
     via = f" ({channel})" if channel else ""
-    text = _append_to_section(text, "Interaction log", f"- {when.isoformat()}{via} — {detail}")
-    text = _replace_field(text, "last_contact", when.isoformat())
+    line = f"- {when.isoformat()}{via} — {detail}"
+    text = append_marked(text, "Interaction log", line, _marker(person.id, "log", line))
+    if person.last_contact is None or when > person.last_contact:
+        text = _replace_field(text, "last_contact", when.isoformat())
     if person.status == "cold":
         text = _replace_field(text, "status", "active")
     return text
@@ -388,6 +419,8 @@ def new_person_note(name: str, channel_kind: str, channel_value: str,
         f"# {name.strip()}\n\n"
         "## Context\n\n\n"
         "## Needs\n\n\n"
+        "## Facts\n\n\n"
+        "## Interpretations\n\n\n"
         "## Interaction log\n\n\n"
         "## Next action\n\n\n"
     )
@@ -424,5 +457,5 @@ def append_context(person: Person, lines: list[str]) -> str:
     """Add AI-found facts under ## Context, flagged as AI-written (SCHEMA §1)."""
     text = person.path.read_text(encoding="utf-8")
     for line in lines:
-        text = _append_to_section(text, "Context", line)
+        text = append_marked(text, "Context", line, _marker(person.id, "context", line))
     return text
