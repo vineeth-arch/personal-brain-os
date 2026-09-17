@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import type { HeldItem, LintResult, OutTouchType, PersonDetailV2, WarmthStage } from "../api/types";
 import { OUT_TYPES } from "../api/types";
@@ -74,6 +74,10 @@ export function Composer({ detail, queue, sourceKey, held }: Props) {
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const requestCounter = useRef(0);
+
+  // Stable reference so GreenePanel's Esc/focus-return effect (dependent on
+  // this prop) doesn't tear down and re-run on every Composer keystroke.
+  const handlePanelToggle = useCallback(() => setPanelExpanded((v) => !v), []);
 
   // Debounced lint requests (P21) — a stale response from an earlier keystroke
   // must never overwrite a newer one.
@@ -311,7 +315,7 @@ export function Composer({ detail, queue, sourceKey, held }: Props) {
         <GreenePanel
           personId={detail.id}
           expanded={panelExpanded}
-          onToggle={() => setPanelExpanded((v) => !v)}
+          onToggle={handlePanelToggle}
           reads={detail.reads}
           outcome={outcome}
           onOutcomeChange={setOutcome}

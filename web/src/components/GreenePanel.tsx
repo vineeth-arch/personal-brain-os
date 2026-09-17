@@ -56,6 +56,11 @@ export function GreenePanel({
   const isMobile = useIsMobile();
   const toggleRef = useRef<HTMLButtonElement>(null);
   const sheetRef = useRef<HTMLDivElement>(null);
+  // Mirrors the latest `expanded` value synchronously on every render (before
+  // effects run), so the effect below can tell a genuine close (expanded truly
+  // went to false) apart from a re-run for any other reason.
+  const latestExpandedRef = useRef(expanded);
+  latestExpandedRef.current = expanded;
 
   useEffect(() => {
     let live = true;
@@ -81,7 +86,10 @@ export function GreenePanel({
     window.addEventListener("keydown", onKey);
     return () => {
       window.removeEventListener("keydown", onKey);
-      if (isMobile) toggleRef.current?.focus();
+      // Only steal focus back on a genuine close (expanded really went to
+      // false), not merely because this effect re-ran for another reason
+      // (e.g. isMobile flipping while the sheet stays open).
+      if (isMobile && !latestExpandedRef.current) toggleRef.current?.focus();
     };
   }, [expanded, isMobile, onToggle]);
 
