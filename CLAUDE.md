@@ -95,3 +95,4 @@ The passes:
 - **Pass 1** — `pipeline/`: the watcher + processing stages.
 - **Pass 2** — `api/`: the FastAPI app.
 - **Pass 3** — `web/`: the React + Vite + TypeScript + Tailwind frontend.
+- **Pass RO** — Relationship OS v2.2 Phase 1 (pipeline touchlog/ledger/queue/draftlint/greene, people API v2, person page + composer).

@@ -69,3 +69,31 @@
 - Pass RM: proposal accuracy strip (B3-style: "N of the last 50 remembered unchanged") to earn trust before ever loosening the gate.
 - Pass RM: WhatsApp/Gmail as proposal sources inside the cockpit — Handshake already proposes from WhatsApp; the cockpit only reads voice/text/link captures. Gmail pulls still file as resources with no person proposals.
 - Pass RM: an undated `commitment_theirs` (`- open · …`) never resurfaces on its own — needs a "check in after N days" default if they pile up.
+
+## Relationship OS v2.2 — Phase 2 (logged 2026-09-17)
+- intro matcher `match.py` + Could help view + payload rule clause 2
+- warm-up engine v2 (stage moves, List of 20 cap enforcement, 50/50 rule, fit:poor exclusion) and "warm-up action due" in the morning priority
+- weekly Review page (three fears, softener audit, ledger flags, tier moves, List of 20, Anti-Seducer audit, self-possession, in person) → `08-Reflections`
+- monthly Reputation page (`positioning.md` known_for vs `reputation.md`)
+- windowed metrics on Review
+- stalled-thread ladder rungs 1–4 on Waiting on them (commercial)
+- engine-proposed `ask` touches using `ledger.ask_allowed`
+- after-call prompt on `#person` captures
+- two draft variants (best + shorter/assertive)
+- quarterly `greene:` situation-code recurrence readout
+- Dex enriched summary recall aids (tier · last promise · next Ask about)
+- `positioning.md` editor + public card positioning line
+- Obsidian Bases views (today, promises, going cold, List of 20)
+- company notes v2.2 (fit, current/future state, Buying map) + economic buyer from company Buying map
+- `important_date` proposals auto-Fill `dates` and remind yearly (today: owner edits dates; reminder a week before once)
+- inbound WhatsApp/Gmail capture feeding `in` touches automatically
+- lint underline overlay in the composer textarea (list ships today)
+- PushRow and warmth chips on the person page (slim Profile drawer ships today)
+- payload chip linking to its source line in the note
+- "Introductions and referrals" section on the person page
+- the eight queue views on Home under the strip (they live on People today)
+- StreakDots on Today conflicts with the doctrine's no-streaks rule — decide keep/remove
+- Handshake parity: tier names `inner5/key15/circle50/wider150` → `inner/core/active/wide`; Handshake auto-send lane conflicts with Doctrine Rule 1; port touchlog/ledger/linter/Greene panel
+- `api/people.py` has grown to ~870+ lines across ten tasks; split into smaller modules next time it's touched (e.g. extract draft/prompt-building and reply logic into a submodule).
+- `/reply` calls `greene.ensure(vault)` once for reads/situation-picking, then `draft()` (called internally) calls `greene.ensure(vault)` again — a harmless but redundant second file read on every reply once a situation code is chosen. Thread it through as a single call if `reply`'s draft-building path is ever refactored.
+- The Greene panel's pride-insertion affordance makes the pride-read TEXT itself the clickable "use this" control, unlike situations which have an explicit "Use this line" button. Add a distinct "Use this read" button for parity and accessibility — the current text-as-button has an unclear accessible name.

@@ -211,13 +211,14 @@ def cfg(vault):
     return SimpleNamespace(vault_path=vault, raw={})
 
 
-def test_people_section_names_the_top_three_with_days_quiet(vault):
+def test_people_section_names_the_top_five_with_days_quiet(vault):
     folder = vault / rel.PEOPLE_FOLDER
-    for i, day in enumerate(["2026-06-01", "2026-06-05", "2026-06-10", "2026-06-15"]):
+    days = ["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05", "2026-06-06"]
+    for i, day in enumerate(days):
         person_note(folder, f"Person {i}", last_contact=day, cadence="7")
     lines = morning.people_section(cfg(vault), TODAY)
     assert lines[0] == "People:"
-    assert len(lines) == 5, "three names plus an overflow line"
+    assert len(lines) == 7, "five names plus a header plus an overflow line"
     assert "days quiet" in lines[1]
     assert "1 more on the People screen" in lines[-1]
 
