@@ -205,6 +205,13 @@ class VoiceBody(BaseModel):
     samples: list[str]
 
 
+class LintBody(BaseModel):
+    text: str
+    channel: str = "whatsapp"
+    person_id: str = ""
+    touch_type: str = ""
+
+
 class PushPreviewBody(BaseModel):
     target: str
 
@@ -900,8 +907,8 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
 
     # ---- people (Relationship OS) --------------------------------------------
 
-    def _person_or_404(config, person_id: str):
-        found = people_mod.detail(Path(config.vault_path), person_id)
+    def _person_or_404(config, person_id: str, desk: bool = False):
+        found = people_mod.detail(Path(config.vault_path), person_id, desk=desk)
         if found is None:
             raise Envelope(
                 404, "That person isn't in the vault.",
@@ -940,9 +947,25 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 "Every sample in the list was empty.",
                 "Paste 3–5 messages you actually sent, then save again.")
 
+    # Static routes registered BEFORE `/api/people/{person_id}` (P7): FastAPI
+    # matches by registration order, so "today"/"greene"/"lint" would
+    # otherwise be captured as a person_id by the route below.
+    @app.get("/api/people/today")
+    def people_today(config=Depends(require_token)):
+        return people_mod.today_queue(Path(config.vault_path))
+
+    @app.get("/api/people/greene")
+    def people_greene(config=Depends(require_token)):
+        return people_mod.greene_situations(Path(config.vault_path))
+
+    @app.post("/api/people/lint")
+    def people_lint(body: LintBody, config=Depends(require_token)):
+        return people_mod.lint_draft(Path(config.vault_path), body.text, channel=body.channel,
+                                     person_id=body.person_id, touch_type=body.touch_type)
+
     @app.get("/api/people/{person_id}")
-    def person_detail(person_id: str, config=Depends(require_token)):
-        return _person_or_404(config, person_id)
+    def person_detail(person_id: str, desk: int = 0, config=Depends(require_token)):
+        return _person_or_404(config, person_id, desk=bool(desk))
 
     @app.post("/api/people/{person_id}/draft")
     def person_draft(person_id: str, body: PersonDraftBody, config=Depends(require_token)):

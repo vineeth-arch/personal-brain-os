@@ -24,7 +24,8 @@ import urllib.request
 from datetime import date
 from pathlib import Path
 
-from pipeline import llm, relationships
+from pipeline import draftlint, greene, ledger, llm, relationships, touchlog
+from pipeline import queue as queue_mod
 
 from .notes import git_commit_vault
 
@@ -43,7 +44,7 @@ def summary(person: relationships.Person, today: date) -> dict:
         "name": person.name,
         "dex_id": person.dex_id,
         "dex_deeplink": person.dex_deeplink,
-        "relationship": person.relationship,
+        "relationship": person.relationship,   # kept as a string (P4) — legacy callers
         "company": person.company,
         "warmth_stage": person.warmth_stage,
         "status": person.status,
@@ -57,6 +58,13 @@ def summary(person: relationships.Person, today: date) -> dict:
         "next_action": person.next_action(),
         "sample": person.sample,
         "file": person.path.name,
+        # v2.2 (SCHEMA-REFERENCE.md §7)
+        "tier": person.tier,
+        "relationships": person.relationships,
+        "known_for": person.known_for,
+        "status_computed": ledger.status_for(person, today),
+        "quiet_until": person.quiet_until.isoformat() if person.quiet_until else None,
+        "list_of_20": person.list_of_20,
     }
 
 
@@ -67,17 +75,157 @@ def list_people(vault_path: Path, today: date | None = None) -> list[dict]:
     return [summary(p, today) for p in ranked]
 
 
-def detail(vault_path: Path, person_id: str, today: date | None = None) -> dict | None:
+def _next_action_view(person: relationships.Person, action: relationships.NextAction,
+                      today: date) -> str:
+    """Which queue view (if any) this Next action line would surface in —
+    the same classification `queue.build` uses, so the person page and the
+    Today strip never disagree about what a line means. A closed action, or
+    one that doesn't currently qualify for any view, is ""."""
+    if action.closed:
+        return ""
+    matches = queue_mod._items_for_action(person, action, today)
+    return matches[0][0] if matches else ""
+
+
+def detail(vault_path: Path, person_id: str, today: date | None = None,
+          desk: bool = False) -> dict | None:
+    """Everything the person page needs to read — nothing here writes to the
+    vault (Task 8: read endpoints only). `desk` gates `energy`, which is
+    never shown on a screen someone else might glance at (SCHEMA §7 /
+    Global Constraints: "energy never rendered as a word" outside the desk
+    view)."""
     today = today or date.today()
     person = relationships.find_person(vault_path, person_id)
     if not person:
         return None
-    return {**summary(person, today),
-            "context": person.sections.get("Context", ""),
-            "needs": person.sections.get("Needs", ""),
-            "facts": person.sections.get("Facts", ""),
-            "interpretations": person.sections.get("Interpretations", ""),
-            "interaction_log": person.interaction_log()}
+
+    touches = touchlog.parse_log(person.raw_sections.get("Interaction log", ""))
+    reliab = ledger.reliability(touches)
+
+    working_together = None
+    if person.commercial:
+        working_together = {
+            "conversation_stage": person.conversation_stage,
+            "buyer_role": person.buyer_role,
+            "fit": person.fit,
+            "no_economic_buyer": person.buyer_role not in ("", "economic"),
+        }
+
+    quiet = None
+    if person.quiet_until and ledger.is_quiet(person, touches, today):
+        quiet = {
+            "until": person.quiet_until.isoformat(),
+            "line": f"Quiet until {person.quiet_until.day} {person.quiet_until.strftime('%b')}: "
+                    "two messages unanswered. Nothing to do.",
+        }
+
+    next_action_rows = [
+        {"due": a.due.isoformat() if a.due else None, "text": a.text, "key": a.key,
+         "closed": a.closed, "view": _next_action_view(person, a, today)}
+        for a in relationships.next_actions(person)
+    ]
+
+    recent_touches = sorted(touches, key=lambda t: t.day, reverse=True)[:20]
+    touch_rows = [
+        {"day": t.day.isoformat(), "direction": t.direction, "channel": t.channel,
+         "touch_type": t.touch_type, "summary": t.summary, "greene": t.greene,
+         "requested": t.requested, "legacy": t.legacy}
+        for t in recent_touches
+    ]
+
+    result = {
+        **summary(person, today),
+        "context": person.sections.get("Context", ""),
+        "needs": person.sections.get("Needs", ""),
+        "facts": person.sections.get("Facts", ""),
+        "interpretations": person.sections.get("Interpretations", ""),
+        "interaction_log": person.interaction_log(),
+        "known_for": person.known_for,
+        "recall_trigger": person.recall_trigger,
+        "language": person.language,
+        "preferred_channel": person.preferred_channel(),
+        "commercial": person.commercial,
+        "dates": person.dates,
+        "working_together": working_together,
+        "ledger": ledger.counts(touches, today),
+        "reliability": reliab,
+        "reliability_line": ledger.reliability_line(reliab),
+        "flags": ledger.flags(touches, today),
+        "inside_floor": ledger.inside_floor(person, touches, today),
+        "quiet": quiet,
+        "next_actions": next_action_rows,
+        "touches": touch_rows,
+        "current_state": person.sections.get("Current state", ""),
+        "future_state": person.sections.get("Future state", ""),
+        "can_help": person.sections.get("Can help with", ""),
+        "how_they_communicate": person.sections.get("How they communicate", ""),
+        "updates": person.sections.get("Updates", ""),
+        "reads": greene.reads(person, touches),
+        "presets": greene.presets("", person.relationships),
+    }
+    if desk:
+        result["energy"] = person.energy
+    return result
+
+
+# ---- today strip / queues -------------------------------------------------------
+
+def today_queue(vault_path: Path, today: date | None = None) -> dict:
+    """The Today screen's people surfaces: the five-item strip plus the raw
+    seven views behind it, and how full each tier is against its cap — held
+    drafts are always `[]` here (T9 wires api/held.py in)."""
+    today = today or date.today()
+    people = relationships.load_people(vault_path)
+    queues = queue_mod.build(people, today, held=())
+    strip_items, overflow = queue_mod.strip(queues)
+    tiers = {tier: {"count": sum(1 for p in people if p.tier == tier),
+                    "cap": relationships.TIER_CAP[tier]}
+             for tier in ("inner", "core", "active")}
+    untiered = sum(1 for p in people if p.tier == "")
+    return {
+        "strip": [queue_mod.to_dict(i) for i in strip_items],
+        "overflow": overflow,
+        "queues": {view: [queue_mod.to_dict(i) for i in items] for view, items in queues.items()},
+        "labels": queue_mod.LABELS,
+        "tiers": tiers,
+        "untiered": untiered,
+    }
+
+
+# ---- greene panel ----------------------------------------------------------------
+
+def greene_situations(vault_path: Path) -> dict:
+    """The 18 Greene situations from the vault's copy of greene-helper.md,
+    seeding it from the repo's seed the first time it's missing (R28) and
+    committing only that first write."""
+    text, wrote = greene.ensure(Path(vault_path))
+    if wrote:
+        git_commit_vault(Path(vault_path), "api: seeded greene-helper.md")
+    situations = greene.parse(text)
+    return {"situations": [
+        {"code": s.code, "title": s.title, "happening": s.happening,
+         "trap": s.trap, "move": s.move, "line": s.line}
+        for s in situations
+    ]}
+
+
+# ---- draft linter ----------------------------------------------------------------
+
+def lint_draft(vault_path: Path, text: str, *, channel: str = "whatsapp",
+               person_id: str = "", touch_type: str = "",
+               today: date | None = None) -> dict:
+    """Run the A9 linter with the person's own tier and quiet state when
+    `person_id` resolves to a real note; an unknown or blank id lints with
+    the neutral defaults (blank tier, not quiet)."""
+    tier, quiet = "", False
+    if person_id:
+        person = relationships.find_person(vault_path, person_id)
+        if person:
+            today = today or date.today()
+            touches = touchlog.parse_log(person.raw_sections.get("Interaction log", ""))
+            tier = person.tier
+            quiet = ledger.is_quiet(person, touches, today)
+    return draftlint.lint(text, channel=channel, tier=tier, touch_type=touch_type, quiet=quiet)
 
 
 # ---- my voice ------------------------------------------------------------------
