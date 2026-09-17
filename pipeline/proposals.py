@@ -209,9 +209,12 @@ def outcome(p: dict, today: date) -> dict:
         due = max(today, day - timedelta(days=7)) if day else None
         line = f"Remember date: {text} ({_short(day)})" if day else f"Remember date: {text}"
     elif kind in ("give_mine", "reputation_signal"):
-        # the "line" IS the v2 interaction-log line (Task 3 swaps to touchlog.format_line)
+        # the "line" IS the v2 interaction-log line, minus the date prefix
+        # apply() adds back in (its stamp always equals `today` here).
+        from .touchlog import format_line
         direction, touch_type, prefix = LOG_TOUCH[kind]
-        line = f"{direction} · · {touch_type} · {prefix}{text}"
+        full = format_line(today, direction, "", touch_type, prefix + text)
+        line = full[len(f"- {today.isoformat()} · "):]
     else:
         line = text
     section = SECTIONS[kind][-1]
@@ -283,8 +286,9 @@ def apply(note_text: str, p: dict, *, note_id: str, index: int, today: date) -> 
     # give_mine and reputation_signal's Interaction log write below IS the log
     # line (no second write) — see LOG_TOUCH and SCHEMA-REFERENCE.md §7.
     if kind in LOG_TOUCH and SECTIONS[kind][-1] == "Next action":
+        from .touchlog import format_line
         direction, touch_type, prefix = LOG_TOUCH[kind]
-        log_line = f"- {today.isoformat()} · {direction} · · {touch_type} · {prefix}{p['text']} {cite}"
+        log_line = f"{format_line(today, direction, '', touch_type, prefix + p['text'])} {cite}"
         text = append_marked(text, "Interaction log", log_line, f"<!-- {marker_base}:log -->")
 
     stamp = result["due"] or today.isoformat()

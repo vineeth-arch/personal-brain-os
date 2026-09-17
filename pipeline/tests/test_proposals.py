@@ -142,7 +142,7 @@ def test_personal_detail_is_topic_prefixed_in_context(vault):
 def test_give_theirs_logs_in_touch_thanks_today_reports_in_30(vault):
     person, _ = _apply(vault, {"type": "give_theirs", "text": "introduced me to their CFO"})
     log = person.interaction_log()
-    assert (f"- {TODAY.isoformat()} · in · · give_theirs · introduced me to their CFO"
+    assert (f"- {TODAY.isoformat()} · in ·  · give_theirs · introduced me to their CFO"
             in log)
     next_action = person.next_action()
     assert f"- {TODAY.isoformat()} · Thank: introduced me to their CFO" in next_action
@@ -154,7 +154,7 @@ def test_intro_logs_give_who_and_checks_in_after_14_days(vault):
     person, _ = _apply(vault, {"type": "intro", "text": "introduced Omar to Priya",
                                "date": "2026-09-20"})
     log = person.interaction_log()
-    assert f"- {TODAY.isoformat()} · out · · give_who · introduced Omar to Priya" in log
+    assert f"- {TODAY.isoformat()} · out ·  · give_who · introduced Omar to Priya" in log
     due = (date(2026, 9, 20) + timedelta(days=14)).isoformat()
     assert f"- {due} · Intro check-in: introduced Omar to Priya" in person.next_action()
 
@@ -188,7 +188,7 @@ def test_problem_lands_in_current_state(vault):
 def test_give_mine_writes_exactly_one_log_line(vault):
     person, text = _apply(vault, {"type": "give_mine", "text": "sent them the intro to Zara"})
     log = person.interaction_log()
-    assert (f"- {TODAY.isoformat()} · out · · give_know · sent them the intro to Zara"
+    assert (f"- {TODAY.isoformat()} · out ·  · give_know · sent them the intro to Zara"
             in log)
     assert text.count("sent them the intro to Zara") == 1
 
@@ -196,7 +196,7 @@ def test_give_mine_writes_exactly_one_log_line(vault):
 def test_reputation_signal_writes_exactly_one_log_line(vault):
     person, text = _apply(vault, {"type": "reputation_signal", "text": "always follows through"})
     log = person.interaction_log()
-    assert (f"- {TODAY.isoformat()} · in · · other · They said about me: always follows through"
+    assert (f"- {TODAY.isoformat()} · in ·  · other · They said about me: always follows through"
             in log)
     assert text.count("always follows through") == 1
 
