@@ -1069,11 +1069,16 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         try:
             updated = people_mod.owner_edit(Path(config.vault_path), person_id,
                                             body.field, body.value)
-        except ValueError as e:
+        except people_mod.OwnerFieldError as e:
             raise Envelope(
                 422, "That field can't be set that way.",
-                str(e).capitalize() + ".",
+                f'"{e.field}" is not an owner-editable field.',
                 "Pick a valid owner field and value, then try again.")
+        except people_mod.OwnerValueError as e:
+            raise Envelope(
+                422, "That value isn't valid for this field.",
+                f'"{e.value}" isn\'t one of the allowed values for {e.field}.',
+                "Pick one of the allowed values and try again.")
         if updated is None:
             raise Envelope(
                 404, "That person isn't in the vault.",

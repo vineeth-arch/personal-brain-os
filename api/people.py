@@ -478,6 +478,25 @@ def close_promise(vault_path: Path, person_id: str, key: str, result: str, side:
 
 # ---- owner edits (SCHEMA §7 cross-app merge table) ------------------------------
 
+class OwnerFieldError(ValueError):
+    """Raised when `owner_edit` is asked to write a field that isn't
+    owner-editable. Carries `field` so the caller can build user-facing
+    copy without parsing the exception message."""
+    def __init__(self, field: str):
+        self.field = field
+        super().__init__(f"{field!r} is not an owner-editable field")
+
+
+class OwnerValueError(ValueError):
+    """Raised when `owner_edit` is given a value that isn't valid for an
+    otherwise-editable field. Carries `field` and `value` so the caller can
+    build user-facing copy without parsing the exception message."""
+    def __init__(self, field: str, value: str):
+        self.field = field
+        self.value = value
+        super().__init__(f"{value!r} is not a valid {field}")
+
+
 OWNER_WRITABLE = frozenset(relationships.OWNER_ONLY) | {"dates", "how_they_communicate"}
 _ENERGY_VALUES = {"gives", "neutral", "drains", ""}
 _FIT_VALUES = {"ideal", "good", "poor", "unknown", ""}
@@ -500,12 +519,12 @@ def _validate_owner_value(field: str, value: str) -> None:
     }
     allowed = checks.get(field)
     if allowed is not None and value not in allowed:
-        raise ValueError(f"{value!r} is not a valid {field}")
+        raise OwnerValueError(field, value)
 
 
-def _validate_date_value(value: str) -> None:
+def _validate_date_value(field: str, value: str) -> None:
     if value and not (_MM_DD.match(value) or _YYYY_MM_DD.match(value)):
-        raise ValueError(f"{value!r} is not a valid date")
+        raise OwnerValueError(field, value)
 
 
 def _format_dates(raw_value: str) -> str:
@@ -514,13 +533,13 @@ def _format_dates(raw_value: str) -> str:
     try:
         parsed = json.loads(raw_value)
     except (json.JSONDecodeError, TypeError) as e:
-        raise ValueError("dates must be a JSON object") from e
+        raise OwnerValueError("dates", raw_value) from e
     if not isinstance(parsed, dict):
-        raise ValueError("dates must be a JSON object")
+        raise OwnerValueError("dates", raw_value)
     birthday = (parsed.get("birthday") or "").strip()
     anniversary = (parsed.get("anniversary") or "").strip()
-    _validate_date_value(birthday)
-    _validate_date_value(anniversary)
+    _validate_date_value("dates", birthday)
+    _validate_date_value("dates", anniversary)
     return f"{{birthday: {birthday}, anniversary: {anniversary}}}"
 
 
@@ -545,7 +564,7 @@ def owner_edit(vault_path: Path, person_id: str, field: str, value: str,
     tier over its cap or List of 20 over 20 — never blocking the edit, just
     naming the trade-off back to the owner."""
     if field not in OWNER_WRITABLE:
-        raise ValueError(f"{field!r} is not an owner-editable field")
+        raise OwnerFieldError(field)
     today = today or date.today()
     person = relationships.find_person(vault_path, person_id)
     if not person:

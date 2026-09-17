@@ -159,6 +159,19 @@ def test_owner_rejects_non_owner_field(vault_env):
                            {"field": "company", "value": "Acme"})
         assert code == 422
         assert set(body["error"]) == {"what", "cause", "todo"}
+        assert body["error"]["cause"] == '"company" is not an owner-editable field.'
+
+
+def test_owner_rejects_invalid_value_for_known_field(vault_env):
+    root, _, folder = vault_env
+    _person_v2(folder, "Priya Raman", "20260701090000")
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/people/20260701090000/owner",
+                           {"field": "tier", "value": "not-a-real-tier"})
+        assert code == 422
+        assert set(body["error"]) == {"what", "cause", "todo"}
+        assert body["error"]["cause"] == (
+            '"not-a-real-tier" isn\'t one of the allowed values for tier.')
 
 
 def test_owner_dates_written_as_inline_map(vault_env):
