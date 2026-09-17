@@ -357,7 +357,12 @@ function DraftDrawer({
 
   const logContact = async () => {
     try {
-      const updated: ContactResult = await api.logContact(person.id, text.slice(0, 120), channel);
+      const updated: ContactResult = await api.logContact(person.id, {
+        note: text.slice(0, 120),
+        channel,
+        direction: "out",
+        touch_type: "presence", // ponytail: compile fix only, caller removed in Task 12
+      });
       onChanged(updated);
       toast("✅ Logged");
       setSuggest(updated.suggest_stage);

@@ -37,8 +37,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pipeline import classify, config as config_mod, enrich, intake, llm, route as proute, todos as ptodos, watcher
 from pipeline.events import EventLog
 
-from . import (build_status, google, integrations, notes, people as people_mod,
-               push as push_mod, selfcheck, service, watchdog)
+from . import (build_status, google, held as held_mod, integrations, notes,
+               people as people_mod, push as push_mod, selfcheck, service, watchdog)
 
 log = logging.getLogger("api")
 logging.basicConfig(level=logging.INFO)
@@ -195,6 +195,27 @@ class PersonDraftBody(BaseModel):
 class ContactBody(BaseModel):
     note: str = ""
     channel: str = ""
+    direction: str = "out"
+    touch_type: str = ""
+    greene: str = ""
+    requested: bool = False
+
+
+class PromiseBody(BaseModel):
+    key: str
+    result: str
+    side: str
+
+
+class OwnerBody(BaseModel):
+    field: str
+    value: str
+
+
+class HoldBody(BaseModel):
+    text: str
+    channel: str = ""
+    touch_type: str = ""
 
 
 class StageBody(BaseModel):
@@ -952,7 +973,8 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
     # otherwise be captured as a person_id by the route below.
     @app.get("/api/people/today")
     def people_today(config=Depends(require_token)):
-        return people_mod.today_queue(Path(config.vault_path))
+        now = datetime.now(config.tzinfo)
+        return people_mod.today_queue(Path(config.vault_path), today=now.date(), now=now)
 
     @app.get("/api/people/greene")
     def people_greene(config=Depends(require_token)):
@@ -962,6 +984,17 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
     def people_lint(body: LintBody, config=Depends(require_token)):
         return people_mod.lint_draft(Path(config.vault_path), body.text, channel=body.channel,
                                      person_id=body.person_id, touch_type=body.touch_type)
+
+    @app.get("/api/people/held")
+    def people_held(config=Depends(require_token)):
+        now = datetime.now(config.tzinfo)
+        items = held_mod.list_items(Path(config.vault_path), now)
+        return {"items": [
+            {"person_id": i.person_id, "text": i.text, "channel": i.channel,
+             "touch_type": i.touch_type, "held_until": i.held_until.isoformat(),
+             "ready": i.ready}
+            for i in items
+        ]}
 
     @app.get("/api/people/{person_id}")
     def person_detail(person_id: str, desk: int = 0, config=Depends(require_token)):
@@ -997,14 +1030,80 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
 
     @app.post("/api/people/{person_id}/contact")
     def person_contact(person_id: str, body: ContactBody, config=Depends(require_token)):
-        updated = people_mod.log_contact(Path(config.vault_path), person_id,
-                                         body.note, body.channel)
+        try:
+            updated = people_mod.log_contact(
+                Path(config.vault_path), person_id, body.note, body.channel,
+                direction=body.direction, touch_type=body.touch_type,
+                greene=body.greene, requested=body.requested)
+        except ValueError:
+            raise Envelope(
+                422, "That touch wasn't logged.",
+                "The touch type is missing or isn't one the log knows.",
+                "Pick a touch type above the draft, then log it again.")
         if updated is None:
             raise Envelope(
                 404, "That person isn't in the vault.",
                 f"No note in 07-People has the id {person_id}.",
                 "Refresh the People screen.")
         return updated
+
+    @app.post("/api/people/{person_id}/promise")
+    def person_promise(person_id: str, body: PromiseBody, config=Depends(require_token)):
+        try:
+            updated = people_mod.close_promise(Path(config.vault_path), person_id,
+                                               body.key, body.result, body.side)
+        except ValueError:
+            raise Envelope(
+                404, "That promise isn't open anymore.",
+                "It was closed already or the note changed.",
+                "Reload the page to see the current promises.")
+        if updated is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        return updated
+
+    @app.post("/api/people/{person_id}/owner")
+    def person_owner(person_id: str, body: OwnerBody, config=Depends(require_token)):
+        try:
+            updated = people_mod.owner_edit(Path(config.vault_path), person_id,
+                                            body.field, body.value)
+        except ValueError as e:
+            raise Envelope(
+                422, "That field can't be set that way.",
+                str(e).capitalize() + ".",
+                "Pick a valid owner field and value, then try again.")
+        if updated is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
+        return updated
+
+    @app.post("/api/people/{person_id}/hold")
+    def person_hold(person_id: str, body: HoldBody, config=Depends(require_token)):
+        try:
+            until = held_mod.hold(Path(config.vault_path), person_id, body.text,
+                                  body.channel, body.touch_type,
+                                  datetime.now(config.tzinfo))
+        except ValueError:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen — the note may have been renamed or removed.")
+        return {"until": until.isoformat()}
+
+    @app.delete("/api/people/{person_id}/hold")
+    def person_hold_delete(person_id: str, config=Depends(require_token)):
+        try:
+            held_mod.delete(Path(config.vault_path), person_id)
+        except ValueError:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen — the note may have been renamed or removed.")
+        return {"ok": True}
 
     @app.post("/api/people/{person_id}/warmth")
     def person_warmth(person_id: str, body: StageBody, config=Depends(require_token)):

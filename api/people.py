@@ -18,15 +18,17 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
-from pipeline import draftlint, greene, ledger, llm, relationships, touchlog
+from pipeline import draftlint, greene, ledger, llm, merge, relationships, touchlog
 from pipeline import queue as queue_mod
 
+from . import held as held_mod
 from .notes import git_commit_vault
 
 log = logging.getLogger("api")
@@ -170,13 +172,17 @@ def detail(vault_path: Path, person_id: str, today: date | None = None,
 
 # ---- today strip / queues -------------------------------------------------------
 
-def today_queue(vault_path: Path, today: date | None = None) -> dict:
+def today_queue(vault_path: Path, today: date | None = None,
+                now: datetime | None = None) -> dict:
     """The Today screen's people surfaces: the five-item strip plus the raw
     seven views behind it, and how full each tier is against its cap — held
-    drafts are always `[]` here (T9 wires api/held.py in)."""
-    today = today or date.today()
+    drafts come from api/held.py, so a ready one surfaces in owe_reply."""
+    now = now or datetime.now()
+    today = today or now.date()
     people = relationships.load_people(vault_path)
-    queues = queue_mod.build(people, today, held=())
+    held_items = held_mod.list_items(Path(vault_path), now)
+    held = [queue_mod.Held(i.person_id, i.touch_type, i.ready) for i in held_items]
+    queues = queue_mod.build(people, today, held=held)
     strip_items, overflow = queue_mod.strip(queues)
     tiers = {tier: {"count": sum(1 for p in people if p.tier == tier),
                     "cap": relationships.TIER_CAP[tier]}
@@ -428,17 +434,158 @@ def create_target(vault_path: Path, name: str, channel_kind: str, channel_value:
 
 
 def log_contact(vault_path: Path, person_id: str, note: str, channel: str = "",
-                today: date | None = None) -> dict | None:
+                direction: str = "out", touch_type: str = "", greene: str = "",
+                requested: bool = False, today: date | None = None) -> dict | None:
+    """Log one typed touch (SCHEMA §7 `## Interaction log` v2 grammar) via
+    `touchlog.record_touch` — the single writer, so the quiet rule and the
+    give/ask dates never drift out of sync with what the log says.
+
+    Raises ValueError (blank/unknown touch_type, or a bad Greene code) — the
+    caller turns that into the 422 refusal. Returns None for an unknown id."""
     today = today or date.today()
     person = relationships.find_person(vault_path, person_id)
     if not person:
         return None
-    person.path.write_text(relationships.log_contact(person, note, today, channel=channel),
-                           encoding="utf-8")
+    text = person.path.read_text(encoding="utf-8")
+    summary_text = note.strip() or "Reached out."
+    new_text = touchlog.record_touch(text, person, day=today, direction=direction,
+                                     channel=channel, touch_type=touch_type,
+                                     summary=summary_text, greene=greene, requested=requested)
+    person.path.write_text(new_text, encoding="utf-8")
     git_commit_vault(Path(vault_path), f"api: logged contact with {person.name}")
     updated = _reread(vault_path, person_id, person)
-    return {**summary(updated, today),
-            "suggest_stage": relationships.next_stage(person.warmth_stage)}
+    suggest_stage = relationships.next_stage(person.warmth_stage) if direction == "out" else None
+    return {**summary(updated, today), "suggest_stage": suggest_stage}
+
+
+def close_promise(vault_path: Path, person_id: str, key: str, result: str, side: str,
+                  today: date | None = None) -> dict | None:
+    """Close a promise from either side (SCHEMA §7 R11) via
+    `touchlog.close_promise`. Raises ValueError for an unknown key or an
+    invalid result/side — the caller turns that into the 404 refusal (the
+    promise isn't open anymore, from the human's point of view). Returns
+    None for an unknown person id."""
+    today = today or date.today()
+    person = relationships.find_person(vault_path, person_id)
+    if not person:
+        return None
+    text = person.path.read_text(encoding="utf-8")
+    new_text = touchlog.close_promise(text, person, key=key, result=result, side=side, day=today)
+    person.path.write_text(new_text, encoding="utf-8")
+    git_commit_vault(Path(vault_path), f"api: closed a promise with {person.name}")
+    return detail(vault_path, person_id, today)
+
+
+# ---- owner edits (SCHEMA §7 cross-app merge table) ------------------------------
+
+OWNER_WRITABLE = frozenset(relationships.OWNER_ONLY) | {"dates", "how_they_communicate"}
+_ENERGY_VALUES = {"gives", "neutral", "drains", ""}
+_FIT_VALUES = {"ideal", "good", "poor", "unknown", ""}
+_BUYER_ROLE_VALUES = {"economic", "influencer", "user", "gatekeeper", "unknown", ""}
+_CONVERSATION_STAGE_VALUES = {"none", "probative", "qualifying", "value", "closing",
+                              "delivering", "past", ""}
+_BOOL_VALUES = {"true", "false"}
+_MM_DD = re.compile(r"^\d{2}-\d{2}$")
+_YYYY_MM_DD = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _validate_owner_value(field: str, value: str) -> None:
+    checks = {
+        "tier": set(relationships.TIERS) | {""},
+        "energy": _ENERGY_VALUES,
+        "fit": _FIT_VALUES,
+        "buyer_role": _BUYER_ROLE_VALUES,
+        "conversation_stage": _CONVERSATION_STAGE_VALUES,
+        "list_of_20": _BOOL_VALUES,
+    }
+    allowed = checks.get(field)
+    if allowed is not None and value not in allowed:
+        raise ValueError(f"{value!r} is not a valid {field}")
+
+
+def _validate_date_value(value: str) -> None:
+    if value and not (_MM_DD.match(value) or _YYYY_MM_DD.match(value)):
+        raise ValueError(f"{value!r} is not a valid date")
+
+
+def _format_dates(raw_value: str) -> str:
+    """`{"birthday": "03-14", "anniversary": ""}` (JSON) → the inline map
+    the note stores, always carrying both keys."""
+    try:
+        parsed = json.loads(raw_value)
+    except (json.JSONDecodeError, TypeError) as e:
+        raise ValueError("dates must be a JSON object") from e
+    if not isinstance(parsed, dict):
+        raise ValueError("dates must be a JSON object")
+    birthday = (parsed.get("birthday") or "").strip()
+    anniversary = (parsed.get("anniversary") or "").strip()
+    _validate_date_value(birthday)
+    _validate_date_value(anniversary)
+    return f"{{birthday: {birthday}, anniversary: {anniversary}}}"
+
+
+def _raw_frontmatter_field(text: str, key: str) -> str:
+    head, _, _ = text.partition("\n---\n")
+    for line in head.splitlines():
+        if line.startswith(f"{key}:"):
+            return line.partition(":")[2].strip()
+    return ""
+
+
+def owner_edit(vault_path: Path, person_id: str, field: str, value: str,
+              today: date | None = None) -> dict | None:
+    """A human setting an owner-only field directly (SCHEMA §7): tier,
+    energy, known_for, recall_trigger, conversation_stage, buyer_role, fit,
+    list_of_20, plus the two body-section fields `dates` and
+    `how_they_communicate` that ride the same endpoint.
+
+    Raises ValueError for an unknown field or an out-of-vocabulary value —
+    the caller turns that into the 422 refusal. Returns None for an unknown
+    person id. The response also carries a `warning` when this edit puts a
+    tier over its cap or List of 20 over 20 — never blocking the edit, just
+    naming the trade-off back to the owner."""
+    if field not in OWNER_WRITABLE:
+        raise ValueError(f"{field!r} is not an owner-editable field")
+    today = today or date.today()
+    person = relationships.find_person(vault_path, person_id)
+    if not person:
+        return None
+
+    text = person.path.read_text(encoding="utf-8")
+    today_str = today.isoformat()
+
+    if field == "how_they_communicate":
+        line = f"- {today_str} · {value}"
+        marker = relationships._marker(person.id, "how", line)
+        text = relationships.append_marked(text, "How they communicate", line, marker)
+    else:
+        new_value = _format_dates(value) if field == "dates" else value
+        if field != "dates":
+            _validate_owner_value(field, value)
+        current = _raw_frontmatter_field(text, field)
+        fm, history_line = merge.owner_change({field: current}, field, new_value, today=today_str)
+        text = relationships._replace_field(text, field, fm[field])
+        marker = relationships._marker(person.id, "owner", field, new_value, today_str)
+        text = relationships.append_marked(text, "Updates", history_line, marker)
+
+    person.path.write_text(text, encoding="utf-8")
+    git_commit_vault(Path(vault_path), f"api: {person.name} → {field}")
+
+    warning = None
+    if field == "tier" and value in relationships.TIER_CAP:
+        people_now = relationships.load_people(vault_path)
+        n = sum(1 for p in people_now if p.tier == value)
+        cap = relationships.TIER_CAP[value]
+        if n > cap:
+            warning = f"{value} is {n} of {cap}. Who moves down a tier?"
+    if field == "list_of_20" and value == "true":
+        people_now = relationships.load_people(vault_path)
+        n = sum(1 for p in people_now if p.list_of_20)
+        if n > 20:
+            warning = f"List of 20 has {n}. Who comes off?"
+
+    result = detail(vault_path, person_id, today)
+    return {**result, "warning": warning}
 
 
 def set_stage(vault_path: Path, person_id: str, stage: str,

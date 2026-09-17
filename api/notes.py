@@ -19,7 +19,7 @@ import urllib.parse
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from pipeline import classify, embeddings, relationships, route
+from pipeline import classify, embeddings, relationships, route, touchlog
 from pipeline import proposals as proposals_mod
 from pipeline import resurface as resurface_mod
 from pipeline.enrich import insight_text as _insight_text
@@ -379,8 +379,11 @@ def approve(vault: Path, note_id: str, new_type: str,
             if person is None:
                 continue          # a stale/unknown suggestion — skip it
             note_line = f"Conversation: {title} ([[{note_id}]])"
+            text = person.path.read_text(encoding="utf-8")
             person.path.write_text(
-                relationships.log_contact(person, note_line, date.today()), encoding="utf-8")
+                touchlog.record_touch(text, person, day=date.today(), direction="in",
+                                      channel="", touch_type="other", summary=note_line),
+                encoding="utf-8")
             confirmed_names.append(person.name)
             confirmed_ids.append(person_id)
         if confirmed_ids:

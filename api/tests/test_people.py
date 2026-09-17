@@ -199,7 +199,8 @@ def test_logging_contact_resets_the_counter_and_commits(vault_env):
     root, vault, _ = vault_env
     with Server(root) as s:
         code, body = s.req("POST", "/api/people/20260701090000/contact",
-                           {"note": "sent the studio note", "channel": "whatsapp"})
+                           {"note": "sent the studio note", "channel": "whatsapp",
+                            "touch_type": "remember"})
         assert code == 200
         assert body["days_since_contact"] == 0 and body["going_cold"] is False
         # the stage ladder is offered, never applied behind your back

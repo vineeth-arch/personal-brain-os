@@ -309,10 +309,20 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ channel: channel ?? null }),
     }),
-  logContact: (id: string, note: string, channel: string) =>
+  logContact: (
+    id: string,
+    body: {
+      note: string;
+      channel: string;
+      direction: "out" | "in";
+      touch_type: string;
+      greene?: string;
+      requested?: boolean;
+    },
+  ) =>
     request<ContactResult>(`/api/people/${id}/contact`, {
       method: "POST",
-      body: JSON.stringify({ note, channel }),
+      body: JSON.stringify(body),
     }),
   setWarmth: (id: string, stage: WarmthStage) =>
     request<Person>(`/api/people/${id}/warmth`, {
