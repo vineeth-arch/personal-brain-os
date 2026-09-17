@@ -331,7 +331,7 @@ def _move_note(vault: Path, source: Path, text: str, new_type: str) -> Path:
 
 def approve(vault: Path, note_id: str, new_type: str,
            attendees: list[str] | None = None, *,
-           events: EventLog | None = None) -> str:
+           events: EventLog | None = None, today: date | None = None) -> str:
     """Restamp type/status and move the note to its folder. Returns the
     vault-relative destination. Raises LookupError if the id isn't in review.
 
@@ -347,6 +347,7 @@ def approve(vault: Path, note_id: str, new_type: str,
     `events` — optional; when given, logs an "approve" event recording what
     the classifier suggested vs. what the human chose (accuracy tracking,
     B3). Omitted by callers that don't care about the event log."""
+    today = today or date.today()
     inbox_dir = vault / route.INBOX_FOLDER
     target: Path | None = None
     found_fm: dict = {}
@@ -381,7 +382,7 @@ def approve(vault: Path, note_id: str, new_type: str,
             note_line = f"Conversation: {title} ([[{note_id}]])"
             text = person.path.read_text(encoding="utf-8")
             person.path.write_text(
-                touchlog.record_touch(text, person, day=date.today(), direction="in",
+                touchlog.record_touch(text, person, day=today, direction="in",
                                       channel="", touch_type="other", summary=note_line),
                 encoding="utf-8")
             confirmed_names.append(person.name)

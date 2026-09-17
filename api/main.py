@@ -657,7 +657,8 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         events = EventLog(db_path, Path(config.vault_path))
         try:
             moved_to = notes.approve(config.vault_path, note_id, body.type, body.attendees,
-                                     events=events)
+                                     events=events,
+                                     today=datetime.now(config.tzinfo).date())
         except LookupError:
             raise Envelope(
                 404, "That note isn't waiting for review anymore.",
@@ -1019,7 +1020,8 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                                       config, events=events, touch_type=body.touch_type,
                                       payload=body.payload, outcome=body.outcome,
                                       situation=body.situation,
-                                      include_sensitive=body.include_sensitive)
+                                      include_sensitive=body.include_sensitive,
+                                      today=datetime.now(config.tzinfo).date())
         except LookupError:
             raise Envelope(
                 409, "Drafts need your own voice on file first.",
@@ -1047,7 +1049,8 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         events = EventLog(db_path, Path(config.vault_path))
         try:
             result = people_mod.reply(Path(config.vault_path), person_id, body.message,
-                                      config, events=events)
+                                      config, events=events,
+                                      today=datetime.now(config.tzinfo).date())
         except LookupError:
             raise Envelope(
                 409, "Drafts need your own voice on file first.",
@@ -1069,7 +1072,8 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
             updated = people_mod.log_contact(
                 Path(config.vault_path), person_id, body.note, body.channel,
                 direction=body.direction, touch_type=body.touch_type,
-                greene=body.greene, requested=body.requested)
+                greene=body.greene, requested=body.requested,
+                today=datetime.now(config.tzinfo).date())
         except ValueError:
             raise Envelope(
                 422, "That touch wasn't logged.",
@@ -1086,7 +1090,8 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
     def person_promise(person_id: str, body: PromiseBody, config=Depends(require_token)):
         try:
             updated = people_mod.close_promise(Path(config.vault_path), person_id,
-                                               body.key, body.result, body.side)
+                                               body.key, body.result, body.side,
+                                               today=datetime.now(config.tzinfo).date())
         except ValueError:
             raise Envelope(
                 404, "That promise isn't open anymore.",
@@ -1103,7 +1108,8 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
     def person_owner(person_id: str, body: OwnerBody, config=Depends(require_token)):
         try:
             updated = people_mod.owner_edit(Path(config.vault_path), person_id,
-                                            body.field, body.value)
+                                            body.field, body.value,
+                                            today=datetime.now(config.tzinfo).date())
         except people_mod.OwnerFieldError as e:
             raise Envelope(
                 422, "That field can't be set that way.",

@@ -15,12 +15,51 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from api import held as held_mod
+from api import main as api_main
 from api import notes
+from api import people as people_mod
 from pipeline import relationships
 
 # the tmp vault/config/server harness is shared with the main API suite
 from api.tests.test_api import TOKEN, Server, env  # noqa: F401
 from api.tests.test_relationship_os import _person_v2  # noqa: F401
+
+
+# ---- timezone-threading helpers (final-review fix wave) --------------------
+#
+# `api/main.py` computes `today`/`now` from `datetime.now(config.tzinfo)` at
+# the HTTP boundary and threads it into api/people.py and api/notes.py. To
+# prove that threading actually happens (not just that the functions accept
+# a `today` argument), each test below:
+#   1. fixes "now" to a single UTC instant whose LOCAL date, in a chosen
+#      config timezone, is a day ahead of its UTC date;
+#   2. sabotages the naive `date.today()` fallback inside the target module
+#      so it returns an obviously-wrong sentinel date;
+# and then asserts the vault write carries the LOCAL date — proving the
+# value came from config.tzinfo via main.py, not from the sabotaged fallback
+# (which is what would land if main.py silently left the argument unset).
+
+class _FixedInstant(datetime):
+    """`datetime.now()` that always answers one fixed UTC instant."""
+    _instant = datetime(2026, 1, 1, 23, 30, tzinfo=ZoneInfo("UTC"))
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._instant.astimezone(tz) if tz is not None else cls._instant
+
+
+class _StaleDate(date):
+    """`date.today()` that always answers an obviously-wrong sentinel."""
+    @classmethod
+    def today(cls):
+        return cls(2000, 1, 1)
+
+
+def _set_timezone(root: Path, tz: str) -> None:
+    cfg_path = root / "config.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["timezone"] = tz
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
 
 
 @pytest.fixture
@@ -94,6 +133,25 @@ def test_contact_in_reply_lifts_quiet(vault_env):
         assert body["quiet"] is None
 
 
+def test_contact_uses_config_tzinfo_local_date_not_naive_fallback(vault_env, monkeypatch):
+    root, vault, folder = vault_env
+    _person_v2(folder, "Priya Raman", "20260701090000")
+    _set_timezone(root, "Pacific/Apia")  # UTC+13 — local date runs a day ahead of UTC
+
+    monkeypatch.setattr(api_main, "datetime", _FixedInstant)
+    monkeypatch.setattr(people_mod, "date", _StaleDate)  # sabotage the naive fallback
+
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/people/20260701090000/contact",
+                           {"note": "hi", "channel": "whatsapp", "touch_type": "give_know"})
+        assert code == 200
+    text = next((vault / "07-People").glob("*.md")).read_text(encoding="utf-8")
+    # fixed instant is 2026-01-01 23:30 UTC == 2026-01-02 12:30 in Pacific/Apia
+    assert "- 2026-01-02 · out · whatsapp · give_know · hi" in text
+    assert "2000-01-01" not in text
+    assert "2026-01-01 ·" not in text
+
+
 # ---- POST /promise -------------------------------------------------------------
 
 def test_promise_close_theirs_updates_reliability_line(vault_env):
@@ -135,6 +193,25 @@ def test_promise_close_unknown_key_is_404(vault_env):
         assert body["error"]["what"] == "That promise isn't open anymore."
 
 
+def test_promise_close_uses_config_tzinfo_local_date_not_naive_fallback(vault_env, monkeypatch):
+    root, vault, folder = vault_env
+    _person_v2(folder, "Priya Raman", "20260701090000",
+              next_action="- open · Check in — they promised: send the intro "
+                          "<!-- bc:promiseA -->")
+    _set_timezone(root, "Pacific/Apia")
+
+    monkeypatch.setattr(api_main, "datetime", _FixedInstant)
+    monkeypatch.setattr(people_mod, "date", _StaleDate)
+
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/people/20260701090000/promise",
+                           {"key": "promiseA", "result": "dropped", "side": "theirs"})
+        assert code == 200
+    text = next((vault / "07-People").glob("*.md")).read_text(encoding="utf-8")
+    assert "- 2026-01-02 · in ·  · promise_dropped ·" in text
+    assert "2000-01-01" not in text
+
+
 # ---- POST /owner ---------------------------------------------------------------
 
 def test_owner_tier_edit_records_history(vault_env):
@@ -149,6 +226,23 @@ def test_owner_tier_edit_records_history(vault_env):
     text = next((vault / "07-People").glob("*.md")).read_text(encoding="utf-8")
     today = date.today().isoformat()
     assert f"- {today} · tier:  → core (owner)" in text
+
+
+def test_owner_edit_uses_config_tzinfo_local_date_not_naive_fallback(vault_env, monkeypatch):
+    root, vault, folder = vault_env
+    _person_v2(folder, "Priya Raman", "20260701090000", tier="")
+    _set_timezone(root, "Pacific/Apia")
+
+    monkeypatch.setattr(api_main, "datetime", _FixedInstant)
+    monkeypatch.setattr(people_mod, "date", _StaleDate)
+
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/people/20260701090000/owner",
+                           {"field": "tier", "value": "core"})
+        assert code == 200
+    text = next((vault / "07-People").glob("*.md")).read_text(encoding="utf-8")
+    assert "- 2026-01-02 · tier:  → core (owner)" in text
+    assert "2000-01-01" not in text
 
 
 def test_owner_rejects_non_owner_field(vault_env):
@@ -196,6 +290,64 @@ def test_tier_cap_warning(vault_env):
                            {"field": "tier", "value": "inner"})
         assert code == 200
         assert body["warning"] == "inner is 16 of 15. Who moves down a tier?"
+
+
+# ---- POST /draft, POST /reply (quiet-window timezone threading) ----------------
+
+def test_draft_quiet_uses_config_tzinfo_local_date_not_naive_fallback(vault_env, monkeypatch):
+    """draft() only consumes `today` to compute `ledger.is_quiet` — threading
+    the wrong date flips the `pushy` seducer chip, so a `quiet_until` set to
+    exactly the correct LOCAL date (the window closing today, not later)
+    proves which `today` the server actually used."""
+    root, vault, folder = vault_env
+    _person_v2(folder, "Priya Raman", "20260701090000",
+              quiet_until="2026-01-02",
+              interaction_log="- 2026-01-01 · out · whatsapp · give_know · shared an article")
+    _set_timezone(root, "Pacific/Apia")
+
+    monkeypatch.setattr(api_main, "datetime", _FixedInstant)
+    monkeypatch.setattr(people_mod, "date", _StaleDate)  # sabotage the naive fallback
+
+    from pipeline import llm
+    monkeypatch.setattr(llm, "complete_text",
+                        lambda prompt, config: ("just checking in, no rush", "claude-haiku", []))
+
+    with Server(root) as s:
+        s.req("POST", "/api/people/voice", {"samples": ["hey! long time"]})
+        code, body = s.req("POST", "/api/people/20260701090000/draft",
+                           {"touch_type": "presence"})
+        assert code == 200
+        # local date (2026-01-02) == quiet_until -> the window has just
+        # closed, so "pushy" must NOT appear. If the server had fallen back
+        # to the sabotaged date (2000-01-01 < quiet_until), quiet would
+        # still read True and "pushy" would appear.
+        assert "pushy" not in body["lints"]["seducer"]
+
+
+def test_reply_quiet_uses_config_tzinfo_local_date_not_naive_fallback(vault_env, monkeypatch):
+    """Same proof as above, through POST /reply — which threads `today`
+    into the same draft() call."""
+    root, vault, folder = vault_env
+    _person_v2(folder, "Priya Raman", "20260701090000",
+              quiet_until="2026-01-02",
+              interaction_log="- 2026-01-01 · out · whatsapp · give_know · shared an article")
+    _set_timezone(root, "Pacific/Apia")
+
+    monkeypatch.setattr(api_main, "datetime", _FixedInstant)
+    monkeypatch.setattr(people_mod, "date", _StaleDate)
+
+    from pipeline import llm
+    monkeypatch.setattr(llm, "complete_json",
+                        lambda prompt, config, validate: ({"code": None}, "claude-haiku", []))
+    monkeypatch.setattr(llm, "complete_text",
+                        lambda prompt, config: ("just checking in, no rush", "claude-haiku", []))
+
+    with Server(root) as s:
+        s.req("POST", "/api/people/voice", {"samples": ["hey! long time"]})
+        code, body = s.req("POST", "/api/people/20260701090000/reply",
+                           {"message": "hey, checking in"})
+        assert code == 200
+        assert "pushy" not in body["seducer"]
 
 
 # ---- POST /hold, DELETE /hold, GET /held ---------------------------------------
@@ -296,3 +448,57 @@ def test_attendee_approval_writes_in_touch(tmp_path):
     dest = notes.approve(vault, "20260830090000", "conversation", [person.id])
     ana_note = relationships.find_person(vault, person.id).path.read_text(encoding="utf-8")
     assert " · in ·  · other · Conversation: product-sync ([[20260830090000]])" in ana_note
+
+
+def test_attendee_approval_uses_given_today_not_naive_fallback(tmp_path, monkeypatch):
+    """`notes.approve`'s own `today` parameter, called directly (mirroring
+    how api/main.py's route now computes and passes it) — proves the
+    attendee touch is stamped with whatever `today` the caller supplies
+    rather than the module's naive `date.today()` fallback."""
+    vault = tmp_path / "vault"
+    (vault / "00-Inbox").mkdir(parents=True)
+    person = relationships.create_person(vault, "Ana Silva", "email", "ana@x.com",
+                                         when=datetime(2026, 1, 1))
+    path = vault / "00-Inbox" / "2026-08-30-product-sync.md"
+    path.write_text(
+        "---\nid: 20260830090000\ntype: conversation\ncreated: 2026-08-30\nsource: plaud\n"
+        "origin: human\nmeta_origin: human\nstatus: needs-review\ncategories: []\n"
+        "subjects: []\ntags: []\nattendees: []\nspeakers:\n  - Ana Silva\n"
+        "transcript_source: plaud\n---\n\n[00:01] Ana Silva: let's begin\n", encoding="utf-8")
+
+    monkeypatch.setattr(notes, "date", _StaleDate)  # sabotage the naive fallback
+
+    notes.approve(vault, "20260830090000", "conversation", [person.id],
+                  today=date(2026, 1, 2))
+    ana_note = relationships.find_person(vault, person.id).path.read_text(encoding="utf-8")
+    assert "- 2026-01-02 · in ·  · other · Conversation: product-sync ([[20260830090000]])" \
+        in ana_note
+    assert "2000-01-01" not in ana_note
+
+
+def test_attendee_approval_route_threads_config_tzinfo(vault_env, monkeypatch):
+    """The route-level half of the above: POST /api/review/{id}/approve must
+    itself compute `datetime.now(config.tzinfo).date()` and pass it through,
+    the same pattern GET /api/people/today already uses."""
+    root, vault, folder = vault_env
+    (vault / "00-Inbox").mkdir(exist_ok=True)
+    person = relationships.create_person(vault, "Ana Silva", "email", "ana@x.com",
+                                         when=datetime(2026, 1, 1))
+    path = vault / "00-Inbox" / "2026-08-30-product-sync.md"
+    path.write_text(
+        "---\nid: 20260830090000\ntype: conversation\ncreated: 2026-08-30\nsource: plaud\n"
+        "origin: human\nmeta_origin: human\nstatus: needs-review\ncategories: []\n"
+        "subjects: []\ntags: []\nattendees: []\nspeakers:\n  - Ana Silva\n"
+        "transcript_source: plaud\n---\n\n[00:01] Ana Silva: let's begin\n", encoding="utf-8")
+    _set_timezone(root, "Pacific/Apia")
+
+    monkeypatch.setattr(api_main, "datetime", _FixedInstant)
+    monkeypatch.setattr(notes, "date", _StaleDate)
+
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/review/20260830090000/approve",
+                           {"type": "conversation", "attendees": [person.id]})
+        assert code == 200
+    ana_note = relationships.find_person(vault, person.id).path.read_text(encoding="utf-8")
+    assert "- 2026-01-02 · in ·  · other ·" in ana_note
+    assert "2000-01-01" not in ana_note
