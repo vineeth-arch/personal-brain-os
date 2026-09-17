@@ -18,8 +18,8 @@ LABELS = {"owe_reply": "I owe a reply", "promises": "Promises I made", "ask_abou
           "celebrate": "Celebrate", "follow_up": "Follow up today", "waiting_on_them": "Waiting on them",
           "reconnect": "Reconnect"}
 DAILY_CAP = 5                  # extrapolation (A4)
-REPLY_FLAG_DAYS = 2            # 48 h at date resolution
-CELEBRATE_WINDOW_DAYS = 7
+REPLY_FLAG_DAYS = 2  # extrapolation (A5 metrics: "replies owed older than 48 h" — 48h expressed as 2 days at date resolution)
+CELEBRATE_WINDOW_DAYS = 7  # extrapolation (A5: "a date in `dates` within 7 days")
 OWE_TYPES = frozenset({"reply", "ask_theirs"})                # R10
 BYPASS_QUIET = frozenset({"owe_reply", "promises", "celebrate"})
 STRIP_SKIP = frozenset({"waiting_on_them"})                   # R23
