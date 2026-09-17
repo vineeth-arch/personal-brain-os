@@ -8,18 +8,16 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import type {
-  ContactResult,
   Person,
-  PersonDetail,
-  PersonDraft,
   PushAvailability,
   PushPreview,
   PushQueueItem,
   PushTarget,
   ChannelKind,
-  WarmthStage,
+  QueueItem,
+  QueueView,
 } from "../api/types";
-import { CHANNEL_KINDS, WARMTH_STAGES } from "../api/types";
+import { CHANNEL_KINDS, QUEUE_VIEWS, WARMTH_STAGES } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
 import { toast } from "../components/Toast";
 import { usePolling } from "../hooks/usePolling";
@@ -50,27 +48,6 @@ function reason(person: Person): string {
   if (person.going_cold) return `Past a ${person.cadence_days}-day cadence`;
   if (person.warmup_due) return `Warm-up due · ${person.warmth_stage}`;
   return person.warmth_stage ? `Stage · ${person.warmth_stage}` : "In touch";
-}
-
-// Deep links are assembled HERE, in the browser, and opened by a human tap.
-function channelLink(channel: string, value: string, text: string): string | null {
-  const encoded = encodeURIComponent(text);
-  if (channel === "whatsapp") {
-    const digits = value.replace(/[^\d]/g, "");
-    return `https://${"wa"}.me/${digits}?text=${encoded}`;
-  }
-  if (channel === "email") return `mailto:${value}?body=${encoded}`;
-  if (channel === "linkedin") {
-    return value.startsWith("http") ? value : `https://www.linkedin.com/in/${value}`;
-  }
-  return null;
-}
-
-function channelLabel(channel: string): string {
-  if (channel === "whatsapp") return "Open WhatsApp";
-  if (channel === "email") return "Open mail draft";
-  if (channel === "linkedin") return "Open LinkedIn";
-  return "Open";
 }
 
 // Pass D — pushing a profile summary OUT to the owner's own CRM / address book.
@@ -222,11 +199,11 @@ function PushRow({
 function PersonCard({
   person,
   lit,
-  onOpen,
+  onOpenProfile,
 }: {
   person: Person;
   lit: boolean;
-  onOpen: () => void;
+  onOpenProfile: () => void;
 }) {
   return (
     <article className="bg-default border-subtle rounded-xl border p-4">
@@ -255,18 +232,30 @@ function PersonCard({
           <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">quiet</p>
         </div>
       </div>
-      <button
-        type="button"
-        onClick={onOpen}
-        className="border-emphasis text-emphasis mt-4 min-h-11 w-full rounded-xl border text-sm font-bold"
-      >
-        Draft a message
-      </button>
+      <div className="mt-4 flex gap-2">
+        <a
+          href={`#/people/${person.id}`}
+          className="border-emphasis text-emphasis flex min-h-11 flex-1 items-center justify-center rounded-xl border text-sm font-bold"
+        >
+          Draft a message
+        </a>
+        <button
+          type="button"
+          onClick={onOpenProfile}
+          className="border-emphasis text-emphasis min-h-11 rounded-xl border px-4 text-sm font-bold"
+        >
+          Profile
+        </button>
+      </div>
     </article>
   );
 }
 
-function DraftDrawer({
+// Task 12 (R15): the rich draft/Gmail/log-contact drawer moved to the person
+// page's Composer (#/people/{id}). What's left here is slim on purpose — the
+// two things that only make sense as a quick action from the list: pushing
+// the profile out, and nudging the warmth stage.
+function ProfileDrawer({
   person,
   onClose,
   onChanged,
@@ -279,14 +268,6 @@ function DraftDrawer({
   pushAvailable: PushAvailability | null;
   onPushed: () => void;
 }) {
-  const [detail, setDetail] = useState<PersonDetail | null>(null);
-  const [draft, setDraft] = useState<PersonDraft | null>(null);
-  const [text, setText] = useState("");
-  const [channel, setChannel] = useState<string>("");
-  const [loading, setLoading] = useState(true);
-  const [blocked, setBlocked] = useState<{ what: string; cause: string; todo: string } | null>(null);
-  const [suggest, setSuggest] = useState<WarmthStage | null>(null);
-  const [emailBusy, setEmailBusy] = useState(false);
   const closeRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
@@ -298,98 +279,12 @@ function DraftDrawer({
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  useEffect(() => {
-    let live = true;
-    void api.person(person.id).then((d) => live && setDetail(d)).catch(() => {});
-    void api
-      .personDraft(person.id)
-      .then((d) => {
-        if (!live) return;
-        setDraft(d);
-        setText(d.text);
-        setChannel(d.channel);
-      })
-      .catch((err) => {
-        const envelope = (err as { envelope?: { what: string; cause: string; todo: string } })
-          .envelope;
-        if (live && envelope) setBlocked(envelope);
-      })
-      .finally(() => live && setLoading(false));
-    return () => {
-      live = false;
-    };
-  }, [person.id]);
-
-  const channels = draft?.channels ?? person.channels;
-  const value = channels[channel as keyof typeof channels];
-  const link = value ? channelLink(channel, value, text) : null;
-
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-      toast("✅ Copied");
-    } catch {
-      toast("Couldn't copy — select the text and copy it by hand.", "error");
-    }
-  };
-
-  // Email prefers a real Gmail draft over a mailto: link when Google is
-  // connected (D3) — same "saved, never sent" contract as Integrations'
-  // draft composer. Any failure (not connected, not configured, network)
-  // falls straight back to mailto:, which stays visible as the plain option
-  // either way.
-  const saveGmailDraft = async () => {
-    const email = channels.email;
-    if (!email) return;
-    setEmailBusy(true);
-    try {
-      await api.googleDraft({ to: email, subject: "", text });
-      toast("✅ Draft saved — open it in Gmail.");
-    } catch (err) {
-      const envelope = (err as { envelope?: { what: string } }).envelope;
-      toast(envelope?.what ?? "Couldn't save a Gmail draft — opening your mail app instead.", "error");
-      const fallback = channelLink("email", email, text);
-      if (fallback) window.location.href = fallback;
-    } finally {
-      setEmailBusy(false);
-    }
-  };
-
-  const logContact = async () => {
-    try {
-      const updated: ContactResult = await api.logContact(person.id, {
-        note: text.slice(0, 120),
-        channel,
-        direction: "out",
-        touch_type: "presence", // ponytail: compile fix only, caller removed in Task 12
-      });
-      onChanged(updated);
-      toast("✅ Logged");
-      setSuggest(updated.suggest_stage);
-      if (!updated.suggest_stage) onClose();
-    } catch (err) {
-      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
-      toast(envelope ? `${envelope.what} ${envelope.todo}` : "Couldn't log that.", "error");
-    }
-  };
-
-  const advance = async (stage: WarmthStage) => {
-    try {
-      onChanged(await api.setWarmth(person.id, stage));
-      toast(`✅ ${stage}`);
-    } catch {
-      toast("Couldn't change the stage.", "error");
-    } finally {
-      onClose();
-    }
-  };
-
   return (
     <div
       className="fixed inset-0 z-40 flex items-end justify-center sm:items-center"
       role="dialog"
       aria-modal="true"
-      aria-label={`Draft a message to ${person.name}`}
+      aria-label={`Profile for ${person.name}`}
     >
       <button aria-label="Close" onClick={onClose} className="absolute inset-0 bg-black/50" />
       <div className="bg-default border-subtle relative max-h-[92dvh] w-full max-w-lg overflow-y-auto rounded-t-2xl border p-5 sm:rounded-2xl">
@@ -413,160 +308,8 @@ function DraftDrawer({
           </button>
         </div>
 
-        {loading && (
-          <div aria-hidden="true" className="bg-subtle mt-4 h-32 animate-pulse rounded-xl" />
-        )}
-
-        {blocked && (
-          <div className="border-subtle mt-4 rounded-xl border p-4">
-            <p className="text-emphasis text-sm font-bold">{blocked.what}</p>
-            <p className="text-subtle mt-1 text-sm">{blocked.cause}</p>
-            <p className="text-default mt-1 text-sm">{blocked.todo}</p>
-            <a
-              href="#/settings"
-              className="border-emphasis text-emphasis mt-3 inline-flex min-h-11 items-center rounded-xl border px-4 text-sm font-bold"
-            >
-              Open Settings
-            </a>
-          </div>
-        )}
-
-        {draft && (
-          <>
-            {Object.keys(channels).length > 1 && (
-              <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label="Channel">
-                {Object.keys(channels).map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    aria-pressed={channel === c}
-                    onClick={() => setChannel(c)}
-                    className={`min-h-11 rounded-full border px-4 text-sm font-semibold ${
-                      channel === c
-                        ? "bg-emphasis border-emphasis text-emphasis"
-                        : "bg-subtle border-subtle text-default"
-                    }`}
-                  >
-                    {c}
-                  </button>
-                ))}
-              </div>
-            )}
-
-            <label className="text-subtle mt-4 block text-[11px] font-bold uppercase tracking-[0.08em]">
-              Draft — yours to edit
-            </label>
-            <textarea
-              value={text}
-              onChange={(e) => setText(e.target.value)}
-              rows={6}
-              aria-label="Draft message"
-              className="bg-subtle border-subtle text-emphasis mt-2 w-full rounded-xl border p-3 text-base"
-            />
-
-            <div className="mt-3 flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => void copy()}
-                className="border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold"
-              >
-                Copy
-              </button>
-              {channel === "email" && (
-                <button
-                  type="button"
-                  onClick={() => void saveGmailDraft()}
-                  disabled={emailBusy}
-                  className="bg-inverted text-inverted min-h-11 rounded-xl px-5 text-sm font-bold disabled:opacity-60"
-                >
-                  {emailBusy ? "Saving…" : "Save Gmail draft"}
-                </button>
-              )}
-              {link && (
-                <a
-                  href={link}
-                  target="_blank"
-                  rel="noreferrer"
-                  className={
-                    channel === "email"
-                      ? "border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold leading-[2.75rem]"
-                      : "bg-inverted text-inverted min-h-11 rounded-xl px-5 text-sm font-bold leading-[2.75rem]"
-                  }
-                >
-                  {channelLabel(channel)}
-                </a>
-              )}
-              <button
-                type="button"
-                onClick={() => void logContact()}
-                className="border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold"
-              >
-                Log contact
-              </button>
-            </div>
-            <p className="text-muted mt-2 text-[11px]">
-              Nothing is sent from here — the button opens the app with the draft in it.
-            </p>
-
-            {suggest && (
-              <div className="border-subtle mt-4 rounded-xl border p-4">
-                <p className="text-emphasis text-sm font-bold">
-                  Logged. Move them to “{suggest}”?
-                </p>
-                <div className="mt-3 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void advance(suggest)}
-                    className="bg-inverted text-inverted min-h-11 rounded-xl px-5 text-sm font-bold"
-                  >
-                    Yes, {suggest}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onClose}
-                    className="border-emphasis text-emphasis min-h-11 rounded-xl border px-5 text-sm font-bold"
-                  >
-                    Not yet
-                  </button>
-                </div>
-              </div>
-            )}
-          </>
-        )}
-
         <PushRow person={person} available={pushAvailable} onPushed={onPushed} />
-
-        {/* Facts and interpretations never share a list — a guess must not
-            read as something they said. */}
-        {detail?.facts && (
-          <details className="mt-5" open>
-            <summary className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
-              What they've told me
-            </summary>
-            <pre className="text-default mt-2 whitespace-pre-wrap text-sm">{detail.facts}</pre>
-          </details>
-        )}
-        {detail?.interpretations && (
-          <details className="mt-5">
-            <summary className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
-              My interpretations — not things they said
-            </summary>
-            <pre className="text-subtle mt-2 whitespace-pre-wrap text-sm italic">
-              {detail.interpretations}
-            </pre>
-          </details>
-        )}
-
-        {detail?.interaction_log && (
-          <details className="mt-5">
-            <summary className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
-              Interaction log
-            </summary>
-            <pre className="text-default mt-2 whitespace-pre-wrap text-sm">
-              {detail.interaction_log}
-            </pre>
-          </details>
-        )}
+        <StageRow person={person} onChanged={onChanged} />
       </div>
     </div>
   );
@@ -743,6 +486,106 @@ function PushQueue({
   );
 }
 
+// Task 12 (R15): the seven relationship queues, read straight off
+// api.peopleToday() — the same doctrine-driven read the Today strip uses,
+// just shown in full here instead of capped at five. Fixed view order so the
+// list reads the same every day; a view with nothing in it says so plainly
+// rather than disappearing (a vanishing section reads as broken, not calm).
+const QUEUE_ACTION: Record<QueueView, string> = {
+  owe_reply: "Reply",
+  promises: "Keep promise",
+  ask_about: "Ask",
+  celebrate: "Celebrate",
+  follow_up: "Follow up",
+  waiting_on_them: "Follow up",
+  reconnect: "Reconnect",
+};
+
+// A9's own three prompts for a reconnect with no payload candidate — offered
+// instead of a draft, since a payload-free touch is exactly what the doctrine
+// forbids surfacing as a "go say something" button.
+const RECONNECT_PROMPTS = [
+  "What did they last say they were working on?",
+  "Who do I know that they should know?",
+  "What have I learned this month that applies to them?",
+];
+
+function QueueRow({ item }: { item: QueueItem }) {
+  // "presence" is a legitimate inner-tier reconnect action with no payload by
+  // design (A5) — only a genuinely empty, non-presence reconnect item falls
+  // back to the "find one" prompts instead of a link to the person.
+  if (item.queue === "reconnect" && !item.payload && item.touch_type !== "presence") {
+    return (
+      <li className="py-2">
+        <details>
+          <summary className="text-emphasis min-h-11 cursor-pointer list-none py-1 text-sm font-semibold">
+            {item.name} · No payload yet. Find one.
+          </summary>
+          <ul className="text-subtle mt-1 ml-4 list-disc space-y-1 text-sm">
+            {RECONNECT_PROMPTS.map((p) => (
+              <li key={p}>{p}</li>
+            ))}
+          </ul>
+        </details>
+      </li>
+    );
+  }
+  return (
+    <li className="flex items-center justify-between gap-3 py-2">
+      <span className="text-default min-w-0 flex-1 truncate text-sm">
+        <span className="text-emphasis font-semibold">{item.name}</span>
+        {item.payload ? ` · ${item.payload}` : ""}
+      </span>
+      <a
+        href={`#/people/${item.person_id}`}
+        className="border-emphasis text-emphasis min-h-11 shrink-0 rounded-xl border px-4 text-sm font-bold leading-[2.75rem]"
+      >
+        {QUEUE_ACTION[item.queue as QueueView] ?? "Follow up"}
+      </a>
+    </li>
+  );
+}
+
+function QueueSection() {
+  const { data, error, loading } = usePolling(api.peopleToday, 60_000);
+  // Quiet on failure — the main people list below owns whole-screen error
+  // surfacing; this section is a supplement to it, not a second gate.
+  if (error) return null;
+  if (loading && !data) {
+    return <div aria-hidden="true" className="bg-subtle h-40 animate-pulse rounded-xl" />;
+  }
+  if (!data) return null;
+
+  return (
+    <section className="space-y-4">
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+        inner {data.tiers.inner.count}/{data.tiers.inner.cap} · core {data.tiers.core.count}/
+        {data.tiers.core.cap} · active {data.tiers.active.count}/{data.tiers.active.cap} · untiered{" "}
+        {data.untiered}
+      </p>
+      {QUEUE_VIEWS.map((view) => {
+        const items = data.queues[view] ?? [];
+        return (
+          <div key={view}>
+            <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+              {data.labels[view]} ({items.length})
+            </p>
+            {items.length === 0 ? (
+              <p className="text-subtle mt-1 text-sm">None right now.</p>
+            ) : (
+              <ul className="divide-subtle mt-1 divide-y">
+                {items.map((item) => (
+                  <QueueRow key={`${item.person_id}:${item.queue}`} item={item} />
+                ))}
+              </ul>
+            )}
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
 export function People() {
   const { data, error, loading, refetch } = usePolling(api.people, 60_000);
   const [filter, setFilter] = useState<Filter>("attention");
@@ -778,6 +621,8 @@ export function People() {
 
   return (
     <div className="space-y-6">
+      <QueueSection />
+
       <section>
         <div className="flex items-center justify-between gap-3">
           <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">People</p>
@@ -837,7 +682,7 @@ export function People() {
               <PersonCard
                 person={person}
                 lit={i === 0 && filter !== "all"}
-                onOpen={() => setOpen(person)}
+                onOpenProfile={() => setOpen(person)}
               />
               <StageRow person={person} onChanged={record} />
             </div>
@@ -846,7 +691,7 @@ export function People() {
       )}
 
       {open && (
-        <DraftDrawer
+        <ProfileDrawer
           person={overrides[open.id] ?? open}
           onClose={() => setOpen(null)}
           onChanged={record}

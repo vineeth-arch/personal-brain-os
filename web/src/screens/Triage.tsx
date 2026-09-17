@@ -355,6 +355,22 @@ function outcomeSentence(p: PersonProposal, date: string, topic: string): string
   return due ? `→ ${verb} on ${shortDate(due)}` : `→ ${verb} — no date, stays open`;
 }
 
+// Task 12: a muted flag for a proposal that touches sensitive ground — the
+// owner's health topic, or a capture that opted in with #sensitive — so the
+// reviewer knows before they read the line, without the chip itself reading
+// as alarming (it's a note to be careful, not a warning).
+function isSensitiveProposal(proposal: PersonProposal): boolean {
+  return proposal.topic === "health" || proposal.text.includes("#sensitive");
+}
+
+function SensitiveChip() {
+  return (
+    <span className="bg-cal-muted text-subtle mt-2 inline-block rounded-full px-2.5 py-0.5 text-[11px] font-bold uppercase tracking-[0.08em]">
+      sensitive
+    </span>
+  );
+}
+
 // A proposal is a decision about memory, not a sentence to save: the card
 // says where it lands and when it comes back, with the date/topic editable
 // before Remember. Tonal like the split card — the one accent stays on the
@@ -399,6 +415,7 @@ function PersonProposalCard({
       >
         {proposal.text}
       </h3>
+      {isSensitiveProposal(proposal) && <SensitiveChip />}
       <p className="text-default mt-2 text-sm font-semibold">{outcomeSentence(proposal, date, topic)}</p>
       <p className="text-subtle mt-1 text-sm">From “{proposal.note_title}” · AI-suggested</p>
 

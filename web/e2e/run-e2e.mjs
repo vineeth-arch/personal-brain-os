@@ -26,6 +26,15 @@ const TOKEN = "e2e-token";
 const PORT = 8765;
 const BASE = `http://127.0.0.1:${PORT}`;
 
+// Task 12: the seed's own "## Next action" line is dated today so it lands
+// straight in the ask_about queue (pipeline/queue.py: "Ask how it went:" is
+// due today or earlier) without depending on what day this file happened to
+// be written.
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 // ---- resolve the GLOBAL playwright install (no local dependency) -------------
 function loadPlaywright() {
   try {
@@ -72,7 +81,8 @@ function makeRoot() {
         "dex_deeplink:", "warmth_stage: conversing",
         "status: active", "---", "", "# Priya Raman", "", "## Context", "",
         "Met at a studio visit.", "", "## Interaction log", "",
-        "- 2026-06-01 — coffee at Alserkal", "", "## Next action", "", "",
+        "- 2026-06-01 — coffee at Alserkal", "", "## Next action", "",
+        `- ${todayISO()} · Ask how it went: the studio visit`, "",
       ].join("\n"),
     );
 
@@ -467,18 +477,32 @@ try {
   assert.equal(await page.getByLabel("Quick capture").inputValue(), "garden notes for later");
   console.log(`✓ Mic capture wrote ${stamped} into the inbox, carrying the quick-capture text`);
 
-  // ---- 8. People: draft refuses without a voice, then works (Pass MW) ----------
-  await page.goto(`${BASE}/#/people`);
-  const card = page.locator("article", { hasText: "Priya Raman" });
-  await card.waitFor();
-  await card.getByText("Past a 3-day cadence").waitFor();
-  console.log("✓ People screen shows the going-cold person with the reason");
+  // ---- 7b. Today: the People today strip is bounded to five rows (Task 12) -----
+  // Priya's seeded "## Next action" line (dated today) puts her in ask_about,
+  // which is enough on its own to prove the strip renders and stays capped —
+  // the cap-of-five behaviour itself is pipeline/queue.py's job (unit-tested
+  // in Task 5); this only proves the UI renders what the API hands back.
+  await page.goto(`${BASE}/#/today`);
+  await page.getByText("People today").waitFor();
+  const peopleTodayRows = page.locator("li", { hasText: "Priya Raman" });
+  await peopleTodayRows.first().waitFor();
+  const stripCount = await page.locator("ul", { has: page.locator("li", { hasText: "Priya Raman" }) })
+    .first().locator("li").count();
+  assert.ok(stripCount <= 5, `People today strip rendered ${stripCount} rows, expected at most 5`);
+  console.log(`✓ People today strip is visible and bounded to ${stripCount} row(s) (≤ 5)`);
 
-  // no my-voice.md yet → the drawer must refuse rather than draft generically
-  await card.getByRole("button", { name: "Draft a message" }).click();
+  // ---- 8. Person page: draft refuses without a voice, then lints and logs -------
+  // (Pass MW, Task 11's Composer). NOTE for the Wave B controller: Person.tsx and
+  // Composer.tsx are Task 11's files and do not exist in this (Task 12) worktree,
+  // so every accessible name below ("Draft with AI", "Draft message", "Touch type",
+  // "I sent it", "Open in WhatsApp") is taken from Task 11's brief text, not
+  // observed against real markup. Re-verify all of them once both branches merge.
+  const personId = "20260701090000";
+  await page.goto(`${BASE}/#/people/${personId}`);
+
+  // no my-voice.md yet → the composer must refuse rather than draft generically
+  await page.getByRole("button", { name: "Draft with AI" }).click();
   await page.getByText("Drafts need your own voice on file first.").waitFor();
-  await page.keyboard.press("Escape");   // the drawer's own escape hatch
-  await page.getByRole("dialog").waitFor({ state: "detached" });
   console.log("✓ Drafting refuses honestly until my-voice.md exists");
 
   // teach it a voice through the real Settings card, then assert the vault file
@@ -492,45 +516,56 @@ try {
   assert.match(fs.readFileSync(voiceFile, "utf8"), /sorry for the slow reply/);
   console.log("✓ Settings → My voice writes _System/my-voice.md");
 
-  // the model itself is stubbed: this checks the drawer, not the provider chain
+  // the model itself is stubbed: this checks the composer, not the provider chain
   await page.route("**/api/people/*/draft", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
         text: "hey Priya — long time. still thinking about that studio conversation.",
+        subject: "",
         channel: "whatsapp",
         channels: { whatsapp: "+971500000001", email: "priya@example.com" },
         provider: "claude-haiku",
+        lints: { lints: [], seducer: [] },
       }),
     }));
 
-  await page.goto(`${BASE}/#/people`);
-  await page.locator("article", { hasText: "Priya Raman" })
-    .getByRole("button", { name: "Draft a message" }).click();
-  const drawer = page.getByRole("dialog");
-  await drawer.getByLabel("Draft message").waitFor();
-  assert.match(await drawer.getByLabel("Draft message").inputValue(), /hey Priya/);
+  await page.goto(`${BASE}/#/people/${personId}`);
+  await page.getByRole("button", { name: "Draft with AI" }).click();
+  const draftBox = page.getByLabel("Draft message");
+  await draftBox.waitFor();
+  assert.match(await draftBox.inputValue(), /hey Priya/);
+  console.log("✓ Composer drafts with AI once a voice sample exists");
+
+  // overwrite with a softener-laden draft to trip the linter (pipeline/draftlint.py)
+  await draftBox.fill("just checking in — no rush");
+  await page.getByText("say the date and why").waitFor();
+  console.log("✓ Composer lints the draft live and flags a softener without a date");
 
   // CLAUDE.md §4 from the outside: the channel button is a deep link the human
-  // taps, and it must be a link — never a button that posts a send.
-  const channelLink = drawer.getByRole("link", { name: "Open WhatsApp" });
+  // taps, and it must be a link — never a button that posts a send. R21: the
+  // label is "Open in WhatsApp", not the old drawer's "Open WhatsApp".
+  const channelLink = page.getByRole("link", { name: "Open in WhatsApp" });
   const href = await channelLink.getAttribute("href");
   assert.ok(href.startsWith("https://wa.me/971500000001?text="),
     `channel deep link was ${href}`);
-  console.log("✓ Draft drawer renders the draft and a tap-to-open channel link");
+  console.log("✓ Composer renders a tap-to-open 'Open in WhatsApp' deep link");
 
-  // logging contact resets the counter on disk and commits the vault
-  await drawer.getByRole("button", { name: "Log contact" }).click();
+  // R11: the sent touch is typed, not the old flat "presence" log_contact call
+  await page.getByLabel("Touch type").selectOption("remember");
+  await page.getByRole("button", { name: "I sent it" }).click();
   await page.getByText("✅ Logged").waitFor();
   const personFile = path.join(root, "vault", "07-People", "2026-07-01-priya-raman.md");
   const personText = fs.readFileSync(personFile, "utf8");
   assert.ok(!personText.includes("last_contact: 2026-06-01"), "last_contact was not reset");
   assert.ok(personText.includes("- 2026-06-01 — coffee at Alserkal"),
     "the interaction log must be append-only");
+  assert.ok(personText.includes("· out · whatsapp · remember ·"),
+    "the v2 interaction-log line was not written with the expected direction/channel/touch_type");
   const vaultLog = execSync(`git -C "${path.join(root, "vault")}" log -1 --format=%s`).toString();
   assert.match(vaultLog, /logged contact/);
-  console.log("✓ Log contact resets the counter, appends to the log, commits the vault");
+  console.log("✓ I sent it writes a typed v2 touch line, resets the counter, commits the vault");
 
   // ---- 9. Profile push: preview → confirm (Pass D) ---------------------------
   // Dex itself is stubbed at the cockpit's own routes — what is under test is
@@ -565,15 +600,18 @@ try {
     });
   });
 
-  // step 7's drawer is still open on the "move them to conversing?" question
-  await drawer.getByRole("button", { name: "Not yet" }).click();
+  // Task 12: the People list's own push entry point is now the slim
+  // ProfileDrawer, opened by the card's "Profile" button (the old "move them
+  // to conversing?" stage prompt — and its "Not yet" button — moved into the
+  // person-page composer with the rest of DraftDrawer's removed content, so
+  // there is nothing to dismiss here first).
   await page.goto(`${BASE}/#/people`);
-  // step 7 logged contact, so she is inside her cadence now and the default
+  // step 8 logged contact, so she is inside her cadence now and the default
   // "Needs you" filter correctly hides her — push is not only for the overdue
   await page.getByRole("button", { name: "Everyone" }).click();
   await page.locator("article", { hasText: "Priya Raman" })
-    .getByRole("button", { name: "Draft a message" }).click();
-  const pushDrawer = page.getByRole("dialog");
+    .getByRole("button", { name: "Profile" }).click();
+  const pushDrawer = page.getByRole("dialog", { name: "Profile for Priya Raman" });
   await pushDrawer.getByRole("button", { name: "Push to Dex" }).click();
 
   // the preview must show the real text BEFORE anything can be confirmed
@@ -591,9 +629,13 @@ try {
     "the text posted was not the text the human read");
   console.log("✓ Profile push previews the exact text and only writes on confirm");
 
+  // Task 12's own escape hatch: Escape closes "Profile for {name}"
+  await page.keyboard.press("Escape");
+  await page.getByRole("dialog", { name: "Profile for Priya Raman" }).waitFor({ state: "detached" });
+  console.log("✓ Escape closes the Profile drawer");
+
   // ---- 10. Quick-add a warm-up target (Pass X) --------------------------------
   // One name, one channel, one tap — and a schema-correct note on disk.
-  await page.keyboard.press("Escape");   // the drawer closes on Escape
   await page.goto(`${BASE}/#/people`);
   await page.getByRole("button", { name: "+ Target" }).click();
   await page.getByLabel("Name").fill("Sara Khalid");

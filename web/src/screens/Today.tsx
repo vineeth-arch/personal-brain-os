@@ -1,7 +1,16 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { api, ApiError, isOffline, subscribeOffline } from "../api/client";
-import type { CaptureTag, ResurfaceAction, ResurfacedNote, Status, TodoItem } from "../api/types";
-import { CAPTURE_TAGS } from "../api/types";
+import type {
+  CaptureTag,
+  QueueItem,
+  QueueView,
+  ResurfaceAction,
+  ResurfacedNote,
+  Status,
+  TodayResponse,
+  TodoItem,
+} from "../api/types";
+import { CAPTURE_TAGS, QUEUE_VIEWS } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
 import { StreakDots } from "../components/StreakDots";
 import { toast } from "../components/Toast";
@@ -1031,6 +1040,109 @@ function QuickCapture() {
   );
 }
 
+// Task 12: the Today strip for the Relationship OS queues — read from
+// api.peopleToday() (pipeline/queue.py's `strip`, already capped at five and
+// one row per person). This renders FIRST, above HeroCard: the doctrine is
+// "at most 5 payload-carrying touches a morning", so who needs a human today
+// outranks the pipeline's own health card.
+const QUEUE_ACTION: Record<QueueView, string> = {
+  owe_reply: "Reply",
+  promises: "Keep promise",
+  ask_about: "Ask",
+  celebrate: "Celebrate",
+  follow_up: "Follow up",
+  waiting_on_them: "Follow up",
+  reconnect: "Reconnect",
+};
+
+// A small filled/hollow tonal dot per tier — same primitive family as
+// StreakDots, never the accent color (DESIGNSYSTEM.md §2's one accent stays
+// on HeroCard).
+const TIER_DOT_CLASS: Record<string, string> = {
+  inner: "bg-inverted",
+  core: "border-emphasis border-2",
+  active: "border-subtle border-2",
+};
+
+// True when a flagged (overdue-reply) item exists past the strip's cap — the
+// strip itself never says so; this is worked out from the same queues the
+// strip was built from.
+function anyFlaggedOutsideStrip(data: TodayResponse): boolean {
+  const stripped = new Set(data.strip.map((i) => `${i.person_id}:${i.queue}`));
+  for (const view of QUEUE_VIEWS) {
+    if (view === "waiting_on_them") continue;
+    for (const item of data.queues[view] ?? []) {
+      if (item.flagged && !stripped.has(`${item.person_id}:${item.queue}`)) return true;
+    }
+  }
+  return false;
+}
+
+function PeopleTodayRow({ item, label }: { item: QueueItem; label: string }) {
+  return (
+    <li className="flex items-center gap-3 py-2">
+      <span
+        aria-hidden="true"
+        className={`h-2.5 w-2.5 shrink-0 rounded-full ${TIER_DOT_CLASS[item.tier] ?? "border-muted border-2"}`}
+        title={item.tier || "untiered"}
+      />
+      <p className="text-default min-w-0 flex-1 truncate text-sm">
+        <span className="text-emphasis font-semibold">{item.name}</span>
+        {` · ${label}`}
+        {item.payload ? ` · ${item.payload}` : ""}
+      </p>
+      <a
+        href={`#/people/${item.person_id}?queue=${item.queue}&key=${encodeURIComponent(item.source_key)}`}
+        className="border-emphasis text-emphasis min-h-11 shrink-0 rounded-xl border px-4 text-sm font-bold leading-[2.75rem]"
+      >
+        {QUEUE_ACTION[item.queue as QueueView] ?? "Follow up"}
+      </a>
+    </li>
+  );
+}
+
+function PeopleToday() {
+  const { data, error, loading, refetch } = usePolling(api.peopleToday, 60_000);
+
+  if (loading && !data) {
+    return <div aria-hidden="true" className="bg-subtle h-24 animate-pulse rounded-xl" />;
+  }
+  if (error && !data) {
+    return (
+      <ErrorState envelope={error.envelope} detail={error.detail} onRetry={refetch} />
+    );
+  }
+  if (!data) return null;
+
+  return (
+    <section>
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+        People today
+      </p>
+      {data.strip.length === 0 ? (
+        <p className="text-default mt-2 text-sm">Nobody needs you today.</p>
+      ) : (
+        <>
+          <ul className="divide-subtle mt-2 divide-y">
+            {data.strip.map((item) => (
+              <PeopleTodayRow
+                key={`${item.person_id}:${item.queue}`}
+                item={item}
+                label={data.labels[item.queue as QueueView]}
+              />
+            ))}
+          </ul>
+          {data.overflow > 0 && (
+            <p className="text-subtle mt-2 text-sm">
+              {data.overflow} more{anyFlaggedOutsideStrip(data) ? "" : ", none urgent"}
+            </p>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 function Skeleton() {
   return (
     <div className="space-y-6" aria-hidden="true">
@@ -1058,6 +1170,7 @@ export function Today() {
 
   return (
     <div className="space-y-8">
+      <PeopleToday />
       {status.data && <HeroCard status={status.data} />}
       <Agenda />
       {streak.data && <StreakDots streak={streak.data} />}
