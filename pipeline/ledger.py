@@ -17,6 +17,13 @@ NEW_RELATIONSHIP_DAYS = 90                                       # extrapolation
 ASK_MIN_GIVES, ASK_MIN_DAYS = 3, 90                             # extrapolation (A6)
 ONE_WAY_GIVES = 8                                                # extrapolation (A6)
 
+# Narrower than the general "real touch" filter above: an `in · other` touch
+# (e.g. reputation_signal — someone talking ABOUT the owner, not a reply FROM
+# the quiet person) is not evidence the quiet person themselves replied, so it
+# must not lift quiet. Only these in-touch types count as lifting/preventing
+# quiet in `is_quiet`.
+QUIET_LIFTING_TYPES = frozenset({"reply", "ask_theirs", "give_theirs"})
+
 
 def _real(touches: list[touchlog.Touch]) -> list[touchlog.Touch]:
     """Touches that can ever count as a give, an ask or something received:
@@ -114,8 +121,10 @@ def inside_floor(person, touches: list[touchlog.Touch], today: date) -> bool:
 
 def is_quiet(person, touches: list[touchlog.Touch], today: date) -> bool:
     """Still in a self-imposed quiet window, AND the last real touch was
-    ours going out — a reply from them (or anything else incoming) lifts it
-    immediately, a promise close never does either way (it isn't a new
+    ours going out — a reply/ask/give FROM them lifts it immediately
+    (QUIET_LIFTING_TYPES), but an `in · other` touch (e.g. reputation_signal,
+    where someone else is talking about them, not they themselves) does not.
+    A promise close never lifts or extends it either way (it isn't a new
     contact, in either direction)."""
     if not (person.quiet_until and person.quiet_until > today):
         return False
@@ -123,7 +132,7 @@ def is_quiet(person, touches: list[touchlog.Touch], today: date) -> bool:
     if not relevant:
         return False
     latest = max(relevant, key=lambda t: t.day)
-    return latest.direction == "out"
+    return not (latest.direction == "in" and latest.touch_type in QUIET_LIFTING_TYPES)
 
 
 def ask_allowed(person, touches: list[touchlog.Touch], today: date) -> bool:

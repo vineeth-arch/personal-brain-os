@@ -227,6 +227,16 @@ def test_promise_close_does_not_lift_quiet(vault):
     assert lg.is_quiet(person, touches, TODAY) is True
 
 
+def test_in_other_touch_does_not_lift_quiet(vault):
+    """An `in · other` touch (e.g. reputation_signal — someone else talking
+    ABOUT the quiet person, not a reply FROM them) must not lift quiet."""
+    make_person(vault, tier="core", quiet_until=(TODAY + timedelta(days=10)).isoformat())
+    person = one(vault)
+    touches = [touch(TODAY - timedelta(days=5), "out", "give_know"),
+              touch(TODAY - timedelta(days=1), "in", "other")]
+    assert lg.is_quiet(person, touches, TODAY) is True
+
+
 # ---- ask_allowed ------------------------------------------------------------------
 
 def test_ask_allowed_true_after_enough_gives_and_time(vault):
