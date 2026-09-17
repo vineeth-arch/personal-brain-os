@@ -6,6 +6,7 @@ import { TokenGate } from "./components/TokenGate";
 import { Build } from "./screens/Build";
 import { Integrations } from "./screens/Integrations";
 import { People } from "./screens/People";
+import { Person } from "./screens/Person";
 import { Pipeline } from "./screens/Pipeline";
 import { Resources } from "./screens/Resources";
 import { Search } from "./screens/Search";
@@ -17,6 +18,7 @@ export type Route =
   | "today"
   | "resources"
   | "people"
+  | "person"
   | "triage"
   | "pipeline"
   | "search"
@@ -29,6 +31,7 @@ function parseRoute(): Route {
   // state in the hash query (#/resources?category=…, #/search?q=…), which
   // must not defeat route matching.
   const hash = window.location.hash.replace(/^#\/?/, "").split("?")[0];
+  if (/^people\/\d{14}$/.test(hash)) return "person";
   if (hash === "resources" || hash === "people" || hash === "triage" ||
       hash === "pipeline" || hash === "search" || hash === "integrations" ||
       hash === "settings" || hash === "build")
@@ -74,6 +77,7 @@ export default function App() {
         {route === "today" && <Today />}
         {route === "resources" && <Resources />}
         {route === "people" && <People />}
+        {route === "person" && <Person />}
         {route === "triage" && <Triage />}
         {route === "pipeline" && <Pipeline />}
         {route === "search" && <Search />}

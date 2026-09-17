@@ -98,7 +98,8 @@ export function Layout({ route, children }: Props) {
       >
         <div className="mx-auto flex max-w-2xl">
           {TABS.map((tab) => {
-            const active = route === tab.route;
+            const active =
+              route === tab.route || (tab.route === "people" && route === "person");
             return (
               <a
                 key={tab.route}
