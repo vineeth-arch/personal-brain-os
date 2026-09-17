@@ -22,6 +22,19 @@ from pathlib import Path
 
 PEOPLE_FOLDER = "07-People"
 
+# SCHEMA-REFERENCE.md §7 — the four relationship tiers (v2.2 replaces the
+# warmth-only model for anyone who has one; blank tier keeps legacy behaviour).
+TIERS = ("inner", "core", "active", "wide")
+TIER_CAP = {"inner": 15, "core": 35, "active": 100}          # extrapolation (A4)
+TIER_CADENCE = {"inner": 14, "core": 30, "active": 90}        # wide: no cadence (A4)
+FAMILY_FRIEND = frozenset({"family", "friend"})
+# SCHEMA-REFERENCE.md §7 cross-app merge table — Owner-only fields.
+OWNER_ONLY = ("tier", "energy", "known_for", "recall_trigger", "conversation_stage",
+              "buyer_role", "fit", "list_of_20")
+_ACTION = re.compile(r"^- (\d{4}-\d{2}-\d{2}|open) · (.+)$")
+_BC_MARKER = re.compile(r"<!-- bc:([^>]*) -->")
+_CITE_FULL = re.compile(r"[ \t]*· derived-from:: \[\[[^\]]*\]\] \([^)]*\)")
+
 # SCHEMA-REFERENCE.md §7 — the six stages, in order of warmth
 WARMTH_STAGES = ["identified", "researched", "engaging", "conversing", "warm", "ready"]
 
@@ -56,6 +69,30 @@ def parse_channels(raw: str) -> dict[str, str]:
     return out
 
 
+def parse_list(raw: str) -> list[str]:
+    """`"[a, b]"` | `"a, b"` | `"a"` | `""` | `"[]"` → lowercase, stripped,
+    non-empty items. Used for `relationship` (a Union list per SCHEMA §7)."""
+    raw = (raw or "").strip()
+    if raw.startswith("[") and raw.endswith("]"):
+        raw = raw[1:-1]
+    return [item for item in (part.strip().strip("\"'").lower() for part in raw.split(","))
+            if item]
+
+
+def format_list(items: list[str]) -> str:
+    return "[" + ", ".join(items) + "]"
+
+
+@dataclass
+class NextAction:
+    """One line of `## Next action`, as `next_actions()` reads it."""
+    due: date | None      # None for "- open · …" and for undated lines
+    text: str             # readable: cite, marker and the "date · " prefix removed
+    key: str              # marker body (e.g. "20260917101500:3") if the raw line has <!-- bc:X -->, else sha1(stripped raw line)[:10]
+    closed: bool
+    dated_format: bool    # True when the line matched _ACTION
+
+
 @dataclass
 class Person:
     id: str
@@ -72,13 +109,48 @@ class Person:
     status: str = "active"
     sample: bool = False
     sections: dict[str, str] = field(default_factory=dict)
+    # v2.2 (SCHEMA-REFERENCE.md §7) — defaults blank/False/None/{}/[]
+    tier: str = ""
+    relationships: list[str] = field(default_factory=list)
+    preferred_channel_field: str = ""
+    language: str = ""
+    last_give: date | None = None
+    last_ask: date | None = None
+    quiet_until: date | None = None
+    energy: str = ""
+    known_for: str = ""
+    recall_trigger: str = ""
+    dates: dict[str, str] = field(default_factory=dict)
+    referred_by: str = ""
+    list_of_20: bool = False
+    conversation_stage: str = ""
+    buyer_role: str = ""
+    fit: str = ""
+    created: date | None = None
+    raw_sections: dict[str, str] = field(default_factory=dict)
 
     @property
     def effective_cadence(self) -> int:
-        """What the note says, else what the warmth stage implies."""
+        """What the note says, else what the tier implies, else what the
+        warmth stage implies (legacy, for untiered notes)."""
         if self.cadence_days:
             return self.cadence_days
+        if self.tier in TIER_CADENCE:
+            return TIER_CADENCE[self.tier]
         return STAGE_CADENCE_DAYS.get(self.warmth_stage, DEFAULT_CADENCE_DAYS)
+
+    @property
+    def has_cadence(self) -> bool:
+        """False only for a `wide` tier with no explicit cadence override —
+        `wide` is event-driven, not on a clock (SCHEMA-REFERENCE.md §7)."""
+        return not (self.tier == "wide" and not self.cadence_days)
+
+    @property
+    def commercial(self) -> bool:
+        """The commercial gate (SCHEMA-REFERENCE.md §7 / A3): inert when the
+        relationship is family and/or friend only. Nobody yet tagged is
+        commercial by default — nothing to exempt."""
+        return not (self.relationships and set(self.relationships) <= FAMILY_FRIEND)
 
     def days_since_contact(self, today: date) -> int | None:
         if not self.last_contact:
@@ -87,7 +159,10 @@ class Person:
 
     def going_cold(self, today: date) -> bool:
         """Past the cadence — or never contacted at all, which is the coldest
-        a relationship gets."""
+        a relationship gets. A person with no cadence (wide tier, untouched)
+        never goes cold."""
+        if not self.has_cadence:
+            return False
         if self.status == "dormant":
             return False
         days = self.days_since_contact(today)
@@ -150,6 +225,25 @@ def _sections(body: str) -> dict[str, str]:
     return out
 
 
+def _raw_sections(body: str) -> dict[str, str]:
+    """Same split as `_sections`, but NOT passed through `_readable` — the
+    idempotency markers survive, because `next_actions` needs them to tell a
+    closed action from an open one (P1: `_sections` strips `bc:` markers, so
+    a closed-action check against it would never find the close marker)."""
+    out: dict[str, str] = {}
+    heading, buf = "", []
+    for line in body.splitlines():
+        if line.strip().startswith("## "):
+            if heading:
+                out[heading] = "\n".join(buf).strip()
+            heading, buf = line.strip()[3:].strip(), []
+        else:
+            buf.append(line)
+    if heading:
+        out[heading] = "\n".join(buf).strip()
+    return out
+
+
 def _title(text: str, path: Path) -> str:
     for line in text.splitlines():
         if line.startswith("# "):
@@ -187,11 +281,12 @@ def parse_person(path: Path) -> Person | None:
         cadence = int(fm.get("cadence_days") or 0) or None
     except ValueError:
         cadence = None
+    relationships_list = parse_list(fm.get("relationship", ""))
     return Person(
         id=fm.get("id", ""),
         name=_title(parts[2], path),
         path=path,
-        relationship=fm.get("relationship", ""),
+        relationship=", ".join(relationships_list),   # P4: kept as a string for legacy callers
         company=fm.get("company", ""),
         channels=parse_channels(fm.get("channels", "")),
         cadence_days=cadence,
@@ -202,6 +297,24 @@ def parse_person(path: Path) -> Person | None:
         status=(fm.get("status") or "active").strip().lower(),
         sample=(fm.get("sample") or "").strip().lower() == "true",
         sections=_sections(parts[2]),
+        tier=(fm.get("tier") or "").strip().lower(),
+        relationships=relationships_list,
+        preferred_channel_field=(fm.get("preferred_channel") or "").strip(),
+        language=(fm.get("language") or "").strip(),
+        last_give=_parse_date(fm.get("last_give", "")),
+        last_ask=_parse_date(fm.get("last_ask", "")),
+        quiet_until=_parse_date(fm.get("quiet_until", "")),
+        energy=(fm.get("energy") or "").strip(),
+        known_for=(fm.get("known_for") or "").strip(),
+        recall_trigger=(fm.get("recall_trigger") or "").strip(),
+        dates={k.lower(): v for k, v in parse_channels(fm.get("dates", "")).items()},
+        referred_by=(fm.get("referred_by") or "").strip(),
+        list_of_20=(fm.get("list_of_20") or "").strip().lower() == "true",
+        conversation_stage=(fm.get("conversation_stage") or "").strip(),
+        buyer_role=(fm.get("buyer_role") or "").strip(),
+        fit=(fm.get("fit") or "").strip(),
+        created=_parse_date(fm.get("created", "")),
+        raw_sections=_raw_sections(parts[2]),
     )
 
 
@@ -239,6 +352,53 @@ def commitment_due(person: Person, today: date) -> bool:
         if due and due <= today and (person.last_contact is None or person.last_contact < due):
             return True
     return False
+
+
+def _next_action_text(raw: str) -> str:
+    """Readable form of a `## Next action` line's tail: cite and marker
+    stripped (the "date · " prefix is already gone — the caller passes only
+    what came after it)."""
+    return _MARKER.sub("", _CITE_FULL.sub("", raw)).strip()
+
+
+def _next_action_key(raw_line: str) -> str:
+    """The marker body if the line carries one, else a stable hash of the
+    line — so an action without a `<!-- bc: -->` marker still has a key a
+    later close can reference."""
+    m = _BC_MARKER.search(raw_line)
+    if m:
+        return m.group(1)
+    return hashlib.sha1(raw_line.strip().encode("utf-8")).hexdigest()[:10]
+
+
+def next_actions(person: Person) -> list[NextAction]:
+    """`## Next action`, read from `raw_sections` (not `sections` — P1: a
+    close marker has to survive for `closed` to see it). Only non-empty
+    `- ` lines count; `_ACTION` gives a dated line or `- open · …` its due
+    date, anything else is undated (R22 — an undated commitment must not
+    silently vanish from the queue)."""
+    raw = person.raw_sections.get("Next action") or ""
+    all_raw = "\n".join(person.raw_sections.values())
+    out: list[NextAction] = []
+    for raw_line in raw.splitlines():
+        line = raw_line.strip()
+        if not line or not line.startswith("- "):
+            continue
+        match = _ACTION.match(line)
+        if match:
+            due_raw, rest = match.group(1), match.group(2)
+            due = None if due_raw == "open" else _parse_date(due_raw)
+            text = _next_action_text(rest)
+            dated_format = True
+        else:
+            due = None
+            text = _next_action_text(line[2:])
+            dated_format = False
+        key = _next_action_key(line)
+        closed = f"<!-- bc:close:{key} -->" in all_raw
+        out.append(NextAction(due=due, text=text, key=key, closed=closed,
+                              dated_format=dated_format))
+    return out
 
 
 def warmup_due(person: Person, today: date) -> bool:
@@ -403,14 +563,31 @@ def new_person_note(name: str, channel_kind: str, channel_value: str,
         f"created: {created}\n"
         "source: manual\n"
         "origin: human\n"          # the owner typed this, not a model
-        "relationship:\n"
+        "relationship: []\n"
         "company:\n"
         f"channels: {{{channel_kind}: {channel_value.strip()}}}\n"
-        "dex_id:\n"
-        "dex_deeplink:\n"
+        "preferred_channel:\n"
+        "language:\n"
+        "tier:\n"
         "cadence_days:\n"
         "last_contact:\n"
+        "last_give:\n"
+        "last_ask:\n"
+        "quiet_until:\n"
+        "energy:\n"
+        "known_for:\n"
+        "recall_trigger:\n"
+        "dates: {birthday:, anniversary:}\n"
+        "referred_by:\n"
+        "list_of_20: false\n"
         "warmth_stage: identified\n"
+        "conversation_stage:\n"
+        "buyer_role:\n"
+        "fit:\n"
+        "dex_id:\n"
+        "dex_deeplink:\n"
+        "handshake_id:\n"
+        "outreach_id:\n"
         "status: active\n"
         "categories: []\n"
         "subjects: []\n"
@@ -418,11 +595,16 @@ def new_person_note(name: str, channel_kind: str, channel_value: str,
         "---\n\n"
         f"# {name.strip()}\n\n"
         "## Context\n\n\n"
+        "## Current state\n\n\n"
+        "## Future state\n\n\n"
         "## Needs\n\n\n"
+        "## Can help with\n\n\n"
+        "## How they communicate\n\n\n"
         "## Facts\n\n\n"
         "## Interpretations\n\n\n"
         "## Interaction log\n\n\n"
         "## Next action\n\n\n"
+        "## Updates\n\n\n"
     )
     return f"{created}-{slug(name)}.md", text
 

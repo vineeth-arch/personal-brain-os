@@ -17,6 +17,14 @@ FIELD_KINDS = {
     "subjects": "union", "attendees": "union", "companies": "union",
     "dex_id": "union", "dex_deeplink": "union", "handshake_id": "union",
     "outreach_id": "union", "booking_uid": "union",
+    # v2.2 (SCHEMA-REFERENCE.md §7 cross-app merge table)
+    "relationship": "union", "last_give": "forward", "last_ask": "forward",
+    "quiet_until": "forward", "referred_by": "set_once",
+    # Owner-only: an AI writer may suggest, never set (literal list — no
+    # import from pipeline.relationships, to keep this module dependency-free).
+    "tier": "owner", "energy": "owner", "known_for": "owner",
+    "recall_trigger": "owner", "conversation_stage": "owner",
+    "buyer_role": "owner", "fit": "owner", "list_of_20": "owner",
 }
 
 
@@ -104,6 +112,14 @@ def apply_field(existing: dict, key: str, new_value, *, source: str, origin: str
         if current_date is None or new_date > current_date:
             fm[key] = new_value
         return fm, None
+
+    if kind == "owner":
+        if str(current or "") == str(new_value or ""):
+            return fm, None                      # no-op, no Updates spam (vaultsync)
+        if origin == "human":
+            fm[key] = new_value                  # the owner's own edit arriving via sync
+            return fm, None
+        return fm, f"- {today} · {key}: {current or '(blank)'} → {new_value}? ({source}, {origin})"
 
     # fill (default)
     if not current:

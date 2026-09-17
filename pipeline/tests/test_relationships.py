@@ -260,3 +260,130 @@ def test_a_dated_next_action_settles_once_contact_is_logged_on_or_after_it(vault
     path.write_text(rel.log_contact(person, "asked about the move", date(2026, 8, 16)),
                     encoding="utf-8")
     assert not rel.commitment_due(rel.parse_person(path), TODAY)
+
+
+# ---- v2.2: tiers, cadence, relationships list, next_actions, raw_sections --------
+
+def test_tier_cadence_beats_stage_default():
+    p = rel.Person(id="1", name="X", path=Path("x"), tier="core", warmth_stage="identified")
+    assert p.effective_cadence == rel.TIER_CADENCE["core"]
+
+
+def test_explicit_cadence_beats_tier():
+    p = rel.Person(id="1", name="X", path=Path("x"), tier="core", cadence_days=5)
+    assert p.effective_cadence == 5
+
+
+def test_wide_tier_never_goes_cold():
+    p = rel.Person(id="1", name="X", path=Path("x"), tier="wide",
+                   last_contact=date(2020, 1, 1))
+    assert p.has_cadence is False
+    assert p.going_cold(TODAY) is False
+
+
+def test_blank_tier_keeps_legacy_stage_cadence():
+    p = rel.Person(id="1", name="X", path=Path("x"), warmth_stage="conversing")
+    assert p.has_cadence is True
+    assert p.effective_cadence == rel.STAGE_CADENCE_DAYS["conversing"]
+
+
+def test_relationship_list_parses_shapes_and_joins(vault):
+    path = person_note(vault / rel.PEOPLE_FOLDER, "X")
+    text = path.read_text(encoding="utf-8").replace("relationship: client",
+                                                     "relationship: [Client, Friend]")
+    path.write_text(text, encoding="utf-8")
+    person = rel.load_people(vault)[0]
+    assert person.relationships == ["client", "friend"]
+    assert person.relationship == "client, friend"
+    assert rel.parse_list("a, b") == ["a", "b"]
+    assert rel.parse_list("a") == ["a"]
+    assert rel.parse_list("") == []
+    assert rel.parse_list("[]") == []
+    assert rel.format_list(["a", "b"]) == "[a, b]"
+    assert rel.format_list([]) == "[]"
+
+
+def test_family_only_is_not_commercial():
+    p = rel.Person(id="1", name="X", path=Path("x"), relationships=["family"])
+    assert p.commercial is False
+
+
+def test_empty_relationship_is_commercial():
+    p = rel.Person(id="1", name="X", path=Path("x"), relationships=[])
+    assert p.commercial is True
+
+
+def test_raw_sections_keep_markers(vault):
+    path = person_note(vault / rel.PEOPLE_FOLDER, "X",
+                       next_action="- 2026-08-15 · Ask how it went: the move <!-- bc:abc123 -->")
+    person = rel.parse_person(path)
+    assert "<!-- bc:abc123 -->" in person.raw_sections["Next action"]
+    assert "<!--" not in person.sections["Next action"]
+
+
+def test_next_actions_dated_open_and_undated(vault):
+    path = person_note(vault / rel.PEOPLE_FOLDER, "X",
+                       next_action=("- 2026-08-15 · Ask how it went: the move\n"
+                                    "- open · Check in — they promised: the brief\n"
+                                    "- Follow up whenever\n"))
+    person = rel.parse_person(path)
+    actions = rel.next_actions(person)
+    assert len(actions) == 3
+    dated, opened, undated = actions
+    assert dated.due == date(2026, 8, 15) and dated.dated_format is True
+    assert dated.text == "Ask how it went: the move"
+    assert opened.due is None and opened.dated_format is True
+    assert undated.due is None and undated.dated_format is False
+    assert undated.text == "Follow up whenever"
+
+
+def test_next_action_key_prefers_marker(vault):
+    path = person_note(vault / rel.PEOPLE_FOLDER, "X",
+                       next_action="- 2026-08-15 · Ask how it went: the move <!-- bc:20260917101500:3 -->")
+    person = rel.parse_person(path)
+    action = rel.next_actions(person)[0]
+    assert action.key == "20260917101500:3"
+
+    path2 = person_note(vault / rel.PEOPLE_FOLDER, "Y", next_action="- Follow up whenever")
+    person2 = rel.parse_person(path2)
+    action2 = rel.next_actions(person2)[0]
+    assert len(action2.key) == 10 and action2.key != "20260917101500:3"
+
+
+def test_next_action_closed_by_marker_in_interaction_log(vault):
+    path = person_note(
+        vault / rel.PEOPLE_FOLDER, "X",
+        log="- 2026-08-01 — coffee at Alserkal\n<!-- bc:close:20260917101500:3 -->",
+        next_action="- 2026-08-15 · Ask how it went: the move <!-- bc:20260917101500:3 -->")
+    person = rel.parse_person(path)
+    action = rel.next_actions(person)[0]
+    assert action.closed is True
+
+
+def test_dates_inline_map_parses(vault):
+    path = person_note(vault / rel.PEOPLE_FOLDER, "X")
+    text = path.read_text(encoding="utf-8").replace(
+        "status: active", "status: active\ndates: {birthday: 1990-01-01, anniversary: }")
+    path.write_text(text, encoding="utf-8")
+    person = rel.load_people(vault)[0]
+    assert person.dates == {"birthday": "1990-01-01"}
+
+
+def test_new_note_frontmatter_order_and_sections():
+    _, text = rel.new_person_note("Sara Khalid", "email", "sara@example.com",
+                                  __import__("datetime").datetime(2026, 9, 17, 10, 15))
+    head = text.split("\n---\n", 1)[0]
+    keys = [line.partition(":")[0] for line in head.splitlines()[1:] if line]
+    assert keys == [
+        "id", "type", "created", "source", "origin", "relationship", "company",
+        "channels", "preferred_channel", "language", "tier", "cadence_days",
+        "last_contact", "last_give", "last_ask", "quiet_until", "energy",
+        "known_for", "recall_trigger", "dates", "referred_by", "list_of_20",
+        "warmth_stage", "conversation_stage", "buyer_role", "fit", "dex_id",
+        "dex_deeplink", "handshake_id", "outreach_id", "status", "categories",
+        "subjects", "tags",
+    ]
+    for section in ("Context", "Current state", "Future state", "Needs",
+                    "Can help with", "How they communicate", "Facts",
+                    "Interpretations", "Interaction log", "Next action", "Updates"):
+        assert f"## {section}" in text

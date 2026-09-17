@@ -122,3 +122,43 @@ def test_forward_handles_unparseable_existing_value_without_crashing():
     fm, _ = merge.apply_field({"last_contact": 12345}, "last_contact", "2026-09-16",
                                source="cockpit", origin="human", today="2026-09-16")
     assert fm["last_contact"] == "2026-09-16"
+
+
+# ---- v2.2: owner kind + new forward/set_once fields (R7) ------------------------
+
+def test_owner_only_ai_suggests_never_sets():
+    fm, suggestion = merge.apply_field({"tier": "core"}, "tier", "inner",
+                                       source="cockpit", origin="ai", today="2026-09-17")
+    assert fm["tier"] == "core"          # unchanged
+    assert suggestion == "- 2026-09-17 · tier: core → inner? (cockpit, ai)"
+
+
+def test_owner_only_equal_value_no_suggestion():
+    fm, suggestion = merge.apply_field({"tier": "core"}, "tier", "core",
+                                       source="cockpit", origin="ai", today="2026-09-17")
+    assert fm["tier"] == "core"
+    assert suggestion is None
+
+
+def test_owner_only_human_origin_applies():
+    fm, suggestion = merge.apply_field({"tier": "core"}, "tier", "inner",
+                                       source="vault", origin="human", today="2026-09-17")
+    assert fm["tier"] == "inner"
+    assert suggestion is None
+
+
+def test_quiet_until_is_forward_only():
+    fm, _ = merge.apply_field({"quiet_until": "2026-09-10"}, "quiet_until", "2026-09-20",
+                              source="cockpit", origin="ai", today="2026-09-17")
+    assert fm["quiet_until"] == "2026-09-20"
+    fm, _ = merge.apply_field({"quiet_until": "2026-09-20"}, "quiet_until", "2026-09-10",
+                              source="cockpit", origin="ai", today="2026-09-17")
+    assert fm["quiet_until"] == "2026-09-20"
+
+
+def test_referred_by_set_once():
+    fm, suggestion = merge.apply_field({"referred_by": "20260101000000"}, "referred_by",
+                                       "20260202000000", source="cockpit", origin="ai",
+                                       today="2026-09-17")
+    assert fm["referred_by"] == "20260101000000"
+    assert suggestion is None

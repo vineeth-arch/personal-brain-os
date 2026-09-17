@@ -261,7 +261,15 @@ def apply(note_text: str, p: dict, *, note_id: str, index: int, today: date) -> 
                              f"- {today.isoformat()} — {who}: {p['text']} {cite}",
                              f"<!-- {marker_base}:log -->")
 
-    if p["type"] == "person_update" and p.get("field"):
+    if p["type"] == "person_update" and p.get("field") == "relationship":
+        from . import relationships
+        head, body = _split_front(text)
+        current = _front_value(head, "relationship")
+        current_list = relationships.parse_list(current)
+        merged = current_list + [v for v in relationships.parse_list(p["value"])
+                                 if v not in current_list]
+        text = _set_front(head, "relationship", relationships.format_list(merged)) + body
+    elif p["type"] == "person_update" and p.get("field"):
         head, body = _split_front(text)
         fm = {p["field"]: _front_value(head, p["field"])}
         new_fm, suggestion = merge.apply_field(fm, p["field"], p["value"], source="cockpit",

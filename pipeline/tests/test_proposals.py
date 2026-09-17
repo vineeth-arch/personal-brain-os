@@ -199,3 +199,11 @@ def test_reputation_signal_writes_exactly_one_log_line(vault):
     assert (f"- {TODAY.isoformat()} · in · · other · They said about me: always follows through"
             in log)
     assert text.count("always follows through") == 1
+
+
+def test_relationship_update_writes_bracket_list(vault):
+    # the seed note already has relationship: client (a legacy scalar)
+    person, text = _apply(vault, {"type": "person_update", "text": "became a friend too",
+                                  "field": "relationship", "value": "friend"})
+    assert "relationship: [client, friend]" in text
+    assert "Updates" not in person.sections or "relationship" not in person.sections["Updates"]
