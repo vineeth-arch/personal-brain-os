@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { api, getTriageTimerEnabled, trustLine } from "../api/client";
 import type {
   NoteType,
+  PersonProposal,
   ReviewItem,
   ReviewTrust,
   SplitProposal,
   SuggestedAttendee,
 } from "../api/types";
-import { NOTE_TYPES } from "../api/types";
+import { NOTE_TYPES, PROPOSAL_TOPICS } from "../api/types";
 import { ErrorState } from "../components/ErrorState";
 import { StreakDots } from "../components/StreakDots";
 import { toast } from "../components/Toast";
@@ -286,6 +287,136 @@ function SplitProposalCard({
   );
 }
 
+const PROPOSAL_LABEL: Record<PersonProposal["type"], string> = {
+  fact: "They said",
+  interpretation: "My reading — not something they said",
+  commitment_mine: "I promised",
+  commitment_theirs: "They promised",
+  follow_up: "Follow up",
+  personal_detail: "About them",
+  upcoming: "Coming up for them",
+  milestone: "Milestone",
+  need: "They're looking for",
+  company_knowledge: "About their company",
+  person_update: "Update",
+};
+
+const DATED: PersonProposal["type"][] = ["upcoming", "commitment_theirs", "commitment_mine", "follow_up"];
+
+function shortDate(iso: string): string {
+  return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+function plusOneDay(iso: string): string {
+  const d = new Date(`${iso}T00:00:00`);
+  d.setDate(d.getDate() + 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+// What Remember will do, said before the tap ("→ Ask about on 13 Oct").
+function outcomeSentence(p: PersonProposal, date: string, topic: string): string {
+  if (p.section !== "Next action") {
+    if (p.type === "personal_detail") return `→ About them${topic ? ` · ${topic}` : ""}`;
+    if (p.type === "company_knowledge") return "→ Their company's facts";
+    return `→ ${p.section}`;
+  }
+  const due = p.type === "upcoming" && date ? plusOneDay(date)
+    : p.type === "commitment_theirs" ? (date ? plusOneDay(date) : null)
+    : p.type === "milestone" ? p.due : (date || p.due);
+  const verb = p.type === "upcoming" ? "Ask about" : p.type === "milestone" ? "Congratulate"
+    : p.type === "commitment_theirs" ? "Check in" : "Follow up";
+  return due ? `→ ${verb} on ${shortDate(due)}` : `→ ${verb} — no date, stays open`;
+}
+
+// A proposal is a decision about memory, not a sentence to save: the card
+// says where it lands and when it comes back, with the date/topic editable
+// before Remember. Tonal like the split card — the one accent stays on the
+// review queue's top Approve button.
+function PersonProposalCard({
+  proposal,
+  onDecide,
+}: {
+  proposal: PersonProposal;
+  onDecide: (id: number) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [date, setDate] = useState(proposal.date ?? "");
+  const [topic, setTopic] = useState(proposal.topic);
+  const decide = async (decision: "remember" | "skip") => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const edits: { date?: string; topic?: string } = {};
+      if (date && date !== proposal.date) edits.date = date;
+      if (proposal.type === "personal_detail") edits.topic = topic;
+      await api.reviewPersonProposal(proposal.id, decision, edits);
+      onDecide(proposal.id);
+      toast(decision === "remember" ? `Remembered for ${proposal.person_name}.` : "Skipped.");
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(envelope ? `${envelope.what} ${envelope.todo}` : "That didn't reach the server.", "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const interpretation = proposal.type === "interpretation";
+  return (
+    <article className="bg-subtle border-subtle rounded-xl border p-5">
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+        {proposal.person_name} · {PROPOSAL_LABEL[proposal.type]}
+      </p>
+      <h3
+        className={`font-cal text-emphasis mt-2 text-xl font-bold leading-tight -tracking-[0.01em] ${
+          interpretation ? "italic" : ""
+        }`}
+      >
+        {proposal.text}
+      </h3>
+      <p className="text-default mt-2 text-sm font-semibold">{outcomeSentence(proposal, date, topic)}</p>
+      <p className="text-subtle mt-1 text-sm">From “{proposal.note_title}” · AI-suggested</p>
+
+      {DATED.includes(proposal.type) && (
+        <label className="text-subtle mt-3 block text-sm">
+          <span className="text-[11px] font-bold uppercase tracking-[0.08em]">Date</span>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="bg-default border-subtle text-default mt-1 block min-h-11 w-full rounded-lg border px-3"
+          />
+        </label>
+      )}
+      {proposal.type === "personal_detail" && (
+        <label className="text-subtle mt-3 block text-sm">
+          <span className="text-[11px] font-bold uppercase tracking-[0.08em]">Topic</span>
+          <select
+            value={topic}
+            onChange={(e) => setTopic(e.target.value)}
+            className="bg-default border-subtle text-default mt-1 block min-h-11 w-full rounded-lg border px-3"
+          >
+            <option value="">No topic</option>
+            {PROPOSAL_TOPICS.map((t) => (
+              <option key={t} value={t}>{t}</option>
+            ))}
+          </select>
+        </label>
+      )}
+
+      <div className="mt-4 flex gap-2">
+        <button type="button" disabled={busy} onClick={() => decide("skip")}
+          className="border-subtle text-subtle hover:border-emphasis min-h-11 flex-1 rounded-xl border text-sm font-bold disabled:opacity-60">
+          Skip
+        </button>
+        <button type="button" disabled={busy || (proposal.type === "upcoming" && !date)}
+          onClick={() => decide("remember")}
+          className="bg-inverted text-inverted min-h-11 flex-1 rounded-xl text-sm font-bold disabled:opacity-60">
+          Remember
+        </button>
+      </div>
+    </article>
+  );
+}
+
 function EmptyState({ trust }: { trust: ReviewTrust | undefined }) {
   const streak = usePolling(api.streak);
   return (
@@ -322,6 +453,8 @@ export function Triage() {
   // without waiting for the next poll, regardless of queue state.
   const [proposals, setProposals] = useState<SplitProposal[] | null>(null);
   const decidedProposals = useRef<Set<string>>(new Set());
+  const [memory, setMemory] = useState<PersonProposal[]>([]);
+  const decidedMemory = useRef<Set<number>>(new Set());
 
   useEffect(() => {
     if (review.data) {
@@ -334,6 +467,9 @@ export function Triage() {
       setProposals(
         review.data.split_proposals.filter((p) => !decidedProposals.current.has(p.id)),
       );
+      setMemory(
+        (review.data.person_proposals ?? []).filter((p) => !decidedMemory.current.has(p.id)),
+      );
     }
   }, [review.data]);
 
@@ -341,6 +477,22 @@ export function Triage() {
     decidedProposals.current.add(id);
     setProposals((cur) => (cur ? cur.filter((p) => p.id !== id) : cur));
   };
+
+  const decideMemory = (id: number) => {
+    decidedMemory.current.add(id);
+    setMemory((cur) => cur.filter((p) => p.id !== id));
+  };
+
+  const memoryCards = memory.length > 0 && (
+    <section className="space-y-4">
+      <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+        Worth remembering about people · {memory.length}
+      </p>
+      {memory.slice(0, PAGE).map((p) => (
+        <PersonProposalCard key={p.id} proposal={p} onDecide={decideMemory} />
+      ))}
+    </section>
+  );
 
   const decide = async (item: ReviewItem, type: NoteType, attendeeIds: string[] = []) => {
     // One tap = one decision. Animate out (instant under reduced motion), then POST.
@@ -401,6 +553,7 @@ export function Triage() {
     return (
       <div className="space-y-4">
         <EmptyState trust={review.data?.trust} />
+        {memoryCards}
         {splitProposals.map((p) => (
           <SplitProposalCard key={p.id} proposal={p} onDecide={decideProposal} />
         ))}
@@ -451,6 +604,7 @@ export function Triage() {
           {Math.min(PAGE, rest)} more
         </button>
       )}
+      {memoryCards}
       {splitProposals.map((p) => (
         <SplitProposalCard key={p.id} proposal={p} onDecide={decideProposal} />
       ))}

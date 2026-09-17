@@ -107,12 +107,36 @@ export interface SplitProposal {
   confidence: number;
 }
 
+// Pass RM: what a capture said about a known person, proposed for their note.
+// mirrors pipeline/proposals.py SECTIONS keys and TOPICS
+export type PersonProposalType =
+  | "fact" | "interpretation" | "commitment_mine" | "commitment_theirs" | "follow_up"
+  | "personal_detail" | "upcoming" | "milestone" | "need" | "company_knowledge"
+  | "person_update";
+export const PROPOSAL_TOPICS = ["family", "health", "home", "interests", "preference", "favour"] as const;
+
+export interface PersonProposal {
+  id: number;
+  type: PersonProposalType;
+  person_id: string;
+  person_name: string;
+  text: string;
+  topic: string;
+  date: string | null;
+  section: string;       // where Remember writes it
+  line: string;          // the exact line, before the date stamp
+  due: string | null;    // when it resurfaces, for Next action lines
+  note_id: string;
+  note_title: string;
+}
+
 export interface ReviewResponse {
   items: ReviewItem[];
   queue_total: number;
   accuracy: ReviewAccuracy | null;
   trust: ReviewTrust;
   split_proposals: SplitProposal[];
+  person_proposals: PersonProposal[];
 }
 
 export interface FailedItem {
@@ -463,6 +487,8 @@ export interface Person {
 export interface PersonDetail extends Person {
   context: string;
   needs: string;
+  facts: string;
+  interpretations: string;
   interaction_log: string;
 }
 

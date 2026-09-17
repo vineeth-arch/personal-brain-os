@@ -64,3 +64,8 @@
 - Pass Q: search result relevance ranking beyond title > frontmatter > body — within one rank, results sort by file path, not by how well they match (word proximity, match count, recency).
 - Pass Q: search doesn't cover `06-Todos/` daily files (those are checkbox lines, not frontmatter notes) or the `_System/my-voice.md` writing sample — both are intentionally out of scope, not an oversight, but worth a line if that ever surprises someone.
 - Pass 13: on-device OCR hint (a `.{stem}.ocr` sidecar, parallel to the `.{stem}.insight` one) as a free-cost-skip before any paid vision provider — kept from the earlier round's design; not yet wired into a Shortcut step.
+- Pass RM: bulk scoped reject view for person proposals (relationship-os-patterns: "unknown numbers never replied to", "AI-tagged likely junk" → preview → "Reject the rest", undoable). Today each card is decided one at a time, capped at 5 shown.
+- Pass RM: write `status: cold / dormant` to person notes — going-cold stays computed from `last_contact` + cadence, nothing persists the lifecycle yet.
+- Pass RM: proposal accuracy strip (B3-style: "N of the last 50 remembered unchanged") to earn trust before ever loosening the gate.
+- Pass RM: WhatsApp/Gmail as proposal sources inside the cockpit — Handshake already proposes from WhatsApp; the cockpit only reads voice/text/link captures. Gmail pulls still file as resources with no person proposals.
+- Pass RM: an undated `commitment_theirs` (`- open · …`) never resurfaces on its own — needs a "check in after N days" default if they pile up.

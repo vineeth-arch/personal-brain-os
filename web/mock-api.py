@@ -506,9 +506,34 @@ PEOPLE = [
     _person("20260701090400", "Tomás Ferreira", "client", "Casa Ferreira", "ready", 14, 2),
 ]
 
+# Pass RM: what captures said about known people, waiting on Remember/Skip.
+PERSON_PROPOSALS = (
+    []
+    if MODE_EMPTY
+    else [
+        {"id": 901, "type": "upcoming", "person_id": "20260701090100",
+         "person_name": "Priya Raman", "text": "Moving to Dubai", "topic": "",
+         "date": "2026-10-12", "section": "Next action",
+         "line": "Ask how it went: Moving to Dubai (12 Oct)", "due": "2026-10-13",
+         "note_id": "20260917101500", "note_title": "coffee with priya"},
+        {"id": 902, "type": "personal_detail", "person_id": "20260701090100",
+         "person_name": "Priya Raman", "text": "Daughter starts school next month",
+         "topic": "family", "date": None, "section": "Context",
+         "line": "family · Daughter starts school next month", "due": None,
+         "note_id": "20260917101500", "note_title": "coffee with priya"},
+        {"id": 903, "type": "interpretation", "person_id": "20260701090200",
+         "person_name": "Omar Haddad", "text": "Seems unsure about the budget",
+         "topic": "", "date": None, "section": "Interpretations",
+         "line": "Seems unsure about the budget", "due": None,
+         "note_id": "20260916183000", "note_title": "tashkeel walkthrough"},
+    ]
+)
+
 PEOPLE_DETAIL_EXTRA = {
     "context": "Met at a studio visit in Alserkal. Runs the artist programme.",
     "needs": "A studio partner who can hold a full season.",
+    "facts": "- 2026-09-17 · Moving to Dubai in October · ai",
+    "interpretations": "- 2026-09-17 · Seems keen to expand the programme · ai",
     "interaction_log": "- 2026-07-20 — spoke about the season programme",
 }
 
@@ -982,6 +1007,7 @@ class Handler(BaseHTTPRequestHandler):
                     "accuracy": ACCURACY,
                     "trust": TRUST,
                     "split_proposals": SPLIT_PROPOSALS,
+                    "person_proposals": PERSON_PROPOSALS,
                 })
             if path == "/api/failed":
                 return self._send(200, {"items": FAILED_ITEMS})
@@ -1496,6 +1522,21 @@ class Handler(BaseHTTPRequestHandler):
                     if item["id"] == note_id:
                         REVIEW_ITEMS.remove(item)
                 return self._send(200, {"ok": True, "moved_to": f"{folder}/approved-note.md"})
+            if path.startswith("/api/review/proposal/"):
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                print("PROPOSAL DECISION", path.split("/")[4], raw)
+                pid = int(path.split("/")[4])
+                proposal = next((p for p in PERSON_PROPOSALS if p["id"] == pid), None)
+                if proposal is None:
+                    return self._send(404, {"error": {
+                        "what": "That card isn't waiting anymore.",
+                        "cause": "It was already decided, or the id is unknown.",
+                        "todo": "Refresh the triage screen."}})
+                PERSON_PROPOSALS.remove(proposal)
+                decision = json.loads(raw or b"{}").get("decision")
+                return self._send(200, {"ok": True, "decision": decision,
+                                        "written": "2026-07-01-priya-raman.md"
+                                        if decision == "remember" else None})
             if path.startswith("/api/review/split/"):
                 note_id = path.split("/")[4]
                 raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))

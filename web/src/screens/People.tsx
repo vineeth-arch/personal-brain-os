@@ -531,6 +531,27 @@ function DraftDrawer({
 
         <PushRow person={person} available={pushAvailable} onPushed={onPushed} />
 
+        {/* Facts and interpretations never share a list — a guess must not
+            read as something they said. */}
+        {detail?.facts && (
+          <details className="mt-5" open>
+            <summary className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+              What they've told me
+            </summary>
+            <pre className="text-default mt-2 whitespace-pre-wrap text-sm">{detail.facts}</pre>
+          </details>
+        )}
+        {detail?.interpretations && (
+          <details className="mt-5">
+            <summary className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
+              My interpretations — not things they said
+            </summary>
+            <pre className="text-subtle mt-2 whitespace-pre-wrap text-sm italic">
+              {detail.interpretations}
+            </pre>
+          </details>
+        )}
+
         {detail?.interaction_log && (
           <details className="mt-5">
             <summary className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">

@@ -231,6 +231,16 @@ export const api = {
       `/api/review/split/${encodeURIComponent(id)}`,
       { method: "POST", body: JSON.stringify({ decision }) },
     ),
+  // Pass RM: remember (write to the person's note) or skip a person proposal.
+  reviewPersonProposal: (
+    id: number,
+    decision: "remember" | "skip",
+    edits: { date?: string; topic?: string } = {},
+  ) =>
+    request<{ ok: boolean; decision: string; written: string | null }>(
+      `/api/review/proposal/${id}`,
+      { method: "POST", body: JSON.stringify({ decision, ...edits }) },
+    ),
   capture: (text: string, tag: CaptureTag | null, captureKey?: string) =>
     request<{ id: string; status: string }>("/api/capture", {
       method: "POST",

@@ -123,7 +123,7 @@ def _parse_date(raw: str) -> date | None:
         return None
 
 
-_MARKER = re.compile(r"[ \t]*<!--.*?-->")
+_MARKER = re.compile(r"[ \t]*<!-- bc:[^>]*-->")   # only idempotency markers — provenance comments stay
 _CITE = re.compile(r"[ \t]*· derived-from:: \[\[[^\]]*\]\] \(ai, approved\)")
 
 
