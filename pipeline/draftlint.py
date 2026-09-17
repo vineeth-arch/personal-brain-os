@@ -25,7 +25,8 @@ class Lint:
 # Date patterns used by `no_date`: if any of these match, a date is present.
 _DATE_PATTERNS = (
     r"\b(mon|tue|wed|thu|fri|sat|sun)[a-z]*\b",
-    r"\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\b",
+    r"\b(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|"
+    r"sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b",
     r"\b\d{1,2}(st|nd|rd|th)\b",
     r"\b\d{1,2}[/-]\d{1,2}\b",
     r"\b(today|tomorrow|tonight|this week|next week)\b",

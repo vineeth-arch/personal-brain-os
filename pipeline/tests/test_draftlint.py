@@ -38,6 +38,23 @@ def test_no_date_present_on_ask():
     assert "no_date" not in _codes(result)
 
 
+def test_no_date_month_regex_does_not_match_deck():
+    result = lint("Can you send the deck?", touch_type="ask", channel="whatsapp")
+    assert "no_date" in _codes(result)
+
+
+def test_no_date_month_regex_does_not_match_mayor():
+    result = lint("Can you send the mayor?", touch_type="ask", channel="whatsapp")
+    assert "no_date" in _codes(result)
+
+
+def test_no_date_month_regex_still_matches_real_dates():
+    result = lint("Let's talk in December", touch_type="ask")
+    assert "no_date" not in _codes(result)
+    result2 = lint("I'll send it by Dec 5", touch_type="ask")
+    assert "no_date" not in _codes(result2)
+
+
 # --- em_dash ---
 
 def test_em_dash_present():
