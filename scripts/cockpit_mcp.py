@@ -169,6 +169,15 @@ def people_draft(person_id: str, channel: str = "") -> dict:
 
 
 @mcp.tool(
+    description="Four reads, the matching Greene situation, a draft in the "
+                "owner's voice, and the lints that fired. Text only; this "
+                "server cannot send messages.")
+def people_reply(person_id: str, message: str) -> dict:
+    return call("POST", f"/api/people/{urllib.parse.quote(person_id)}/reply",
+                {"message": message})
+
+
+@mcp.tool(
     description="Drop a thought into the capture inbox, exactly as the cockpit's "
                 "own capture box does — the pipeline transcribes, classifies and "
                 "files it. Optional tag routes it for free: one of todo, idea, "

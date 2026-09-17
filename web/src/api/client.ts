@@ -22,9 +22,11 @@ import type {
   ChannelKind,
   ContactResult,
   EnrichResult,
+  HeldItem,
+  LintResult,
   NoteType,
   Person,
-  PersonDetail,
+  PersonDetailV2,
   PersonDraft,
   PushAvailability,
   PushPreview,
@@ -47,6 +49,9 @@ import type {
   Streak,
   VoiceStatus,
   WarmthStage,
+  ReplyResult,
+  Situation,
+  TodayResponse,
 } from "./types";
 
 const BASE_KEY = "cockpit.apiBase";
@@ -303,11 +308,58 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ name, channel: { kind, value } }),
     }),
-  person: (id: string) => request<PersonDetail>(`/api/people/${id}`),
-  personDraft: (id: string, channel?: string) =>
+  person: (id: string, opts: { desk?: boolean } = {}) =>
+    request<PersonDetailV2>(`/api/people/${id}${opts.desk ? "?desk=1" : ""}`),
+  personDraft: (
+    id: string,
+    body: {
+      channel?: string;
+      touch_type?: string;
+      payload?: string;
+      outcome?: string;
+      situation?: string;
+      include_sensitive?: boolean;
+    } = {},
+  ) =>
     request<PersonDraft>(`/api/people/${id}/draft`, {
       method: "POST",
-      body: JSON.stringify({ channel: channel ?? null }),
+      body: JSON.stringify({ channel: body.channel ?? null, ...body }),
+    }),
+  peopleToday: () => request<TodayResponse>("/api/people/today"),
+  greeneSituations: () =>
+    request<{ situations: Situation[] }>("/api/people/greene"),
+  lintDraft: (body: {
+    text: string;
+    channel?: string;
+    person_id?: string;
+    touch_type?: string;
+  }) =>
+    request<LintResult>("/api/people/lint", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  closePromise: (id: string, body: { key: string; result: string; side: string }) =>
+    request<PersonDetailV2>(`/api/people/${id}/promise`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  ownerEdit: (id: string, body: { field: string; value: string }) =>
+    request<PersonDetailV2 & { warning: string | null }>(`/api/people/${id}/owner`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  hold: (id: string, body: { text: string; channel?: string; touch_type?: string }) =>
+    request<{ until: string }>(`/api/people/${id}/hold`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  unhold: (id: string) =>
+    request<{ ok: boolean }>(`/api/people/${id}/hold`, { method: "DELETE" }),
+  held: () => request<{ items: HeldItem[] }>("/api/people/held"),
+  reply: (id: string, message: string) =>
+    request<ReplyResult>(`/api/people/${id}/reply`, {
+      method: "POST",
+      body: JSON.stringify({ message }),
     }),
   logContact: (
     id: string,

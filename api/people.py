@@ -274,10 +274,40 @@ def write_voice(vault_path: Path, samples: list[str]) -> dict:
 
 # ---- drafting ------------------------------------------------------------------
 
-def build_draft_prompt(person: relationships.Person, voice: str, channel: str) -> str:
+# Doctrine (SCHEMA-REFERENCE.md §7 / A11): the one line the prompt adds for a
+# commercial contact's `conversation_stage`. Never fires for a non-commercial
+# person — see the family/friend line below instead.
+_STAGE_LINES = {
+    "probative": "Share perspective only, no pitch.",
+    "qualifying": "Establish fit both ways, including budget and who decides.",
+    "value": "Agree what it is worth before any proposal.",
+    "closing": "Offer options and a date.",
+    "delivering": "Report outcomes and say the kind truth if one is due.",
+    "past": "Report outcomes and say the kind truth if one is due.",
+}
+
+
+def _sensitive_filtered(text: str, include_sensitive: bool) -> str:
+    """A note section, with any `#sensitive` line dropped unless the owner
+    opted that touch in (Global Constraints: interpretations never feed a
+    draft, #sensitive lines excluded unless the owner opts in per touch)."""
+    text = text or ""
+    if include_sensitive:
+        return text.strip()
+    return "\n".join(ln for ln in text.splitlines() if "#sensitive" not in ln).strip()
+
+
+def build_draft_prompt(person: relationships.Person, voice: str, channel: str, *,
+                       rules: str = "", touch_type: str = "", payload: str = "",
+                       outcome: str = "", situation: greene.Situation | None = None,
+                       include_sensitive: bool = False) -> str:
     log_text = person.interaction_log()
-    context = person.sections.get("Context", "").strip()
-    needs = person.sections.get("Needs", "").strip()
+    context = _sensitive_filtered(person.sections.get("Context", ""), include_sensitive)
+    current_state = _sensitive_filtered(person.sections.get("Current state", ""), include_sensitive)
+    future_state = _sensitive_filtered(person.sections.get("Future state", ""), include_sensitive)
+    needs = _sensitive_filtered(person.sections.get("Needs", ""), include_sensitive)
+    facts = _sensitive_filtered(person.sections.get("Facts", ""), include_sensitive)
+    next_steps = _sensitive_filtered(person.next_action(), include_sensitive)
 
     leash = (
         "Write ONLY from what is written above. Do not invent meetings, "
@@ -286,19 +316,69 @@ def build_draft_prompt(person: relationships.Person, voice: str, channel: str) -
         "than inventing a shared history — a vague honest note is fine, a "
         "confident wrong one is not."
     )
-    return (
+
+    prompt = (
         "Here are messages I have actually sent. Match this voice exactly — "
         f"length, greeting, punctuation, formality:\n\n{voice}\n\n"
+    )
+    if rules:
+        prompt += f"---\nRules for every draft:\n{rules}\n\n"
+
+    prompt += (
         f"---\nI want to reconnect with {person.name}"
         + (f" ({person.relationship}" + (f" at {person.company}" if person.company else "") + ")"
            if person.relationship or person.company else "")
-        + f", over {channel}.\n\n"
-        + (f"What I know about them:\n{context}\n\n" if context else "")
-        + (f"What they need:\n{needs}\n\n" if needs else "")
-        + (f"Our history:\n{log_text}\n\n" if log_text
-           else "Our history: nothing logged yet — we have not spoken since I made this note.\n\n")
-        + f"{leash}\n\nReturn only the message text, no preamble, no subject line."
+        + f", over {channel}.\n"
+        + f"Language: {person.language or 'en'}.\n\n"
     )
+
+    prompt += (
+        (f"What I know about them:\n{context}\n\n" if context else "")
+        + (f"What is going on for them:\n{current_state}\n\n" if current_state else "")
+        + (f"Where they want to get to:\n{future_state}\n\n" if future_state else "")
+        + (f"What they need:\n{needs}\n\n" if needs else "")
+        + (f"Things they told me:\n{facts}\n\n" if facts else "")
+        + (f"Open next steps:\n{next_steps}\n\n" if next_steps else "")
+    )
+
+    prompt += (
+        f"Our history:\n{log_text}\n\n" if log_text
+        else "Our history: nothing logged yet — we have not spoken since I made this note.\n\n"
+    )
+
+    if touch_type:
+        prompt += f"This message is a {touch_type} touch."
+        if payload:
+            prompt += f" It carries exactly one payload: {payload}"
+        prompt += "\n\n"
+
+    if person.commercial:
+        if person.conversation_stage in _STAGE_LINES:
+            prompt += _STAGE_LINES[person.conversation_stage] + "\n\n"
+    else:
+        prompt += ("This person is family or a friend. Never ask for business, "
+                   "referrals, introductions or favours.\n\n")
+
+    if outcome:
+        prompt += f"The outcome I want: {outcome}\n\n"
+    if situation is not None:
+        prompt += (f"Situation: {situation.title}. Move: {situation.move}. "
+                   f"Adapt this line, do not copy it: {situation.line}\n\n")
+
+    if channel == "whatsapp":
+        prompt += "Write 2 to 4 short lines.\n\n"
+    elif channel == "email":
+        prompt += 'Start with a line "Subject: …", then the body, under 120 words.\n\n'
+
+    prompt += (
+        f"{leash} No em dashes, no emojis, no exclamation marks, no opener that "
+        "praises them, no closing summary.\n\n"
+    )
+
+    prompt += "Return only the message text, no preamble, "
+    prompt += "subject line first." if channel == "email" else "no subject line."
+
+    return prompt
 
 
 def _log_attempts(events, person_id: str, attempts: list) -> None:
@@ -317,12 +397,117 @@ def _log_attempts(events, person_id: str, attempts: list) -> None:
         log.exception("failed to log draft LLM attempts")
 
 
+def _split_subject(text: str, channel: str) -> tuple[str, str]:
+    """For an email draft whose first line is `Subject: ...`, pull that line
+    out and return (body, subject); otherwise (text, "")."""
+    if channel != "email":
+        return text, ""
+    first_line, sep, rest = text.partition("\n")
+    if first_line.strip().startswith("Subject:"):
+        subject = first_line.strip()[len("Subject:"):].strip()
+        return rest.strip(), subject
+    return text, ""
+
+
 def draft(vault_path: Path, person_id: str, channel: str | None,
-          config, *, router=None, priority: list[str] | None = None, events=None) -> dict | None:
+          config, *, router=None, priority: list[str] | None = None, events=None,
+          touch_type: str = "", payload: str = "", outcome: str = "",
+          situation: str = "", include_sensitive: bool = False,
+          today: date | None = None) -> dict | None:
     """A reconnection message in the owner's voice. Returns None for unknown id.
 
     Raises LookupError when the voice file is missing — the caller turns that
     into a plain-English refusal rather than drafting in a generic voice.
+
+    Seeds `_System/draft-rules.md` and, if a `situation` code is given,
+    `_System/greene-helper.md`, from the repo's copies the first time either
+    is missing (R28) — each seed write is committed once, on the request that
+    caused it.
+    """
+    person = relationships.find_person(vault_path, person_id)
+    if not person:
+        return None
+    status = voice_status(vault_path)
+    if not status["exists"]:
+        raise LookupError(VOICE_FILE)
+    today = today or date.today()
+
+    rules_text, wrote_rules = greene.ensure(Path(vault_path), greene.RULES_FILE)
+    if wrote_rules:
+        git_commit_vault(Path(vault_path), "api: seeded draft-rules.md")
+
+    situation_obj = None
+    if situation:
+        helper_text, wrote_helper = greene.ensure(Path(vault_path))
+        if wrote_helper:
+            git_commit_vault(Path(vault_path), "api: seeded greene-helper.md")
+        situation_obj = next((s for s in greene.parse(helper_text) if s.code == situation), None)
+
+    chosen = channel or person.preferred_channel(priority) or "whatsapp"
+    voice = voice_path(vault_path).read_text(encoding="utf-8")
+    prompt = build_draft_prompt(person, voice, chosen, rules=rules_text, touch_type=touch_type,
+                                payload=payload, outcome=outcome, situation=situation_obj,
+                                include_sensitive=include_sensitive)
+    text, provider, attempts = (router or llm.complete_text)(prompt, config)
+    _log_attempts(events, person_id, attempts)
+    if not text:
+        return {"text": "", "subject": "", "channel": chosen, "channels": person.channels,
+                "provider": None, "attempts": [a.__dict__ for a in attempts],
+                "lints": draftlint.lint("", channel=chosen, touch_type=touch_type)}
+
+    body, subject = _split_subject(text.strip(), chosen)
+    touches = touchlog.parse_log(person.raw_sections.get("Interaction log", ""))
+    quiet = ledger.is_quiet(person, touches, today)
+    lints = draftlint.lint(body, channel=chosen, tier=person.tier, touch_type=touch_type, quiet=quiet)
+    return {
+        "text": body,
+        "subject": subject,
+        "channel": chosen,
+        # raw values only — the link is built in the browser (CLAUDE.md §4)
+        "channels": person.channels,
+        "provider": provider,
+        "attempts": [a.__dict__ for a in attempts],
+        "lints": lints,
+    }
+
+
+# ---- reply -----------------------------------------------------------------------
+
+def _situation_prompt(situations: list, message: str) -> str:
+    lines = "\n".join(f"{s.code} {s.title}" for s in situations)
+    return (
+        "Pick the one situation code that best fits this incoming message, or null.\n"
+        f"{lines}\n\nMESSAGE:\n{message}\n\n"
+        'Return ONLY JSON {"code": "3.x"} or {"code": null}.'
+    )
+
+
+def _validate_situation_code(data: object) -> str | None:
+    if not isinstance(data, dict) or "code" not in data:
+        return "must be a JSON object with a code key"
+    code = data["code"]
+    if code is not None and not isinstance(code, str):
+        return "code must be a string or null"
+    return None
+
+
+def _reply_touch_type(code: str | None) -> str:
+    if code in ("3.4", "3.15"):
+        return "kind_truth"
+    if code == "3.11":
+        return "ask"
+    return "remember"
+
+
+def reply(vault_path: Path, person_id: str, message: str, config, *,
+         router=None, priority: list[str] | None = None, events=None,
+         today: date | None = None) -> dict | None:
+    """The Four Reads, the matching Greene situation, and a draft in the
+    owner's voice for an incoming message. Returns None for an unknown id.
+
+    Raises LookupError when the voice file is missing — the same refusal
+    `draft()` gives, since a reply is just a draft with its touch_type and
+    payload computed from the incoming message rather than chosen by hand.
     """
     person = relationships.find_person(vault_path, person_id)
     if not person:
@@ -331,21 +516,34 @@ def draft(vault_path: Path, person_id: str, channel: str | None,
     if not status["exists"]:
         raise LookupError(VOICE_FILE)
 
-    chosen = channel or person.preferred_channel(priority) or "whatsapp"
-    voice = voice_path(vault_path).read_text(encoding="utf-8")
-    prompt = build_draft_prompt(person, voice, chosen)
-    text, provider, attempts = (router or llm.complete_text)(prompt, config)
-    _log_attempts(events, person_id, attempts)
-    if not text:
-        return {"text": "", "channel": chosen, "channels": person.channels,
-                "provider": None, "attempts": [a.__dict__ for a in attempts]}
+    touches = touchlog.parse_log(person.raw_sections.get("Interaction log", ""))
+    reads = greene.reads(person, touches)
+
+    helper_text, wrote = greene.ensure(Path(vault_path))
+    if wrote:
+        git_commit_vault(Path(vault_path), "api: seeded greene-helper.md")
+    situations = greene.parse(helper_text)
+    codes = {s.code for s in situations}
+
+    prompt = _situation_prompt(situations, message)
+    data, _provider, _attempts = llm.complete_json(prompt, config, _validate_situation_code)
+    code = data.get("code") if isinstance(data, dict) else None
+    if code not in codes:
+        code = None                    # P25 — an unrecognised code is null, not a guess
+
+    touch_type = _reply_touch_type(code)
+    payload = f"Reply to: {message[:200]}"
+
+    draft_result = draft(vault_path, person_id, None, config, router=router, priority=priority,
+                         events=events, touch_type=touch_type, payload=payload,
+                         situation=code or "", today=today)
+    lint_info = draft_result.get("lints") or {"lints": [], "seducer": []}
     return {
-        "text": text.strip(),
-        "channel": chosen,
-        # raw values only — the link is built in the browser (CLAUDE.md §4)
-        "channels": person.channels,
-        "provider": provider,
-        "attempts": [a.__dict__ for a in attempts],
+        "reads": reads,
+        "situation": code,
+        "draft": draft_result,
+        "lints": lint_info.get("lints", []),
+        "seducer": lint_info.get("seducer", []),
     }
 
 

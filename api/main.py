@@ -190,6 +190,15 @@ class DraftBody(BaseModel):
 
 class PersonDraftBody(BaseModel):
     channel: str | None = None
+    touch_type: str = ""
+    payload: str = ""
+    outcome: str = ""
+    situation: str = ""
+    include_sensitive: bool = False
+
+
+class ReplyBody(BaseModel):
+    message: str
 
 
 class ContactBody(BaseModel):
@@ -1007,7 +1016,10 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         events = EventLog(db_path, Path(config.vault_path))
         try:
             result = people_mod.draft(Path(config.vault_path), person_id, body.channel,
-                                      config, events=events)
+                                      config, events=events, touch_type=body.touch_type,
+                                      payload=body.payload, outcome=body.outcome,
+                                      situation=body.situation,
+                                      include_sensitive=body.include_sensitive)
         except LookupError:
             raise Envelope(
                 409, "Drafts need your own voice on file first.",
@@ -1026,6 +1038,29 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 502, "No model could write the draft.",
                 "Every provider in the chain failed or has no key set.",
                 "Check the model keys in the server's shell, then try again.")
+        return result
+
+    @app.post("/api/people/{person_id}/reply")
+    def person_reply(person_id: str, body: ReplyBody, config=Depends(require_token)):
+        """Four reads, the matching Greene situation, and a draft — the
+        composer's answer to an incoming message rather than a cold outreach."""
+        events = EventLog(db_path, Path(config.vault_path))
+        try:
+            result = people_mod.reply(Path(config.vault_path), person_id, body.message,
+                                      config, events=events)
+        except LookupError:
+            raise Envelope(
+                409, "Drafts need your own voice on file first.",
+                "_System/my-voice.md doesn't exist yet, and a draft written without "
+                "it would sound like a chatbot, not like you.",
+                "Paste 3–5 messages you've actually sent in Settings → My voice, then try again.")
+        finally:
+            events.close()
+        if result is None:
+            raise Envelope(
+                404, "That person isn't in the vault.",
+                f"No note in 07-People has the id {person_id}.",
+                "Refresh the People screen.")
         return result
 
     @app.post("/api/people/{person_id}/contact")

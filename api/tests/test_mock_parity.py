@@ -1,6 +1,9 @@
-"""D16: web/mock-api.py hand-mirrors api/notes.AUDIO_MIME_EXT (the mock server
-can't import the real package — it runs standalone with no dependencies). This
-is a tripwire so the two sets can't silently drift apart."""
+"""D16: web/mock-api.py hand-mirrors api/notes.AUDIO_MIME_EXT rather than
+importing it — the mock still runs standalone with no third-party
+dependencies, even though it now imports pipeline/draftlint.py and
+pipeline/greene.py (R18) for the /api/people/lint and /api/people/greene
+routes. This is a tripwire so the two AUDIO_MIME_TYPES sets can't silently
+drift apart."""
 from __future__ import annotations
 
 import ast

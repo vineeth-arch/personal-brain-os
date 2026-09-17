@@ -494,12 +494,187 @@ export interface PersonDetail extends Person {
   interaction_log: string;
 }
 
+// mirrors pipeline/touchlog.py OUT_TYPES — the outgoing touch_type vocabulary
+export const OUT_TYPES = [
+  "remember",
+  "give_know",
+  "give_who",
+  "celebrate",
+  "keep_promise",
+  "keep_promise_late",
+  "kind_truth",
+  "thank",
+  "invite",
+  "ask",
+  "presence",
+] as const;
+export type OutTouchType = (typeof OUT_TYPES)[number];
+
+// ---- Relationship OS v2.2 (Pass 8-10) ----------------------------------------
+
+export interface WorkingTogether {
+  conversation_stage: string;
+  buyer_role: string;
+  fit: string;
+  no_economic_buyer: boolean;
+}
+
+export interface Reliability {
+  kept: number;
+  late: number;
+  dropped: number;
+}
+
+export interface LedgerCounts {
+  gives90: number;
+  asks90: number;
+  received90: number;
+  gives180: number;
+  asks180: number;
+  received180: number;
+}
+
+export interface NextActionRow {
+  due: string | null;
+  text: string;
+  key: string;
+  closed: boolean;
+  view: string;
+}
+
+export interface TouchRow {
+  day: string;
+  direction: "out" | "in";
+  channel: string;
+  touch_type: string;
+  summary: string;
+  greene: string;
+  requested: boolean;
+  legacy: boolean;
+}
+
+export interface Reads {
+  pride: string;
+  record: string;
+}
+
+export interface QuietState {
+  until: string;
+  line: string;
+}
+
+export interface PersonDetailV2 extends PersonDetail {
+  tier: string;
+  relationships: string[];
+  known_for: string;
+  recall_trigger: string;
+  language: string;
+  preferred_channel: string;
+  commercial: boolean;
+  dates: { birthday: string; anniversary: string };
+  working_together: WorkingTogether | null;
+  ledger: LedgerCounts;
+  reliability: Reliability;
+  reliability_line: string;
+  flags: string[];
+  inside_floor: boolean;
+  quiet: QuietState | null;
+  next_actions: NextActionRow[];
+  touches: TouchRow[];
+  current_state: string;
+  future_state: string;
+  can_help: string;
+  how_they_communicate: string;
+  updates: string;
+  reads: Reads;
+  presets: string[];
+  quiet_until: string | null;
+  status_computed: string;
+  list_of_20: boolean;
+  energy?: string;
+}
+
+export interface LintItem {
+  code: string;
+  start: number;
+  end: number;
+  snippet: string;
+  message: string;
+}
+
+export interface LintResult {
+  lints: LintItem[];
+  seducer: string[];
+}
+
 export interface PersonDraft {
   text: string;
+  subject: string;
   channel: string;
   // raw values only — the deep link is built in the browser (CLAUDE.md §4)
   channels: PersonChannels;
   provider: string | null;
+  lints: LintResult;
+}
+
+export interface QueueItem {
+  person_id: string;
+  name: string;
+  tier: string;
+  queue: string;
+  touch_type: string;
+  payload: string;
+  source_key: string;
+  due: string | null;
+  channel: string;
+  flagged: boolean;
+  held: boolean;
+}
+
+export const QUEUE_VIEWS = [
+  "owe_reply",
+  "promises",
+  "ask_about",
+  "celebrate",
+  "follow_up",
+  "waiting_on_them",
+  "reconnect",
+] as const;
+export type QueueView = (typeof QUEUE_VIEWS)[number];
+
+export interface TodayResponse {
+  strip: QueueItem[];
+  overflow: number;
+  queues: Record<QueueView, QueueItem[]>;
+  labels: Record<QueueView, string>;
+  tiers: Record<"inner" | "core" | "active", { count: number; cap: number }>;
+  untiered: number;
+}
+
+export interface Situation {
+  code: string;
+  title: string;
+  happening: string;
+  trap: string;
+  move: string;
+  line: string;
+}
+
+export interface HeldItem {
+  person_id: string;
+  text: string;
+  channel: string;
+  touch_type: string;
+  held_until: string;
+  ready: boolean;
+}
+
+export interface ReplyResult {
+  reads: Reads;
+  situation: string | null;
+  draft: PersonDraft;
+  lints: LintItem[];
+  seducer: string[];
 }
 
 export interface ContactResult extends Person {

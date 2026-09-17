@@ -176,7 +176,7 @@ def test_missing_configuration_names_the_missing_variable(monkeypatch):
 @pytest.mark.anyio
 async def test_the_registered_tools_are_exactly_the_agreed_set(cockpit):
     names = {tool.name for tool in await cockpit.mcp.list_tools()}
-    assert names == {"cockpit_status", "people_list", "people_draft",
+    assert names == {"cockpit_status", "people_list", "people_draft", "people_reply",
                      "capture_text", "todos_today"}
 
 

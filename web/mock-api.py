@@ -18,9 +18,17 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from urllib.parse import unquote
 from datetime import date, datetime, timedelta
 from http.server import BaseHTTPRequestHandler, HTTPServer
+
+# This file is launched as `python3 web/mock-api.py`, so sys.path[0] is web/,
+# not the repo root — without this, `from pipeline import ...` below fails.
+# R18/R17: the mock now runs the real draft linter and Greene parser rather
+# than hand-rolling a second copy of either.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from pipeline import draftlint, greene  # noqa: E402
 
 PORT = 8000
 if "--port" in sys.argv:
@@ -478,9 +486,9 @@ FAIL_ENVELOPE = {
 
 
 # Note type → folder, mirroring pipeline/route.py TYPE_FOLDER (keep in sync).
-# --- people (Pass MW) --------------------------------------------------------
+# --- people (Pass MW; v2.2 fields added in T10) ------------------------------
 def _person(pid, name, relationship, company, stage, cadence, days, action="", channels=None,
-            dex_id=""):
+            dex_id="", tier="", relationships_list=None, quiet_until=None, known_for=""):
     return {
         "id": pid, "name": name, "relationship": relationship, "company": company,
         "dex_id": dex_id, "dex_deeplink": "",
@@ -493,17 +501,31 @@ def _person(pid, name, relationship, company, stage, cadence, days, action="", c
         "channels": channels if channels is not None
         else {"whatsapp": "+971500000001", "email": "priya@example.com"},
         "next_action": action, "sample": True, "file": f"2026-07-01-{pid}.md",
+        # v2.2 (SCHEMA-REFERENCE.md §7)
+        "tier": tier, "relationships": relationships_list or [], "known_for": known_for,
+        "status_computed": "active", "quiet_until": quiet_until, "list_of_20": False,
     }
 
 
+TODAY = date.today()
+BIRTHDAY_IN_3 = (TODAY + timedelta(days=3)).strftime("%m-%d")
+QUIET_UNTIL = (TODAY + timedelta(days=20)).isoformat()
+
+# Three T10 fixtures, by role: a core client with an open promise due today,
+# an inner-tier family contact who is quiet, and an untiered prospect with
+# nothing payload-carrying to say (Priya, Aisha, Omar below); Tomás rounds
+# out the list for the older push/warmth/enrich fixtures.
 PEOPLE = [
     _person("20260701090100", "Priya Raman", "client", "Alserkal Avenue",
-            "conversing", 3, 24, "Send the studio deck today", dex_id="dex-priya"),
+            "conversing", 3, 24, "Send the studio deck today", dex_id="dex-priya",
+            tier="core", relationships_list=["client"], known_for="the season programme"),
     _person("20260701090200", "Omar Haddad", "prospect", "Tashkeel", "researched", 5, 12,
-            channels={"email": "omar@example.com"}),
-    _person("20260701090300", "Aisha Noor", "prospect", "Dubai Design District",
-            "identified", 7, None, channels={"linkedin": "aishanoor"}),
-    _person("20260701090400", "Tomás Ferreira", "client", "Casa Ferreira", "ready", 14, 2),
+            channels={"email": "omar@example.com"}, tier="", relationships_list=["prospect"]),
+    _person("20260701090300", "Aisha Noor", "sister", "", "warm", 30, 5,
+            channels={"whatsapp": "+971500000099"}, tier="inner",
+            relationships_list=["family"], quiet_until=QUIET_UNTIL),
+    _person("20260701090400", "Tomás Ferreira", "client", "Casa Ferreira", "ready", 14, 2,
+            tier="core", relationships_list=["client"]),
 ]
 
 # Pass RM: what captures said about known people, waiting on Remember/Skip.
@@ -529,13 +551,158 @@ PERSON_PROPOSALS = (
     ]
 )
 
-PEOPLE_DETAIL_EXTRA = {
-    "context": "Met at a studio visit in Alserkal. Runs the artist programme.",
+# T8's per-person detail extras — the fields GET /api/people/{id} adds on top
+# of the list-row shape above (api/people.py detail()). Keyed by id; a person
+# not listed here falls back to _DEFAULT_DETAIL_EXTRA.
+_DEFAULT_WORKING_TOGETHER = None
+_DEFAULT_DETAIL_EXTRA = {
+    "context": "Met at a studio visit in Alserkal.",
     "needs": "A studio partner who can hold a full season.",
-    "facts": "- 2026-09-17 · Moving to Dubai in October · ai",
-    "interpretations": "- 2026-09-17 · Seems keen to expand the programme · ai",
-    "interaction_log": "- 2026-07-20 — spoke about the season programme",
+    "facts": "", "interpretations": "", "interaction_log": "- 2026-07-20 — coffee",
+    "known_for": "", "recall_trigger": "", "language": "en", "preferred_channel": "whatsapp",
+    "commercial": True, "dates": {"birthday": "", "anniversary": ""},
+    "working_together": _DEFAULT_WORKING_TOGETHER,
+    "ledger": {"gives90": 0, "asks90": 0, "received90": 0,
+              "gives180": 0, "asks180": 0, "received180": 0},
+    "reliability": {"kept": 0, "late": 0, "dropped": 0}, "reliability_line": "",
+    "flags": [], "inside_floor": True, "quiet": None,
+    "next_actions": [], "touches": [],
+    "current_state": "", "future_state": "", "can_help": "",
+    "how_they_communicate": "", "updates": "",
+    "reads": {"pride": "", "record": ""}, "presets": [],
 }
+
+PEOPLE_DETAIL_EXTRA = {
+    # core client — an open "I promised:" due today, a birthday in 3 days,
+    # a mixed reliability record, and a pride line for the Greene panel.
+    "20260701090100": {
+        "context": "Met at a studio visit in Alserkal. Runs the artist programme.",
+        "needs": "A studio partner who can hold a full season.",
+        "facts": "- 2026-09-17 · Moving to Dubai in October · ai",
+        "interpretations": "- 2026-09-17 · Seems keen to expand the programme · ai",
+        "interaction_log": "- 2026-07-20 — spoke about the season programme",
+        "known_for": "the season programme", "recall_trigger": "studio",
+        "language": "en", "preferred_channel": "whatsapp", "commercial": True,
+        "dates": {"birthday": BIRTHDAY_IN_3, "anniversary": ""},
+        "working_together": {"conversation_stage": "probative", "buyer_role": "economic",
+                             "fit": "good", "no_economic_buyer": False},
+        "ledger": {"gives90": 3, "asks90": 0, "received90": 1,
+                  "gives180": 5, "asks180": 1, "received180": 2},
+        "reliability": {"kept": 2, "late": 0, "dropped": 1},
+        "reliability_line": "their promises: 2 kept · 0 late · 1 dropped",
+        "flags": [], "inside_floor": True,
+        "quiet": None,
+        "next_actions": [
+            {"due": TODAY.isoformat(), "text": "I promised: send the studio deck",
+             "key": "promise-priya-1", "closed": False, "view": "promises"},
+        ],
+        "touches": [
+            {"day": "2026-07-20", "direction": "out", "channel": "whatsapp",
+             "touch_type": "give_know", "summary": "sent the studio deck outline",
+             "greene": "", "requested": False, "legacy": False},
+            {"day": "2026-06-10", "direction": "in", "channel": "whatsapp",
+             "touch_type": "promise_kept", "summary": "delivered the intro she promised",
+             "greene": "", "requested": False, "legacy": False},
+            {"day": "2026-05-01", "direction": "in", "channel": "email",
+             "touch_type": "promise_dropped", "summary": "never sent the venue list",
+             "greene": "", "requested": False, "legacy": False},
+        ],
+        "current_state": "Deciding whether to extend the residency into next season.",
+        "future_state": "Wants a second studio location by next year.",
+        "can_help": "", "how_they_communicate": "Short voice notes, replies fast.",
+        "updates": "",
+        "reads": {"pride": "Runs the only artist residency in the neighbourhood that "
+                          "actually pays.",
+                 "record": "their promises: 2 kept · 0 late · 1 dropped"},
+        "presets": [],
+    },
+    # untiered prospect — nothing payload-carrying to reach out about
+    "20260701090200": {
+        **_DEFAULT_DETAIL_EXTRA,
+        "context": "Met at Tashkeel's open studios.",
+        "needs": "", "interaction_log": "- 2026-07-08 — exchanged contact details",
+        "commercial": True,
+        "working_together": {"conversation_stage": "none", "buyer_role": "unknown",
+                             "fit": "unknown", "no_economic_buyer": True},
+        "touches": [
+            {"day": "2026-07-08", "direction": "out", "channel": "email",
+             "touch_type": "presence", "summary": "said it was good meeting them",
+             "greene": "", "requested": False, "legacy": False},
+        ],
+    },
+    # inner family — quiet until +20 days
+    "20260701090300": {
+        **_DEFAULT_DETAIL_EXTRA,
+        "context": "Younger sister, lives in Sharjah.",
+        "needs": "", "commercial": False, "working_together": None,
+        "quiet": {"until": QUIET_UNTIL,
+                 "line": f"Quiet until {(TODAY + timedelta(days=20)).strftime('%-d %b')}: "
+                         "two messages unanswered. Nothing to do."},
+        "touches": [
+            {"day": "2026-08-01", "direction": "out", "channel": "whatsapp",
+             "touch_type": "give_know", "summary": "sent birthday wishes for her son",
+             "greene": "", "requested": False, "legacy": False},
+        ],
+        "current_state": "Settling the kids into a new school.",
+        "how_they_communicate": "Voice notes on WhatsApp, replies when she can.",
+    },
+    "20260701090400": dict(_DEFAULT_DETAIL_EXTRA),
+}
+
+# GET /api/people/greene (T8): the real 18 Greene situations, parsed with the
+# real pipeline module rather than a second hand-rolled copy (R17/R18).
+GREENE_SITUATIONS = greene.parse((greene.SEEDS / "greene-helper.md").read_text(encoding="utf-8"))
+
+# GET /api/people/today (T8): the five-item strip plus the seven raw views,
+# built from the three PEOPLE fixtures above — a core client's due promise
+# and an untiered prospect's bare presence touch (no payload).
+# mirrors pipeline/queue.py LABELS/VIEWS (kept in sync by hand, like AUDIO_MIME_TYPES)
+_QUEUE_LABELS = {"owe_reply": "I owe a reply", "promises": "Promises I made", "ask_about": "Ask about",
+                "celebrate": "Celebrate", "follow_up": "Follow up today",
+                "waiting_on_them": "Waiting on them", "reconnect": "Reconnect"}
+_QUEUE_VIEWS = ("owe_reply", "promises", "ask_about", "celebrate", "follow_up",
+               "waiting_on_them", "reconnect")
+
+_PROMISE_ITEM = {
+    "person_id": "20260701090100", "name": "Priya Raman", "tier": "core",
+    "queue": "promises", "touch_type": "keep_promise", "payload": "send the studio deck",
+    "source_key": "promise-priya-1", "due": TODAY.isoformat(), "channel": "whatsapp",
+    "flagged": False, "held": False,
+}
+_RECONNECT_ITEM = {
+    "person_id": "20260701090200", "name": "Omar Haddad", "tier": "",
+    "queue": "reconnect", "touch_type": "presence", "payload": "",
+    "source_key": "reconnect-omar", "due": None, "channel": "email",
+    "flagged": False, "held": False,
+}
+_STRIP_ITEMS = [] if MODE_EMPTY else [_PROMISE_ITEM, _RECONNECT_ITEM]
+_QUEUES_BY_VIEW = {view: [] for view in _QUEUE_VIEWS}
+if not MODE_EMPTY:
+    _QUEUES_BY_VIEW["promises"] = [_PROMISE_ITEM]
+    _QUEUES_BY_VIEW["reconnect"] = [_RECONNECT_ITEM]
+
+TODAY_RESPONSE = {
+    "strip": _STRIP_ITEMS,
+    "overflow": 0,
+    "queues": _QUEUES_BY_VIEW,
+    "labels": _QUEUE_LABELS,
+    "tiers": {
+        "inner": {"count": sum(1 for p in PEOPLE if p["tier"] == "inner"), "cap": 15},
+        "core": {"count": sum(1 for p in PEOPLE if p["tier"] == "core"), "cap": 35},
+        "active": {"count": sum(1 for p in PEOPLE if p["tier"] == "active"), "cap": 100},
+    },
+    "untiered": sum(1 for p in PEOPLE if p["tier"] == ""),
+}
+
+# GET /api/people/held (T8): nothing held by default — a composer draft the
+# owner marked "irritated" and is holding until 9am.
+HELD_ITEMS = [] if MODE_EMPTY else [
+    {"person_id": "20260701090400", "text": "Following up on the deposit — let me know.",
+     "channel": "whatsapp", "touch_type": "ask",
+     "held_until": (datetime.combine(TODAY, datetime.min.time())
+                   + timedelta(days=1, hours=9)).isoformat(timespec="seconds"),
+     "ready": False},
+]
 
 VOICE = {"exists": False, "file": "_System/my-voice.md", "samples": 0}
 
@@ -970,6 +1137,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"items": items})
             if path == "/api/people/voice":
                 return self._send(200, VOICE)
+            # Static /api/people/* routes registered BEFORE the generic
+            # "/api/people/{id}" branch below (P7/R17): otherwise "today",
+            # "greene" and "held" would each be read as a person_id.
+            if path == "/api/people/today":
+                return self._send(200, TODAY_RESPONSE)
+            if path == "/api/people/greene":
+                return self._send(200, {"situations": [
+                    {"code": s.code, "title": s.title, "happening": s.happening,
+                     "trap": s.trap, "move": s.move, "line": s.line}
+                    for s in GREENE_SITUATIONS
+                ]})
+            if path == "/api/people/held":
+                return self._send(200, {"items": HELD_ITEMS})
             if path == "/api/push/queue":
                 # staged, never pushed: whoever has a dex_id and hasn't been
                 # pushed yet this session
@@ -986,7 +1166,8 @@ class Handler(BaseHTTPRequestHandler):
                         "what": "That person isn't in the vault.",
                         "cause": f"No note in 07-People has the id {pid}.",
                         "todo": "Refresh the People screen."}})
-                return self._send(200, {**found, **PEOPLE_DETAIL_EXTRA})
+                extra = PEOPLE_DETAIL_EXTRA.get(pid, _DEFAULT_DETAIL_EXTRA)
+                return self._send(200, {**found, **extra})
             if path == "/api/status":
                 return self._send(200, {
                     "vault": "Brain",
@@ -1330,6 +1511,17 @@ class Handler(BaseHTTPRequestHandler):
                         "todo": "Paste 3–5 messages you actually sent, then save again."}})
                 VOICE.update(exists=True, samples=len(samples))
                 return self._send(200, dict(VOICE))
+            # Static /api/people/lint registered BEFORE the {id}/... branches
+            # below (P7/R17) — it has no person_id segment to collide with,
+            # but the ordering mirrors the GET block for the same reason.
+            if path == "/api/people/lint":
+                body = self._json_body()
+                person = next((p for p in PEOPLE if p["id"] == body.get("person_id", "")), None)
+                tier = person["tier"] if person else ""
+                quiet = bool(person and person.get("quiet_until"))
+                return self._send(200, draftlint.lint(
+                    body.get("text", ""), channel=body.get("channel", "whatsapp"),
+                    tier=tier, touch_type=body.get("touch_type", ""), quiet=quiet))
             if path.startswith("/api/people/") and path.endswith("/draft"):
                 pid = path.split("/")[3]
                 self.rfile.read(int(self.headers.get("Content-Length", 0)))
@@ -1397,6 +1589,70 @@ class Handler(BaseHTTPRequestHandler):
                     "todo": "Add a People Data Labs key to the server's environment and "
                             "restart the API — everything else on this card keeps working "
                             "without it."}})
+            if path.startswith("/api/people/") and path.endswith("/promise"):
+                pid = path.split("/")[3]
+                self._json_body()
+                found = next((p for p in PEOPLE if p["id"] == pid), None)
+                if not found:
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in the vault.", "cause": "Unknown id.",
+                        "todo": "Refresh the People screen."}})
+                extra = PEOPLE_DETAIL_EXTRA.get(pid, _DEFAULT_DETAIL_EXTRA)
+                return self._send(200, {**found, **extra, "next_actions": []})
+            if path.startswith("/api/people/") and path.endswith("/owner"):
+                pid = path.split("/")[3]
+                body = self._json_body()
+                found = next((p for p in PEOPLE if p["id"] == pid), None)
+                if not found:
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in the vault.", "cause": "Unknown id.",
+                        "todo": "Refresh the People screen."}})
+                extra = PEOPLE_DETAIL_EXTRA.get(pid, _DEFAULT_DETAIL_EXTRA)
+                updated = {**found, **extra}
+                if body.get("field") in found:
+                    updated[body["field"]] = body.get("value", "")
+                return self._send(200, {**updated, "warning": None})
+            if path.startswith("/api/people/") and path.endswith("/hold"):
+                pid = path.split("/")[3]
+                self._json_body()
+                found = next((p for p in PEOPLE if p["id"] == pid), None)
+                if not found:
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in the vault.", "cause": "Unknown id.",
+                        "todo": "Refresh the People screen — the note may have been renamed "
+                                "or removed."}})
+                until = (datetime.combine(TODAY, datetime.min.time())
+                        + timedelta(days=1, hours=9)).isoformat(timespec="seconds")
+                return self._send(200, {"until": until})
+            if path.startswith("/api/people/") and path.endswith("/reply"):
+                pid = path.split("/")[3]
+                body = self._json_body()
+                found = next((p for p in PEOPLE if p["id"] == pid), None)
+                if not found:
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in the vault.", "cause": "Unknown id.",
+                        "todo": "Refresh the People screen."}})
+                if not VOICE["exists"]:
+                    return self._send(409, {"error": {
+                        "what": "Drafts need your own voice on file first.",
+                        "cause": "_System/my-voice.md doesn't exist yet, and a draft written "
+                                 "without it would sound like a chatbot, not like you.",
+                        "todo": "Paste 3–5 messages you've actually sent in Settings → My voice, "
+                                "then try again."}})
+                message = body.get("message", "")
+                extra = PEOPLE_DETAIL_EXTRA.get(pid, _DEFAULT_DETAIL_EXTRA)
+                channel = next((c for c in ("whatsapp", "email", "linkedin")
+                               if found["channels"].get(c)), "whatsapp")
+                text = f"thanks for letting me know — got it re: {message[:60]}"
+                lint_result = draftlint.lint(text, channel=channel, tier=found["tier"])
+                return self._send(200, {
+                    "reads": extra.get("reads", {"pride": "", "record": ""}),
+                    "situation": None,
+                    "draft": {"text": text, "subject": "", "channel": channel,
+                             "channels": found["channels"], "provider": "claude-haiku",
+                             "attempts": [], "lints": lint_result},
+                    "lints": lint_result["lints"], "seducer": lint_result["seducer"],
+                })
             if path == "/api/people":
                 body = self._json_body()
                 name = (body.get("name") or "").strip()
@@ -1626,6 +1882,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"ok": True})
 
         if method == "DELETE":
+            if path.startswith("/api/people/") and path.endswith("/hold"):
+                pid = path.split("/")[3]
+                if not any(p["id"] == pid for p in PEOPLE):
+                    return self._send(404, {"error": {
+                        "what": "That person isn't in the vault.", "cause": "Unknown id.",
+                        "todo": "Refresh the People screen — the note may have been renamed "
+                                "or removed."}})
+                return self._send(200, {"ok": True})
             if path == "/api/resources/sample":
                 q = self.path.split("?")[1] if "?" in self.path else ""
                 params = dict(p.split("=", 1) for p in q.split("&") if "=" in p)

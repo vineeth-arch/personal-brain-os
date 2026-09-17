@@ -695,24 +695,68 @@ outside the three; nothing is written in those cases.
 
 ### `GET /api/people/{id}`
 
-The same object plus `context`, `needs` and `interaction_log` (the `## Context`,
-`## Needs` and `## Interaction log` body sections). `404` + envelope for an
-unknown id.
+The list-row object (above) plus everything the person page and composer need
+— nothing here writes to the vault. `desk=1` also includes `energy`, which is
+never sent to a screen someone else might glance at (Global Constraints:
+"energy never rendered as a word" outside the desk view).
+
+```json
+{ "…the GET /api/people row…": "…",
+  "context": "…", "needs": "…", "facts": "…", "interpretations": "…",
+  "interaction_log": "…", "current_state": "…", "future_state": "…",
+  "can_help": "…", "how_they_communicate": "…", "updates": "…",
+  "known_for": "…", "recall_trigger": "…", "language": "en",
+  "preferred_channel": "whatsapp", "commercial": true,
+  "dates": { "birthday": "03-14", "anniversary": "" },
+  "working_together": { "conversation_stage": "probative", "buyer_role": "economic",
+                        "fit": "good", "no_economic_buyer": false },
+  "ledger": { "gives90": 3, "asks90": 0, "received90": 1,
+             "gives180": 5, "asks180": 1, "received180": 2 },
+  "reliability": { "kept": 2, "late": 0, "dropped": 1 },
+  "reliability_line": "their promises: 2 kept · 0 late · 1 dropped",
+  "flags": [], "inside_floor": true,
+  "quiet": { "until": "2026-10-07", "line": "Quiet until 7 Oct: two messages unanswered. Nothing to do." },
+  "next_actions": [ { "due": "2026-09-17", "text": "I promised: send the studio deck",
+                      "key": "promise-1", "closed": false, "view": "promises" } ],
+  "touches": [ { "day": "2026-07-20", "direction": "out", "channel": "whatsapp",
+                "touch_type": "give_know", "summary": "…", "greene": "",
+                "requested": false, "legacy": false } ],
+  "reads": { "pride": "…", "record": "their promises: 2 kept · 0 late · 1 dropped" },
+  "presets": ["3.9"] }
+```
+
+`working_together` is `null` for a non-commercial person; `quiet` is `null`
+except during a self-imposed quiet window. `404` + envelope for an unknown id.
 
 ### `POST /api/people/{id}/draft`
 
-Body `{"channel": "whatsapp" | "email" | "linkedin" | null}` — omitted picks the
-first channel the person has, in that order.
+Body `{"channel": "whatsapp" | "email" | "linkedin" | null, "touch_type": "",
+"payload": "", "outcome": "", "situation": "", "include_sensitive": false}` —
+every field but `channel` defaults to blank/`false`. `channel` omitted picks
+the first channel the person has, in that order. `situation` is a Greene code
+(e.g. `"3.9"`); when it doesn't match a parsed situation the prompt simply
+carries no situation line.
 
 ```json
-{ "text": "hey Priya — long time…", "channel": "whatsapp",
+{ "text": "hey Priya — long time…", "subject": "", "channel": "whatsapp",
   "channels": { "whatsapp": "+9715…", "email": "priya@example.com" },
-  "provider": "claude-haiku" }
+  "provider": "claude-haiku",
+  "lints": { "lints": [ { "code": "softener", "start": 0, "end": 8,
+                         "snippet": "no rush", "message": "say the date and why" } ],
+            "seducer": ["windbag"] } }
 ```
 
-The message is written in the owner's voice from `_System/my-voice.md` and
-leashed to the person's interaction log — an empty log produces a shorter,
-vaguer message rather than an invented shared history.
+The message is written in the owner's voice from `_System/my-voice.md` and a
+rules file (`_System/draft-rules.md`, seeded from the repo's copy on first use
+and committed once), and leashed to the person's own record: their sections
+(never `## Interpretations`), their doctrine-required `touch_type`/`payload`
+line, their commercial `conversation_stage` line (or the family/friend line
+when they aren't commercial), and the chosen Greene `situation`, if any. An
+empty interaction log produces a shorter, vaguer message rather than an
+invented shared history. For `channel: "email"` a leading `Subject: …` line in
+the model's reply is pulled out into `"subject"`, never left in `"text"`.
+`"lints"` is the A9 linter's own `{"lints": [...], "seducer": [...]}` shape,
+run over the returned text.
 
 `409` when `_System/my-voice.md` doesn't exist (the cockpit sends the user to
 Settings → My voice rather than drafting in a generic voice). `502` when every
@@ -720,11 +764,13 @@ provider in the chain failed. `404` for an unknown id.
 
 ### `POST /api/people/{id}/contact`
 
-Body `{"note": "…", "channel": "whatsapp"}`. Appends a dated line to the
-`## Interaction log`, resets `last_contact` to today, revives a `cold` person to
-`active`, and commits the vault. Returns the refreshed person plus
+Body `{"note": "…", "channel": "whatsapp", "direction": "out"|"in",
+"touch_type": "give_know", "greene": "3.9", "requested": false}`. Appends one
+typed `## Interaction log` v2 line (SCHEMA-REFERENCE.md §7), resets
+`last_contact` to today for an outgoing touch, revives a `cold` person to
+`active`, and commits the vault. Returns the refreshed person detail plus
 `"suggest_stage"` — the next warmth stage, offered for one tap, never applied
-automatically.
+automatically. `422` for a missing or unrecognised `touch_type`.
 
 ### `POST /api/people/{id}/warmth`
 
@@ -740,6 +786,115 @@ plus `"enriched"`, `"credits_remaining"` and a one-line `"detail"`.
 
 `503` when `PDL_API_KEY` isn't set — the honest not-configured state; every
 other People feature works without it. `502` when the lookup itself fails.
+
+### `GET /api/people/today`
+
+The Today screen's people surfaces — registered **before**
+`GET /api/people/{id}` (P7/R17: otherwise `"today"` would be read as a
+person_id).
+
+```json
+{ "strip": [ { "person_id": "20260701090000", "name": "Priya Raman", "tier": "core",
+              "queue": "promises", "touch_type": "keep_promise",
+              "payload": "send the studio deck", "source_key": "promise-1",
+              "due": "2026-09-17", "channel": "whatsapp",
+              "flagged": false, "held": false } ],
+  "overflow": 0,
+  "queues": { "owe_reply": [], "promises": ["…same shape as strip…"], "ask_about": [],
+             "celebrate": [], "follow_up": [], "waiting_on_them": [], "reconnect": [] },
+  "labels": { "owe_reply": "I owe a reply", "promises": "Promises I made", "…": "…" },
+  "tiers": { "inner": { "count": 4, "cap": 15 }, "core": { "count": 12, "cap": 35 },
+            "active": { "count": 30, "cap": 100 } },
+  "untiered": 3 }
+```
+
+`strip` is at most 5 items, one per person, first-qualifying-view wins;
+`overflow` is how many more distinct people would otherwise have qualified.
+`waiting_on_them` never appears in `strip` (R23) even though it is one of the
+seven `queues`.
+
+### `GET /api/people/greene`
+
+The 18 Greene situations for the composer's Greene panel, parsed from the
+vault's `_System/greene-helper.md` (seeded from the repo's copy on first use
+and committed once).
+
+```json
+{ "situations": [ { "code": "3.9", "title": "…", "happening": "…",
+                    "trap": "…", "move": "…", "line": "…" } ] }
+```
+
+### `POST /api/people/lint`
+
+Body `{"text": "…", "channel": "whatsapp", "person_id": "", "touch_type": ""}`
+— registered **before** `GET /api/people/{id}` for the same P7/R17 reason,
+though it has no id segment of its own to collide with. Runs the A9 linter and
+Anti-Seducer chips (`pipeline/draftlint.py`) over `text`; when `person_id`
+resolves to a real note the tier and quiet state come from that person,
+otherwise the neutral defaults (blank tier, not quiet).
+
+```json
+{ "lints": [ { "code": "softener", "start": 0, "end": 8,
+              "snippet": "no rush", "message": "say the date and why" } ],
+  "seducer": ["windbag"] }
+```
+
+### `GET /api/people/held`
+
+Drafts on hold (the composer's Hold button — CLAUDE.md §3, the "irritated"
+pause).
+
+```json
+{ "items": [ { "person_id": "20260701090000", "text": "…", "channel": "whatsapp",
+              "touch_type": "kind_truth", "held_until": "2026-09-18T09:00:00",
+              "ready": false } ] }
+```
+
+`ready` flips to `true` once `held_until` has passed.
+
+### `POST` / `DELETE /api/people/{id}/hold`
+
+`POST` body `{"text": "…", "channel": "whatsapp", "touch_type": "kind_truth"}`
+writes a held-draft vault file and returns `{"until": "2026-09-18T09:00:00"}`
+(next 9am). `DELETE` discards the held draft and returns `{"ok": true}`. Both
+`404` + envelope for an unknown id.
+
+### `POST /api/people/{id}/promise`
+
+Body `{"key": "…", "result": "kept"|"late"|"dropped", "side": "them"|"me"}`.
+Closes one open promise from either side (SCHEMA-REFERENCE.md §7 R11) and
+returns the refreshed `GET /api/people/{id}` detail. `404` when the key isn't
+open, or the person is unknown.
+
+### `POST /api/people/{id}/owner`
+
+Body `{"field": "tier", "value": "core"}` — a human setting one of the
+owner-only fields directly: `tier`, `energy`, `known_for`, `recall_trigger`,
+`conversation_stage`, `buyer_role`, `fit`, `list_of_20`, plus the two
+body-section fields `dates` (JSON string) and `how_they_communicate`. Returns
+the refreshed detail plus `"warning"` — a plain-English note when the edit
+puts a tier over its cap or List of 20 over 20, never blocking the write.
+
+`422` for an unknown field or an out-of-vocabulary value. `404` unknown id.
+
+### `POST /api/people/{id}/reply`
+
+Body `{"message": "…the incoming message…"}`. Runs the Four Reads, asks the
+model which of the 18 Greene situations (if any) the message fits, and drafts
+a reply in the owner's voice with the doctrine's touch_type inferred from that
+situation (`kind_truth` for 3.4/3.15, `ask` for 3.11, otherwise `remember`) and
+`payload` set to `"Reply to: <first 200 chars of the message>"`.
+
+```json
+{ "reads": { "pride": "…", "record": "their promises: 2 kept · 0 late · 1 dropped" },
+  "situation": "3.9",
+  "draft": { "…the POST /api/people/{id}/draft shape…": "…" },
+  "lints": [ { "code": "softener", "start": 0, "end": 8, "snippet": "…", "message": "…" } ],
+  "seducer": ["windbag"] }
+```
+
+`situation` is `null` when the model picks a code that isn't one of the 18
+(P25) or answers `null` itself. Same `409`/`404` refusals as `/draft`.
 
 ## Profile push — Dex + Google Contacts (Pass D)
 

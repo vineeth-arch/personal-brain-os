@@ -20,15 +20,17 @@ TODAY = date(2026, 8, 20)
 
 def _person(folder: Path, name: str, person_id: str, *, last_contact="2026-06-01",
             cadence="7", stage="engaging", log="- 2026-06-01 — coffee at Alserkal",
-            channels="{whatsapp: +971500000000, email: priya@example.com}"):
+            channels="{whatsapp: +971500000000, email: priya@example.com}",
+            relationship="client", conversation_stage="",
+            context="Met at a studio visit.", needs="A studio.", extra_sections=""):
     path = folder / f"2026-07-01-{name.lower().replace(' ', '-')}.md"
     path.write_text(
         f"---\nid: {person_id}\ntype: person\ncreated: 2026-07-01\nsource: manual\n"
-        f"origin: human\nrelationship: client\ncompany: Alserkal\n"
+        f"origin: human\nrelationship: {relationship}\ncompany: Alserkal\n"
         f"channels: {channels}\ncadence_days: {cadence}\nlast_contact: {last_contact}\n"
-        f"warmth_stage: {stage}\nstatus: active\n---\n\n"
-        f"# {name}\n\n## Context\n\nMet at a studio visit.\n\n## Needs\n\nA studio.\n\n"
-        f"## Interaction log\n\n{log}\n\n## Next action\n\n\n", encoding="utf-8")
+        f"warmth_stage: {stage}\nstatus: active\nconversation_stage: {conversation_stage}\n---\n\n"
+        f"# {name}\n\n## Context\n\n{context}\n\n## Needs\n\n{needs}\n\n"
+        f"## Interaction log\n\n{log}\n\n## Next action\n\n\n{extra_sections}", encoding="utf-8")
     return path
 
 
@@ -181,6 +183,158 @@ def test_the_draft_prompt_is_leashed_to_what_is_actually_logged(vault_env):
     assert "nothing logged yet" in empty
     assert "shorter and more general" in empty
     assert "Do not invent" in empty
+
+
+def test_prompt_excludes_interpretations(vault_env):
+    """Interpretations are the owner's guesses, never known facts — the draft
+    prompt must never see them, however they might be worded."""
+    from pipeline import relationships
+
+    root, vault, folder = vault_env
+    _person(folder, "Marked Person", "20260701090010",
+           extra_sections="## Interpretations\n\nThinks the deal is stalling.\n\n")
+    person = {p.id: p for p in relationships.load_people(vault)}["20260701090010"]
+    prompt = people.build_draft_prompt(person, "voice", "whatsapp")
+    assert "Thinks the deal is stalling" not in prompt
+    assert "Interpretations" not in prompt
+
+
+def test_prompt_excludes_sensitive_unless_opted_in(vault_env):
+    from pipeline import relationships
+
+    root, vault, folder = vault_env
+    _person(folder, "Sensitive Case", "20260701090011",
+           context="Doing okay generally.\n- going through a divorce #sensitive")
+    person = {p.id: p for p in relationships.load_people(vault)}["20260701090011"]
+
+    default_prompt = people.build_draft_prompt(person, "voice", "whatsapp")
+    assert "divorce" not in default_prompt
+
+    opted_in = people.build_draft_prompt(person, "voice", "whatsapp", include_sensitive=True)
+    assert "divorce" in opted_in
+
+
+def test_prompt_includes_rules_when_given(vault_env):
+    from pipeline import relationships
+
+    root, vault, _ = vault_env
+    person = {p.id: p for p in relationships.load_people(vault)}["20260701090000"]
+    prompt = people.build_draft_prompt(person, "voice", "whatsapp",
+                                       rules="One payload per message.")
+    assert "Rules for every draft:" in prompt
+    assert "One payload per message." in prompt
+
+    without_rules = people.build_draft_prompt(person, "voice", "whatsapp")
+    assert "Rules for every draft:" not in without_rules
+
+
+def test_family_prompt_forbids_asks(vault_env):
+    from pipeline import relationships
+
+    root, vault, folder = vault_env
+    _person(folder, "Family Member", "20260701090012", relationship="family",
+           conversation_stage="probative")
+    person = {p.id: p for p in relationships.load_people(vault)}["20260701090012"]
+    prompt = people.build_draft_prompt(person, "voice", "whatsapp")
+    assert "family or a friend" in prompt
+    assert "Never ask for business, referrals, introductions or favours." in prompt
+    # a family contact never gets a commercial conversation_stage line, even
+    # if one is (wrongly) set on the note
+    assert "Share perspective only, no pitch." not in prompt
+
+
+def test_probative_stage_line(vault_env):
+    from pipeline import relationships
+
+    root, vault, folder = vault_env
+    _person(folder, "Prospect Person", "20260701090013", conversation_stage="probative")
+    person = {p.id: p for p in relationships.load_people(vault)}["20260701090013"]
+    prompt = people.build_draft_prompt(person, "voice", "whatsapp")
+    assert "Share perspective only, no pitch." in prompt
+
+
+def test_email_draft_splits_subject(vault_env, monkeypatch):
+    root, vault, _ = vault_env
+    from pipeline import llm
+
+    monkeypatch.setattr(
+        llm, "complete_text",
+        lambda prompt, config: ("Subject: Quick hello\n\nHey Priya, long time.",
+                                "claude-haiku", []))
+    with Server(root) as s:
+        s.req("POST", "/api/people/voice", {"samples": ["hey"]})
+        code, body = s.req("POST", "/api/people/20260701090000/draft", {"channel": "email"})
+        assert code == 200
+        assert body["subject"] == "Quick hello"
+        assert not body["text"].startswith("Subject:")
+        assert "Hey Priya, long time." in body["text"]
+
+
+def test_draft_returns_lints(vault_env, monkeypatch):
+    root, vault, _ = vault_env
+    from pipeline import llm
+
+    monkeypatch.setattr(
+        llm, "complete_text",
+        lambda prompt, config: ("hope this finds you well — quick note", "claude-haiku", []))
+    with Server(root) as s:
+        s.req("POST", "/api/people/voice", {"samples": ["hey"]})
+        code, body = s.req("POST", "/api/people/20260701090000/draft", {})
+        assert code == 200
+        codes = {lint["code"] for lint in body["lints"]["lints"]}
+        assert "softener" in codes
+
+
+def test_draft_seeds_rules_and_commits_once(vault_env, monkeypatch):
+    root, vault, _ = vault_env
+    from pipeline import llm
+
+    monkeypatch.setattr(llm, "complete_text", lambda prompt, config: ("hey", "claude-haiku", []))
+    with Server(root) as s:
+        s.req("POST", "/api/people/voice", {"samples": ["hey"]})
+        assert not (vault / "_System" / "draft-rules.md").exists()
+
+        code, _ = s.req("POST", "/api/people/20260701090000/draft", {})
+        assert code == 200
+        assert (vault / "_System" / "draft-rules.md").exists()
+        log = subprocess.run(["git", "-C", str(vault), "log", "--oneline"],
+                             capture_output=True, text=True).stdout
+        assert sum("seeded draft-rules" in line for line in log.splitlines()) == 1
+
+        code, _ = s.req("POST", "/api/people/20260701090000/draft", {})
+        assert code == 200
+        log = subprocess.run(["git", "-C", str(vault), "log", "--oneline"],
+                             capture_output=True, text=True).stdout
+        assert sum("seeded draft-rules" in line for line in log.splitlines()) == 1
+
+
+# ---- reply ------------------------------------------------------------------
+
+def test_reply_invalid_code_gives_null_situation(vault_env, monkeypatch):
+    root, vault, _ = vault_env
+    from pipeline import llm
+
+    monkeypatch.setattr(
+        llm, "complete_json",
+        lambda prompt, config, validate: ({"code": "9.9"}, "claude-haiku", []))
+    monkeypatch.setattr(
+        llm, "complete_text",
+        lambda prompt, config: ("thanks for letting me know", "claude-haiku", []))
+    with Server(root) as s:
+        s.req("POST", "/api/people/voice", {"samples": ["hey"]})
+        code, body = s.req("POST", "/api/people/20260701090000/reply",
+                           {"message": "hey are we still on for coffee?"})
+        assert code == 200
+        assert body["situation"] is None
+        assert "reads" in body and "draft" in body and "lints" in body and "seducer" in body
+
+
+def test_reply_refuses_without_voice(vault_env):
+    root, _, _ = vault_env
+    with Server(root) as s:
+        code, body = s.req("POST", "/api/people/20260701090000/reply", {"message": "hello"})
+        assert code == 409
+        assert "my-voice" in body["error"]["cause"]
 
 
 def test_draft_says_so_when_every_provider_fails(vault_env, monkeypatch):
