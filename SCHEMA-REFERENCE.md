@@ -1,6 +1,6 @@
 # **SCHEMA-REFERENCE — the canonical schema (lock before note \#1)**
 
-**This is the single source of truth for structure.** Every note, every script, every AI routing pass reads from here. These conventions are **migrations if changed late** — they're locked at Phase 0.4, before note \#1. Features can change; this should not. Version: 1.4 · 2026-09-01
+**This is the single source of truth for structure.** Every note, every script, every AI routing pass reads from here. These conventions are **migrations if changed late** — they're locked at Phase 0.4, before note \#1. Features can change; this should not. Version: 1.5 · 2026-09-17
 
 ---
 
@@ -120,6 +120,24 @@ warmth\_stage:             \# identified | researched | engaging | conversing | 
 status: active            \# active | cold | dormant
 
 Body: `## Context` · `## Needs` · `## Facts` (append-only, dated — one fact per line, citing its source with `derived-from::` when it comes from a conversation note) · `## Interaction log` (append-only, dated) · `## Next action` · `## Updates` (append-only, dated — proposed field changes from another app that would overwrite an already-filled value; never applied automatically, see the merge-rules table below).
+
+#### Handshake proposal types → sections
+
+Handshake reads WhatsApp and *proposes*; each proposal lands in one of the
+sections above, subject to the merge-rules table below (a proposal never
+overwrites a Filled value — it appends under `## Updates` instead):
+
+| Proposal | Means | Lands in |
+| ----- | ----- | ----- |
+| fact / interpretation | stated vs. inferred — never merged in one list | `## Facts` (fact) / `## Context` (interpretation, labeled as such) |
+| commitment\_mine / commitment\_theirs | a promise, either side | `## Interaction log` · `## Next action` |
+| follow\_up | something the owner must do | `## Next action` |
+| personal\_detail (topic) | people, health, home, interests, preferences, favours | `## Context` or `## Needs` |
+| upcoming (date) | an event in their life | `## Next action` (resurface day after) |
+| milestone | new job, baby, move, award | `## Next action` (same day) |
+| need | what they're looking for | `## Needs` |
+| company\_knowledge | durable org facts | company note `## Facts` |
+| person\_update | a durable attribute | `## Context` |
 
 ### **Company (`11-Companies`) — written and updated by handshake**
 
