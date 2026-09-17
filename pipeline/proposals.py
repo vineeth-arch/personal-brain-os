@@ -41,6 +41,7 @@ TOPICS = ("family", "health", "home", "interests", "preference", "favour")
 PATCHABLE = ("company", "relationship")   # the only frontmatter a proposal may Fill
 MAX_PROPOSALS = 12
 MIN_FIRST_NAME = 3
+GIVE_THEIRS_OUTCOME_DAYS = 30  # extrapolation (RELATIONSHIP-OS-ARCHITECTURE.md §A6: "the 30-day outcome report is extrapolation")
 REPUTATION_FILE = "_System/reputation.md"
 # type -> (direction, touch_type, summary prefix) for the v2 interaction-log line
 LOG_TOUCH = {
@@ -285,7 +286,7 @@ def apply(note_text: str, p: dict, *, note_id: str, index: int, today: date) -> 
     text = append_marked(text, result["section"], line, f"<!-- {marker_base} -->")
 
     if kind == "give_theirs":
-        outcome_due = (today + timedelta(days=30)).isoformat()
+        outcome_due = (today + timedelta(days=GIVE_THEIRS_OUTCOME_DAYS)).isoformat()
         outcome_line = f"- {outcome_due} · Report outcome: {p['text']} {cite}"
         text = append_marked(text, "Next action", outcome_line, f"<!-- {marker_base}:outcome -->")
 
