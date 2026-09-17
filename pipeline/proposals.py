@@ -27,12 +27,28 @@ SECTIONS = {
     "need": ("Needs",),
     "company_knowledge": ("Facts",),     # on the COMPANY note, not the person
     "person_update": ("Context",),
+    "problem": ("Current state",),
+    "goal": ("Future state",),
+    "offer": ("Can help with",),
+    "intro": ("Interaction log", "Next action"),
+    "give_mine": ("Interaction log",),
+    "give_theirs": ("Interaction log", "Next action"),
+    "important_date": ("Next action",),
+    "reputation_signal": ("Interaction log",),  # plus _System/reputation.md, written by api/notes.py
 }
 TYPES = tuple(SECTIONS)
 TOPICS = ("family", "health", "home", "interests", "preference", "favour")
 PATCHABLE = ("company", "relationship")   # the only frontmatter a proposal may Fill
 MAX_PROPOSALS = 12
 MIN_FIRST_NAME = 3
+REPUTATION_FILE = "_System/reputation.md"
+# type -> (direction, touch_type, summary prefix) for the v2 interaction-log line
+LOG_TOUCH = {
+    "intro": ("out", "give_who", ""),
+    "give_mine": ("out", "give_know", ""),
+    "give_theirs": ("in", "give_theirs", ""),
+    "reputation_signal": ("in", "other", "They said about me: "),
+}
 
 
 # ---- the gate: no model call unless someone we know is named ------------------
@@ -81,6 +97,14 @@ def _prompt(transcript: str, people, captured: date) -> str:
         "about their organisation.\n"
         f"- person_update: a durable change; set field ({', '.join(PATCHABLE)}) "
         "and value when it is one of those.\n"
+        "- problem: a problem they named; include the impact if they stated one.\n"
+        "- goal: where they are trying to get to, in their words.\n"
+        "- offer: what they are good at, sell, or offered to help with.\n"
+        "- intro: an introduction made or promised; date if one was said.\n"
+        "- give_mine: something the OWNER gave them: intro, resource, help, referral.\n"
+        "- give_theirs: something THEY gave the owner.\n"
+        "- important_date: birthday, anniversary or launch date; needs date.\n"
+        "- reputation_signal: something they said about the OWNER, or repeated from others.\n"
         "text is one short line in plain English. Resolve relative dates against "
         f"the capture date {captured.isoformat()}; omit date if none was said. "
         "person_id must come from the roster. Nothing worth remembering → "
@@ -114,7 +138,7 @@ def clean(items: list, allowed_ids: set[str]) -> list[dict]:
             continue
         p = {"type": kind, "person_id": pid, "text": " ".join(text.split())[:280]}
         day = _iso(item.get("date"))
-        if kind == "upcoming" and not day:
+        if kind in ("upcoming", "important_date") and not day:
             continue
         if day:
             p["date"] = day
@@ -175,6 +199,18 @@ def outcome(p: dict, today: date) -> dict:
         line = f"{p['topic']} · {text}"
     elif kind == "person_update" and p.get("field"):
         line = f"{p['field']}: {p['value']} — {text}"
+    elif kind == "intro":
+        due = (day + timedelta(days=14)) if day else (today + timedelta(days=14))
+        line = f"Intro check-in: {text}"
+    elif kind == "give_theirs":
+        due, line = today, f"Thank: {text}"
+    elif kind == "important_date":
+        due = max(today, day - timedelta(days=7)) if day else None
+        line = f"Remember date: {text} ({_short(day)})" if day else f"Remember date: {text}"
+    elif kind in ("give_mine", "reputation_signal"):
+        # the "line" IS the v2 interaction-log line (Task 3 swaps to touchlog.format_line)
+        direction, touch_type, prefix = LOG_TOUCH[kind]
+        line = f"{direction} · · {touch_type} · {prefix}{text}"
     else:
         line = text
     section = SECTIONS[kind][-1]
@@ -216,6 +252,7 @@ def apply(note_text: str, p: dict, *, note_id: str, index: int, today: date) -> 
     result = outcome(p, today)
     cite = f"· derived-from:: [[{note_id}]] (ai, approved)"
     marker_base = f"bc:{note_id}:{index}"
+    kind = p["type"]
 
     if p["type"] in ("commitment_mine", "commitment_theirs"):
         who = "I promised" if p["type"] == "commitment_mine" else "They promised"
@@ -233,11 +270,26 @@ def apply(note_text: str, p: dict, *, note_id: str, index: int, today: date) -> 
         elif new_fm[p["field"]] != fm[p["field"]]:
             text = _set_front(head, p["field"], new_fm[p["field"]]) + body
 
+    # intro and give_theirs both log a v2 touch AND leave a Next action line;
+    # give_mine and reputation_signal's Interaction log write below IS the log
+    # line (no second write) — see LOG_TOUCH and SCHEMA-REFERENCE.md §7.
+    if kind in LOG_TOUCH and SECTIONS[kind][-1] == "Next action":
+        direction, touch_type, prefix = LOG_TOUCH[kind]
+        log_line = f"- {today.isoformat()} · {direction} · · {touch_type} · {prefix}{p['text']} {cite}"
+        text = append_marked(text, "Interaction log", log_line, f"<!-- {marker_base}:log -->")
+
     stamp = result["due"] or today.isoformat()
     if result["section"] == "Next action" and not result["due"]:
         stamp = "open"
     line = f"- {stamp} · {result['line']} {cite}"
-    return append_marked(text, result["section"], line, f"<!-- {marker_base} -->")
+    text = append_marked(text, result["section"], line, f"<!-- {marker_base} -->")
+
+    if kind == "give_theirs":
+        outcome_due = (today + timedelta(days=30)).isoformat()
+        outcome_line = f"- {outcome_due} · Report outcome: {p['text']} {cite}"
+        text = append_marked(text, "Next action", outcome_line, f"<!-- {marker_base}:outcome -->")
+
+    return text
 
 
 def dumps(p: dict, *, note_id: str, index: int, title: str) -> str:

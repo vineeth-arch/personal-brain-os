@@ -4,7 +4,7 @@ section SCHEMA-REFERENCE.md §7's taxonomy table names."""
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from pipeline import proposals as pr
@@ -135,3 +135,67 @@ def test_personal_detail_is_topic_prefixed_in_context(vault):
     person, _ = _apply(vault, {"type": "personal_detail", "topic": "family",
                                "text": "Daughter starts school in Sept"})
     assert "family · Daughter starts school in Sept" in person.sections["Context"]
+
+
+# ---- v2.2 additions (SCHEMA-REFERENCE.md §7) ------------------------------------
+
+def test_give_theirs_logs_in_touch_thanks_today_reports_in_30(vault):
+    person, _ = _apply(vault, {"type": "give_theirs", "text": "introduced me to their CFO"})
+    log = person.interaction_log()
+    assert (f"- {TODAY.isoformat()} · in · · give_theirs · introduced me to their CFO"
+            in log)
+    next_action = person.next_action()
+    assert f"- {TODAY.isoformat()} · Thank: introduced me to their CFO" in next_action
+    report_due = (TODAY + timedelta(days=30)).isoformat()
+    assert f"- {report_due} · Report outcome: introduced me to their CFO" in next_action
+
+
+def test_intro_logs_give_who_and_checks_in_after_14_days(vault):
+    person, _ = _apply(vault, {"type": "intro", "text": "introduced Omar to Priya",
+                               "date": "2026-09-20"})
+    log = person.interaction_log()
+    assert f"- {TODAY.isoformat()} · out · · give_who · introduced Omar to Priya" in log
+    due = (date(2026, 9, 20) + timedelta(days=14)).isoformat()
+    assert f"- {due} · Intro check-in: introduced Omar to Priya" in person.next_action()
+
+
+def test_intro_without_date_uses_today_plus_14(vault):
+    person, _ = _apply(vault, {"type": "intro", "text": "introduced Omar to Priya"})
+    due = (TODAY + timedelta(days=14)).isoformat()
+    assert f"- {due} · Intro check-in: introduced Omar to Priya" in person.next_action()
+
+
+def test_important_date_reminds_a_week_before(vault):
+    person, _ = _apply(vault, {"type": "important_date", "text": "birthday",
+                               "date": "2026-10-01"})
+    due = date(2026, 9, 24).isoformat()  # 2026-10-01 minus 7 days
+    assert f"- {due} · Remember date: birthday (1 Oct)" in person.next_action()
+
+
+def test_important_date_without_date_is_dropped(vault):
+    people = _people(vault, "Priya Raman")
+    pid = people[0].id
+    reply = {"proposals": [{"type": "important_date", "person_id": pid, "text": "birthday"}]}
+    out = pr.propose("Priya's birthday is coming", people, TODAY, None, llm_fn=lambda *a: reply)
+    assert out == []
+
+
+def test_problem_lands_in_current_state(vault):
+    person, _ = _apply(vault, {"type": "problem", "text": "cash flow is tight this quarter"})
+    assert "cash flow is tight this quarter" in person.sections["Current state"]
+
+
+def test_give_mine_writes_exactly_one_log_line(vault):
+    person, text = _apply(vault, {"type": "give_mine", "text": "sent them the intro to Zara"})
+    log = person.interaction_log()
+    assert (f"- {TODAY.isoformat()} · out · · give_know · sent them the intro to Zara"
+            in log)
+    assert text.count("sent them the intro to Zara") == 1
+
+
+def test_reputation_signal_writes_exactly_one_log_line(vault):
+    person, text = _apply(vault, {"type": "reputation_signal", "text": "always follows through"})
+    log = person.interaction_log()
+    assert (f"- {TODAY.isoformat()} · in · · other · They said about me: always follows through"
+            in log)
+    assert text.count("always follows through") == 1

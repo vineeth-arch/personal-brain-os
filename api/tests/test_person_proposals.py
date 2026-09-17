@@ -107,6 +107,30 @@ def test_company_knowledge_without_a_company_note_is_a_plain_refusal(env):
         assert len(s.req("GET", "/api/review")[1]["person_proposals"]) == 1
 
 
+def test_reputation_signal_appends_to_reputation_file_once(env):
+    from api import notes as notes_mod
+
+    root, vault, _, _ = env
+    _priya(vault)
+    proposal = {"person_id": PID, "note_id": NOTE_ID, "index": 0,
+                "type": "reputation_signal", "text": "always follows through"}
+
+    written = notes_mod.apply_person_proposal(vault, proposal, today=date(2026, 9, 17))
+    assert written == "2026-07-01-priya-raman.md"
+
+    rep = vault / "_System" / "reputation.md"
+    text = rep.read_text(encoding="utf-8")
+    assert "origin: human" in text and "# Reputation" in text
+    marker = f"<!-- bc:{NOTE_ID}:0:rep -->"
+    assert (f"- 2026-09-17 · [[{PID}]] Priya Raman · always follows through {marker}"
+            in text)
+
+    # applying the same proposal again is a no-op (marker already present)
+    notes_mod.apply_person_proposal(vault, proposal, today=date(2026, 9, 17))
+    assert rep.read_text(encoding="utf-8") == text
+    assert text.count("always follows through") == 1
+
+
 def test_company_knowledge_lands_on_the_company_note(env):
     root, vault, _, _ = env
     _priya(vault, company='"[[emaar]]"')

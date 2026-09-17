@@ -112,7 +112,9 @@ export interface SplitProposal {
 export type PersonProposalType =
   | "fact" | "interpretation" | "commitment_mine" | "commitment_theirs" | "follow_up"
   | "personal_detail" | "upcoming" | "milestone" | "need" | "company_knowledge"
-  | "person_update";
+  | "person_update"
+  | "problem" | "goal" | "offer" | "intro" | "give_mine" | "give_theirs"
+  | "important_date" | "reputation_signal";
 export const PROPOSAL_TOPICS = ["family", "health", "home", "interests", "preference", "favour"] as const;
 
 export interface PersonProposal {

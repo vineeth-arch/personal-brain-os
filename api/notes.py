@@ -1436,6 +1436,27 @@ def apply_person_proposal(vault: Path, proposal: dict, *, date_override: str | N
                                note_id=p.get("note_id", ""), index=int(p.get("index", 0)),
                                today=today)
     target.write_text(text, encoding="utf-8")
+    if p["type"] == "reputation_signal":
+        _append_reputation(vault, person, p, today=today)
     git_commit_vault(vault, f"api: remembered {p['type']} for {person.name} "
                             f"(from {p.get('note_id', '')}, approved)")
     return target.name
+
+
+def _append_reputation(vault: Path, person: "relationships.Person", p: dict, *, today: date) -> None:
+    """SCHEMA-REFERENCE.md §7 reputation_signal: what people say about the
+    owner also lands on `_System/reputation.md`, a monthly-read positioning
+    check — in addition to the person note's own Interaction log line."""
+    rep_path = vault / proposals_mod.REPUTATION_FILE
+    marker = f"<!-- bc:{p.get('note_id', '')}:{int(p.get('index', 0))}:rep -->"
+    if rep_path.exists():
+        rep_text = rep_path.read_text(encoding="utf-8")
+        if marker in rep_text:
+            return
+    else:
+        rep_path.parent.mkdir(parents=True, exist_ok=True)
+        rep_text = ("---\norigin: human\n---\n\n# Reputation\n\n"
+                    "What people actually say I am known for. Read monthly against "
+                    "positioning.\n\n")
+    line = f"- {today.isoformat()} · [[{person.id}]] {person.name} · {p['text']} {marker}"
+    rep_path.write_text(rep_text.rstrip("\n") + "\n" + line + "\n", encoding="utf-8")

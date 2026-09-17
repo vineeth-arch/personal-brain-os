@@ -299,22 +299,46 @@ const PROPOSAL_LABEL: Record<PersonProposal["type"], string> = {
   need: "They're looking for",
   company_knowledge: "About their company",
   person_update: "Update",
+  problem: "Problem",
+  goal: "Goal",
+  offer: "Can help with",
+  intro: "Intro",
+  give_mine: "I gave",
+  give_theirs: "They gave",
+  important_date: "Date",
+  reputation_signal: "What they say about me",
 };
 
-const DATED: PersonProposal["type"][] = ["upcoming", "commitment_theirs", "commitment_mine", "follow_up"];
+const DATED: PersonProposal["type"][] = [
+  "upcoming", "commitment_theirs", "commitment_mine", "follow_up", "intro", "important_date",
+];
 
 function shortDate(iso: string): string {
   return new Date(`${iso}T00:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
 
-function plusOneDay(iso: string): string {
+function plusDays(iso: string, n: number): string {
   const d = new Date(`${iso}T00:00:00`);
-  d.setDate(d.getDate() + 1);
+  d.setDate(d.getDate() + n);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+function plusOneDay(iso: string): string {
+  return plusDays(iso, 1);
 }
 
 // What Remember will do, said before the tap ("→ Ask about on 13 Oct").
 function outcomeSentence(p: PersonProposal, date: string, topic: string): string {
+  if (p.type === "give_mine") return "→ Log · counts as a give";
+  if (p.type === "reputation_signal") return "→ Reputation page · log";
+  if (p.type === "give_theirs") {
+    const reportDue = p.due ? shortDate(plusDays(p.due, 30)) : "";
+    return `→ Log · thank today · report outcome ${reportDue}`;
+  }
+  if (p.type === "intro") {
+    const due = date ? plusDays(date, 14) : p.due;
+    return due ? `→ Log · check in on ${shortDate(due)}` : "→ Log · check in";
+  }
   if (p.section !== "Next action") {
     if (p.type === "personal_detail") return `→ About them${topic ? ` · ${topic}` : ""}`;
     if (p.type === "company_knowledge") return "→ Their company's facts";
@@ -322,9 +346,12 @@ function outcomeSentence(p: PersonProposal, date: string, topic: string): string
   }
   const due = p.type === "upcoming" && date ? plusOneDay(date)
     : p.type === "commitment_theirs" ? (date ? plusOneDay(date) : null)
-    : p.type === "milestone" ? p.due : (date || p.due);
+    : p.type === "milestone" ? p.due
+    : p.type === "important_date" ? (date ? plusDays(date, -7) : p.due)
+    : (date || p.due);
   const verb = p.type === "upcoming" ? "Ask about" : p.type === "milestone" ? "Congratulate"
-    : p.type === "commitment_theirs" ? "Check in" : "Follow up";
+    : p.type === "commitment_theirs" ? "Check in" : p.type === "important_date" ? "Remind"
+    : "Follow up";
   return due ? `→ ${verb} on ${shortDate(due)}` : `→ ${verb} — no date, stays open`;
 }
 
