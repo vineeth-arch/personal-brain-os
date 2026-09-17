@@ -535,6 +535,13 @@ try {
   await page.getByRole("button", { name: "Draft with AI" }).click();
   const draftBox = page.getByLabel("Draft message");
   await draftBox.waitFor();
+  await page.waitForFunction(
+    () => {
+      const el = document.querySelector('textarea[aria-label="Draft message"]');
+      return el && /hey Priya/.test(el.value);
+    },
+    { timeout: 5000 },
+  );
   assert.match(await draftBox.inputValue(), /hey Priya/);
   console.log("✓ Composer drafts with AI once a voice sample exists");
 
