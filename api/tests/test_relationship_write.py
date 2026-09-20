@@ -95,7 +95,7 @@ def test_contact_writes_v2_line_and_last_give(vault_env):
                             "touch_type": "give_know"})
         assert code == 200
     text = next((vault / "07-People").glob("*.md")).read_text(encoding="utf-8")
-    today = date.today().isoformat()
+    today = datetime.now(ZoneInfo("UTC")).date().isoformat()  # test config tz is UTC
     assert f"- {today} · out · whatsapp · give_know · shared an article" in text
     assert f"last_give: {today}" in text
     assert f"last_contact: {today}" in text
@@ -224,7 +224,7 @@ def test_owner_tier_edit_records_history(vault_env):
         assert body["tier"] == "core"
         assert body["warning"] is None
     text = next((vault / "07-People").glob("*.md")).read_text(encoding="utf-8")
-    today = date.today().isoformat()
+    today = datetime.now(ZoneInfo("UTC")).date().isoformat()  # test config tz is UTC
     assert f"- {today} · tier:  → core (owner)" in text
 
 
