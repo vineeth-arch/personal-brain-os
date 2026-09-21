@@ -204,12 +204,14 @@ binding, and how to rebuild them.
   tag; the classifier routes it. (Any prompt — Ask for Input, Choose from
   List — requires an unlocked phone, which is the one thing the Action Button
   is meant to avoid.)
-- **Brain Share** — in the share sheet, for photos, screenshots, Instagram
-  and YouTube links, and Safari pages. It asks for a thought and a tag.
+- **Brain Share** — in the share sheet, for Instagram and YouTube links,
+  Safari pages and selected text. It asks for a thought and a tag. Photos go
+  through the cockpit's own camera button instead — see the README for why.
 
-Each POST is sent twice on failure, two seconds apart, carrying the same
-`X-Capture-Key`, so a retry after an attempt that silently landed returns the
-same note rather than writing a duplicate.
+Each capture is a single POST carrying an `X-Capture-Key`, and the
+notification shows the server's own reply, so a failure tells you what to do
+next. Brain Text and Brain Share are verified end to end; Brain Voice's
+upload path has only been checked on the phone — confirm it once.
 
 #### The API contract, if you build one by hand
 
@@ -236,6 +238,11 @@ to JPEG on the device first (the Shortcuts *Convert Image* action does this).
 There is **no OCR parameter**. On-device text extraction has nowhere to go on
 the server today; the pipeline describes the photo itself. (`DEFERRED.md`
 carries the line for an OCR sidecar if that ever changes.)
+
+Building one by hand in the Shortcuts app is fine, but note that three
+actions break a generated shortcut outright — Replace Text and Format Date
+hang the runner, and a hand-serialised If is rejected. Tapping them out in
+the app avoids all three; `scripts/shortcuts/README.md` has the detail.
 
 A failure comes back as the usual three-part envelope,
 `{"error": {"what", "cause", "todo"}}` — note that `todo` is nested inside

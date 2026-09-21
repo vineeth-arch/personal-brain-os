@@ -92,36 +92,18 @@ class Shortcut:
     def v(self, name):
         return self.named[name]
 
-    def trim(self, ref, regex):
-        """Strip pasted whitespace / trailing slashes with a regex replace."""
-        return self.add("text.replace", {
-            "WFInput": tokstr(ref), "WFReplaceTextFind": regex, "WFReplaceTextReplace": "",
-            "WFReplaceTextRegularExpression": True}, "Updated Text")
-
-    def cond(self, mode, gid, ref=None):
-        p = {"GroupingIdentifier": gid, "WFControlFlowMode": mode}
-        if ref is not None:  # 100 = "has any value"
-            p.update({"WFCondition": 100, "WFInput": {"Type": "Variable", "Variable": tokref(ref)}})
-        self.add("conditional", p)
-
-    def if_value(self, ref, then, otherwise):
-        gid = str(uuid.uuid4()).upper()
-        self.cond(0, gid, ref)
-        then()
-        self.cond(1, gid)
-        otherwise()
-        self.cond(2, gid)
-
     def notify(self, *body):
         self.add("notification", {"WFNotificationActionTitle": "Brain Cockpit",
                                   "WFNotificationActionBody": tokstr(*body)})
 
     def prologue(self, test):
         """Actions 0 and 1 are the import-question targets — keep them first."""
-        base = self.text(test[0] if test else "https://")
-        token = self.text(test[1] if test else "")
-        self.setvar("BaseURL", self.trim(out(base), r"^\s+|[\s/]+$"))
-        self.setvar("Token", self.trim(out(token), r"^\s+|\s+$"))
+        # No tidying pass over these two: a Replace Text action anywhere in
+        # the chain wedges the runner (it never returns and reports nothing),
+        # so the answers are used exactly as typed. Hence "no trailing slash"
+        # in the import question and the README.
+        self.setvar("BaseURL", self.text(test[0] if test else "https://"))
+        self.setvar("Token", self.text(test[1] if test else ""))
 
     def ask(self, prompt, test, fixed):
         if test:
@@ -138,47 +120,35 @@ class Shortcut:
 
     def capture_key(self):
         """Idempotency key: same value on both attempts, so a retry whose first
-        try silently landed returns the same note instead of a duplicate."""
-        now = self.add("date", {}, "Date")
-        fmt = self.add("format.date", {"WFDate": tokref(out(now)), "WFDateFormatStyle": "Custom",
-                                       "WFDateFormat": "yyyyMMddHHmmss"}, "Formatted Date")
-        rnd = self.add("number.random", {"WFRandomNumberMinimum": 100000,
-                                         "WFRandomNumberMaximum": 999999999}, "Random Number")
-        self.setvar("CaptureKey", self.add("gettext", {"WFTextActionText": tokstr(out(fmt), "-", out(rnd))}, "Text"))
+        try silently landed returns the same note instead of a duplicate.
 
-    def post_with_retry(self, url_parts, body_params, content_type=None):
-        """POST, then once more after 2s if no note id came back, then notify.
-        A network failure aborts the shortcut with iOS's own alert — Shortcuts
-        has no try/catch — but a server error comes back as JSON and lands in
-        the notification, showing the server's own `todo` sentence."""
-        headers = [("Authorization", ["Bearer ", self.v("Token")]), ("X-Capture-Key", [self.v("CaptureKey")])]
+        Two random numbers rather than a timestamp: Format Date hangs the
+        runner outright (it never returns, with no error), while Random Number
+        is well behaved. ~10^17 of space is far more than enough to keep two
+        different captures from colliding."""
+        a = self.add("number.random", {"WFRandomNumberMinimum": 100000000,
+                                       "WFRandomNumberMaximum": 999999999}, "Random Number")
+        b = self.add("number.random", {"WFRandomNumberMinimum": 100000000,
+                                       "WFRandomNumberMaximum": 999999999}, "Random Number")
+        self.setvar("CaptureKey", self.add("gettext", {"WFTextActionText": tokstr(out(a), "-", out(b))}, "Text"))
+
+    def post(self, url_parts, body_params, content_type=None):
+        """POST, then show the server's own reply.
+
+        Deliberately flat — no If, no retry. An If action serialised by hand
+        renders as "Please choose a value for each parameter" and stops the
+        run dead, and Shortcuts has neither try/catch nor a readable status
+        code, so there is nothing sound to branch on anyway. Showing the raw
+        reply never lies: a success reads {"id": …, "status": "captured"} and
+        a failure carries the server's own what/cause/todo sentences."""
+        headers = [("Authorization", ["Bearer ", self.v("Token")]),
+                   ("X-Capture-Key", [self.v("CaptureKey")])]
         if content_type:
             headers.append(("Content-Type", [content_type]))
-
-        def post():
-            return self.add("downloadurl", {"WFURL": tokstr(*url_parts), "WFHTTPMethod": "POST",
-                                            "WFHTTPHeaders": fields(headers), **body_params},
-                            "Contents of URL")
-
-        def note_id(resp):
-            return self.add("getvalueforkey", {"WFInput": tokref(out(resp)), "WFDictionaryKey": "id",
-                                               "WFGetDictionaryValueType": "Value"}, "Dictionary Value")
-
-        def second_try():
-            self.add("delay", {"WFDelayTime": 2})
-            resp = post()
-            self.if_value(note_id(resp), lambda: self.notify("Captured."), lambda: report(resp))
-
-        def report(resp):
-            err = self.add("getvalueforkey", {"WFInput": tokref(out(resp)), "WFDictionaryKey": "error",
-                                              "WFGetDictionaryValueType": "Value"}, "Dictionary Value")
-            todo = self.add("getvalueforkey", {"WFInput": tokref(out(err)), "WFDictionaryKey": "todo",
-                                               "WFGetDictionaryValueType": "Value"}, "Dictionary Value")
-            self.if_value(todo, lambda: self.notify(out(todo)),
-                          lambda: self.notify("Couldn't capture that. Check the server address and token, then try again."))
-
-        first = post()
-        self.if_value(note_id(first), lambda: self.notify("Captured."), second_try)
+        resp = self.add("downloadurl", {"WFURL": tokstr(*url_parts), "WFHTTPMethod": "POST",
+                                        "WFHTTPHeaders": fields(headers), **body_params},
+                        "Contents of URL")
+        self.notify(out(resp))
 
     def plist(self, questions, icon_color):
         return {
@@ -188,8 +158,9 @@ class Shortcut:
             "WFWorkflowIcon": {"WFWorkflowIconStartColor": icon_color, "WFWorkflowIconGlyphNumber": 59511},
             "WFWorkflowTypes": ["ActionExtension"] if self.share else [],
             "WFWorkflowInputContentItemClasses": (
-                ["WFImageContentItem", "WFURLContentItem", "WFSafariWebPageContentItem",
-                 "WFStringContentItem", "WFRichTextContentItem", "WFArticleContentItem"]
+                ["WFURLContentItem", "WFSafariWebPageContentItem", "WFStringContentItem",
+                 "WFRichTextContentItem", "WFArticleContentItem", "WFAVAssetContentItem",
+                 "WFGenericFileContentItem"]
                 if self.share else []),
             "WFWorkflowImportQuestions": questions,
             "WFWorkflowActions": self.actions,
@@ -220,7 +191,7 @@ def build_text(test):
     thought = s.ask("Capture a thought", test, "shortcut test")
     tag = s.pick_tag(test)
     s.capture_key()
-    s.post_with_retry([s.v("BaseURL"), "/api/capture"],
+    s.post([s.v("BaseURL"), "/api/capture"],
                       json_body(text=[out(thought)], tag=[out(tag)]))
     return s.plist(import_questions(test), 4282601983)
 
@@ -231,45 +202,36 @@ def build_voice(test):
     s = Shortcut()
     s.prologue(test)
     if test:  # the test rig feeds a file in instead of recording
+        # declare a file input so `shortcuts run -i some.m4a` populates
+        # Shortcut Input; the shipped shortcut records instead and takes none
+        s.share = True
         audio = tokref(EXT_INPUT)
     else:
         rec = s.add("recordaudio", {"WFRecordingStart": "Immediately", "WFRecordingCompression": "Normal"},
                     "Recorded Audio")
         audio = tokref(out(rec))
     s.capture_key()
-    s.post_with_retry([s.v("BaseURL"), "/api/capture/audio"],
+    s.post([s.v("BaseURL"), "/api/capture/audio"],
                       {"WFHTTPBodyType": "File", "WFRequestVariable": audio}, "audio/m4a")
     return s.plist(import_questions(test), 4292093695)
 
 
 def build_share(test):
-    """A — share sheet: an image goes as a raw JPEG, a link or text as JSON."""
+    """A — share sheet, for links, Safari pages and selected text.
+
+    Links and text only. A photo would need the raw-file upload path plus an
+    If to tell the two apart, and an If serialised by hand breaks the run —
+    so photos stay with the cockpit's own camera button in the PWA, which
+    already resizes and uploads them. The declared input classes leave images
+    out, so iOS does not offer this shortcut for a photo in the first place."""
     s = Shortcut(share=True)
     s.prologue(test)
-    images = s.add("detect.images", {"WFInput": tokref(EXT_INPUT)}, "Images")
-
-    def image_branch():
-        jpeg = s.add("image.convert", {"WFInput": tokref(out(images)), "WFImageFormat": "JPEG",
-                                       "WFImagePreserveMetadata": False}, "Converted Image")
-        small = s.add("image.resize", {"WFImage": tokref(out(jpeg)), "WFImageResizeKey": "Width",
-                                       "WFImageResizeWidth": "2048"}, "Resized Image")
-        thought = s.ask("Add a thought?", test, "shortcut test")
-        tag = s.pick_tag(test)
-        enc = s.add("urlencode", {"WFInput": tokref(out(thought)), "WFEncodeMode": "Encode"}, "URL Encoded")
-        s.capture_key()
-        s.post_with_retry(
-            [s.v("BaseURL"), "/api/capture/image?tag=", out(tag), "&name=", out(enc), "&insight=", out(enc)],
-            {"WFHTTPBodyType": "File", "WFRequestVariable": tokref(out(small))}, "image/jpeg")
-
-    def text_branch():
-        thought = s.ask("Add a thought?", test, "shortcut test")
-        tag = s.pick_tag(test)
-        s.capture_key()
-        # thought first, then the link: the shape the pipeline's link detection expects
-        s.post_with_retry([s.v("BaseURL"), "/api/capture"],
-                          json_body(text=[out(thought), "\n\n", EXT_INPUT], tag=[out(tag)]))
-
-    s.if_value(images, image_branch, text_branch)
+    thought = s.ask("Add a thought?", test, "shortcut test")
+    tag = s.pick_tag(test)
+    s.capture_key()
+    # thought first, then the link: the shape the pipeline's link detection expects
+    s.post([s.v("BaseURL"), "/api/capture"],
+           json_body(text=[out(thought), "\n\n", EXT_INPUT], tag=[out(tag)]))
     return s.plist(import_questions(test), 4292093695)
 
 

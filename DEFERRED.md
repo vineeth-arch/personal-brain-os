@@ -103,3 +103,6 @@
 - Emit an `icon.svg` from the same geometry constants in `web/scripts/make_icons.py` for a crisp desktop favicon (one source of truth; never hand-author a second SVG).
 - Railway's public domain (`app-production-6c89.up.railway.app`) answers without a Cloudflare Access challenge, so Access guards only the custom domain — the bearer token is the real lock on the API. Closing it means Railway private networking or a tunnel-only ingress.
 - The Shortcuts' `--test` harness needs a public URL (`cloudflared tunnel`) because Shortcuts cannot reach `127.0.0.1` — a loopback request hangs on a local-network permission that never arrives. An automated (non-GUI) import path doesn't exist: `shortcuts` has no `add` subcommand.
+- Shortcuts: photo capture from the share sheet (needs the raw-file upload plus an If to tell a photo from a link; a hand-serialised If is rejected by Shortcuts). The PWA's camera button covers it.
+- Shortcuts: retry-on-failure and a prettier success notification, both of which need a working If action — the generated one is rejected, so the notification shows the server's raw reply instead.
+- Shortcuts: Brain Voice's raw-file upload is unverified off-device (Record Audio needs a mic; `shortcuts run -i` never reached the server with a File body).
