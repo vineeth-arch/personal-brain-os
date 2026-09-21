@@ -20,7 +20,7 @@ export function Layout({ route, children }: Props) {
   return (
     <div className="mx-auto flex min-h-dvh max-w-2xl flex-col">
       <OfflineBanner />
-      <header className="flex items-start justify-between px-5 pt-6">
+      <header className="flex items-start justify-between px-5 pt-[calc(1.5rem+env(safe-area-inset-top))]">
         <div>
           <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">
             Brain Cockpit
@@ -90,11 +90,11 @@ export function Layout({ route, children }: Props) {
         </div>
       </header>
 
-      <main className="flex-1 px-5 pb-28 pt-6">{children}</main>
+      <main className="flex-1 px-5 pb-[calc(7rem+env(safe-area-inset-bottom))] pt-6">{children}</main>
 
       <nav
         aria-label="Main"
-        className="bg-default border-subtle fixed inset-x-0 bottom-0 border-t"
+        className="bg-default border-subtle fixed inset-x-0 bottom-0 border-t pb-[env(safe-area-inset-bottom)]"
       >
         <div className="mx-auto flex max-w-2xl">
           {TABS.map((tab) => {

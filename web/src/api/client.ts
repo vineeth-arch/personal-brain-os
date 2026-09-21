@@ -60,7 +60,21 @@ const TOKEN_KEY = "cockpit.token";
 // config — it never leaves the browser, so it lives here with the other
 // localStorage keys rather than in config.json.
 const TRIAGE_TIMER_KEY = "cockpit.triageTimer";
-export const DEFAULT_API_BASE = "http://127.0.0.1:8000";
+const DEV_API_BASE = "http://127.0.0.1:8000";
+
+// The server the app was served from is the right default everywhere except
+// the Vite dev server, which runs on 5173 while the API runs on 8000. Without
+// this a phone (or any device that isn't the server) prefilled its own
+// localhost and could never connect on first run.
+export function defaultApiBase(
+  loc: { origin: string; port: string } | undefined = typeof window === "undefined"
+    ? undefined
+    : window.location,
+): string {
+  if (!loc || loc.port === "5173" || loc.origin === "null") return DEV_API_BASE;
+  return loc.origin;
+}
+export const DEFAULT_API_BASE = defaultApiBase();
 
 // Fired when the server rejects the token so App can swap to the connect screen.
 export const UNAUTHORIZED_EVENT = "cockpit:unauthorized";
