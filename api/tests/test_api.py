@@ -925,7 +925,7 @@ def test_integrations_shape_and_engine_guard(env):
         assert code == 200 and body["engine"] == "whispercpp"
         health = [c for c in body["cards"] if c["group"] == "health"]
         links = [c for c in body["cards"] if c["group"] == "link"]
-        assert len(health) == 10
+        assert len(health) == 11
         # Hindi → Hinglish is honest about being unset rather than absent
         transliteration = next(c for c in health if c["id"] == "transliteration")
         assert transliteration["badge"] == "Not configured"
@@ -967,6 +967,16 @@ def test_todos_ranges_and_toggle(env):
                                 capture_output=True, text=True).stdout.strip()
         assert logmsg == "api: todo 20260701090000-1 marked done"
         assert s.req("POST", "/api/todos/nope/toggle")[0] == 404
+        # recur: set / change / clear in place; bad value 400; unknown 404; undated 400
+        f = vault / "06-Todos" / f"{today.isoformat()}.md"
+        assert s.req("POST", "/api/todos/20260701090000-3/recur", {"recur": "weekly"})[1]["recur"] == "weekly"
+        assert f"review the deck 🔁 weekly 📅 {(today + timedelta(days=1)).isoformat()} ^20260701090000-3" in f.read_text(encoding="utf-8")
+        assert s.req("POST", "/api/todos/20260701090000-3/recur", {"recur": None})[1]["recur"] is None
+        assert "🔁" not in f.read_text(encoding="utf-8")
+        assert s.req("POST", "/api/todos/20260701090000-3/recur", {"recur": "monthly"})[0] == 400
+        assert s.req("POST", "/api/todos/nope/recur", {"recur": "daily"})[0] == 404
+        code, body = s.req("POST", "/api/todos/20260701090000-5/recur", {"recur": "daily"})
+        assert code == 400 and set(body["error"]) == {"what", "cause", "todo"}  # undated
 
 
 # ---- micro-step breakdown (Task R5, B10) ------------------------------------

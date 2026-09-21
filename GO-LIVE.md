@@ -319,6 +319,21 @@ verified against a live account — every one of them is a config value
 config edit, not a rewrite. The folder lane above has no such caveat — it's
 plain files on disk, the same path every other capture already takes.
 
+## Instagram captions (Apify) [YOU]
+
+Without this, Instagram links are saved without a caption or cover (the note says why).
+
+1. Create an Apify account and copy your API token.
+2. Railway service variable `APIFY_TOKEN` — environment only, never `config.json`, never committed.
+3. In `config.json` on the `/data` volume: `"apify": {"actor_id": "apify~instagram-scraper"}`.
+4. Also set `"enrich": {"download_covers": true}` — Instagram CDN cover URLs expire within days, so a hot-linked cover would 404.
+
+Cost: Apify bills per result. A note whose enrichment keeps failing is retried up to
+`MAX_ENRICH_ATTEMPTS = 4` times, so one hard-failing note can cost up to 4 runs.
+The Integrations screen shows "Apify (Instagram)" as configured or not; it never makes a paid call.
+
+---
+
 ## 9. Verify (2 min)
 
 Integrations screen: whisper/OpenAI engine, model key, ntfy (optional),

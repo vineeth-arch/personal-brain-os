@@ -289,6 +289,30 @@ def _check_pdl(config, state: dict) -> dict:
     return card
 
 
+def _check_apify(config, state: dict) -> dict:
+    """Apify (Instagram captions). Presence-only, never a live call: a run
+    costs money. Not configured is normal — Instagram notes just stay bare."""
+    token = os.environ.get("APIFY_TOKEN")
+    actor = (config.raw.get("apify") or {}).get("actor_id")
+    card = {"id": "apify", "group": "health", "name": "Apify (Instagram)", "icon": "link",
+            "description": "Fetches the caption and cover of a shared Instagram post.",
+            "meta": {"token_present": bool(token), "actor_set": bool(actor)}}
+    if not (token and actor):
+        card.update(
+            status="unknown", badge="Not configured",
+            detail="Instagram links are saved without a caption until this is set.",
+            error={
+                "what": "Apify isn't fully configured.",
+                "cause": "APIFY_TOKEN isn't set in the server's environment, or apify.actor_id is empty in config.json.",
+                "todo": "Set both (see GO-LIVE.md, Instagram captions) and restart the API, "
+                        "or leave it — nothing else depends on it.",
+            })
+        return card
+    card.update(status="ok", badge="Configured",
+                detail="Instagram links are enriched on capture (Apify bills per result).")
+    return card
+
+
 def _check_transliteration(config, state: dict) -> dict:
     """Devanagari → Hinglish (Pass P). Not configured is a normal, honest state:
     the pipeline still writes the note, just in the script whisper returned."""
@@ -648,6 +672,7 @@ def build_payload(config, heartbeat_path: Path, fresh: bool, state: dict,
             config.anthropic_key, None, fresh, _test_call_anthropic, state),
         _check_transliteration(config, state),
         _check_pdl(config, state),
+        _check_apify(config, state),
         _check_ntfy(config, state),
         _check_vault_sync(config),
         _check_git(config),

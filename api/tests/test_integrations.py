@@ -96,7 +96,7 @@ def test_unknown_link_keys_render(env):
         _, body = s.req("GET", "/api/integrations")
         health = [c for c in body["cards"] if c["group"] == "health"]
         links = {c["id"]: c for c in body["cards"] if c["group"] == "link"}
-        assert len(health) == 10  # unknown links never grow the health set
+        assert len(health) == 11  # unknown links never grow the health set
         assert {"obsidian", "dex", "notion"} <= set(links)
         assert "empty" not in links  # blank urls are skipped
         notion = links["notion"]
@@ -135,3 +135,14 @@ def test_config_providers_chain(env):
     with Server(root) as s:
         _, body = s.req("GET", "/api/config")
         assert body["providers"] == ["claude-haiku"]
+
+
+def test_apify_card_is_presence_only(monkeypatch):
+    from types import SimpleNamespace
+    monkeypatch.delenv("APIFY_TOKEN", raising=False)
+    card = integrations._check_apify(SimpleNamespace(raw={}), {})
+    assert card["status"] == "unknown" and card["badge"] == "Not configured"
+    assert set(card["error"]) == {"what", "cause", "todo"}
+    monkeypatch.setenv("APIFY_TOKEN", "fake")
+    card = integrations._check_apify(SimpleNamespace(raw={"apify": {"actor_id": "a~b"}}), {})
+    assert card["status"] == "ok" and "fake" not in json.dumps(card)
