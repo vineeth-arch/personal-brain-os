@@ -77,3 +77,18 @@ def test_share_with_bad_tag_is_refused(env):
         code, body = s.req("POST", "/api/capture", {"url": "https://example.com/x", "tag": "not-a-tag"})
         assert code == 400
         assert set(body["error"]) == {"what", "cause", "todo"}
+
+
+def test_empty_tag_is_treated_as_untagged(env):
+    """A client (e.g. an iOS Shortcut with a blank tag variable) may send
+    `"tag": ""` instead of omitting the key. That must behave like no tag —
+    the audio and image routes already normalise it this way."""
+    tmp, _, inbox, _ = env
+    with Server(tmp) as s:
+        code, body = s.req("POST", "/api/capture", {"text": "call the plumber", "tag": ""})
+        assert code == 201 and body["status"] == "captured"
+        code, _ = s.req("POST", "/api/capture", {"text": "buy milk", "tag": "   "})
+        assert code == 201
+    names = [p.name for p in inbox.iterdir()]
+    assert len(names) == 2
+    assert not any("#" in n for n in names)

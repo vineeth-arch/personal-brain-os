@@ -32,7 +32,7 @@ export function TokenGate({ onConnected }: Props) {
         setError({
           what: "Couldn't reach the Brain Cockpit server.",
           cause: "The API isn't running at that address, or the address is wrong.",
-          todo: `Start the API (uvicorn api.main:app), then check the address — the default is ${DEFAULT_API_BASE}.`,
+          todo: `Check the address — it should be the one you opened this page from (${DEFAULT_API_BASE}). Running it yourself? Start the API with uvicorn api.main:app.`,
         });
         return;
       }

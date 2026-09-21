@@ -769,10 +769,12 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                     400, "There was nothing to capture.",
                     "The capture text was empty.",
                     "Type a thought first, then press Capture.")
-        if not notes.valid_tag(body.tag):
+        # a blank tag means "no tag" — same normalisation as the audio/image routes
+        tag = (body.tag or "").strip() or None
+        if not notes.valid_tag(tag):
             raise Envelope(
                 400, "That's not a capture tag the pipeline knows.",
-                f"'{body.tag}' isn't one of the 10 capture tags in SCHEMA-REFERENCE.md.",
+                f"'{tag}' isn't one of the 10 capture tags in SCHEMA-REFERENCE.md.",
                 "Pick one of the tag chips, or send no tag and let the classifier decide.")
         # Task F3 (outbox idempotency): a client that couldn't tell whether
         # its first attempt landed can safely resend with the same
@@ -786,7 +788,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                     return {"id": existing, "status": "captured"}
             # the inbox is outside the vault — nothing to git-commit here; the
             # watcher's processing (and any approve) is where vault history is made
-            note_id = notes.capture(Path(config.inbox_path), text, body.tag)
+            note_id = notes.capture(Path(config.inbox_path), text, tag)
             if capture_key:
                 events.mark_capture_key(capture_key, note_id)
             return {"id": note_id, "status": "captured"}
