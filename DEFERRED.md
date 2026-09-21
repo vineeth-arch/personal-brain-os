@@ -97,3 +97,9 @@
 - `api/people.py` has grown to ~870+ lines across ten tasks; split into smaller modules next time it's touched (e.g. extract draft/prompt-building and reply logic into a submodule).
 - `/reply` calls `greene.ensure(vault)` once for reads/situation-picking, then `draft()` (called internally) calls `greene.ensure(vault)` again — a harmless but redundant second file read on every reply once a situation code is chosen. Thread it through as a single call if `reply`'s draft-building path is ever refactored.
 - The Greene panel's pride-insertion affordance makes the pride-read TEXT itself the clickable "use this" control, unlike situations which have an explicit "Use this line" button. Add a distinct "Use this read" button for parity and accessibility — the current text-as-button has an unclear accessible name.
+
+## Phone-ready pass (logged 2026-09-21)
+- `/api/capture/image` takes the thought in the `insight` QUERY param, so a very long dictated thought can overrun uvicorn's ~8 KB request line — accepting it in a header or body field is a server change, not done here.
+- Emit an `icon.svg` from the same geometry constants in `web/scripts/make_icons.py` for a crisp desktop favicon (one source of truth; never hand-author a second SVG).
+- Railway's public domain (`app-production-6c89.up.railway.app`) answers without a Cloudflare Access challenge, so Access guards only the custom domain — the bearer token is the real lock on the API. Closing it means Railway private networking or a tunnel-only ingress.
+- The Shortcuts' `--test` harness needs a public URL (`cloudflared tunnel`) because Shortcuts cannot reach `127.0.0.1` — a loopback request hangs on a local-network permission that never arrives. An automated (non-GUI) import path doesn't exist: `shortcuts` has no `add` subcommand.

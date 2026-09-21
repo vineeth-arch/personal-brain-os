@@ -191,107 +191,73 @@ There are three ways in, from fastest-setup to richest:
 - **Android**: any recorder or file manager set to save into the synced
   inbox folder works the same way.
 
-### The share-sheet Shortcut (photos, screenshots, Instagram/YouTube/Safari links)
+### The three capture Shortcuts (voice, share sheet, quick text)
 
-This is the one-tap flow the rest of this pass was built for: share an
-Instagram post, a YouTube video, a screenshot, or a Safari page straight from
-iOS, and it lands in the cockpit as a resource — extracted, described, and
-searchable — with your own thought attached. Build it once in the Shortcuts
-app:
+Three ready-made Shortcuts live in `scripts/shortcuts/dist/` — AirDrop them
+to the phone and each asks for your cockpit address and access token once, on
+import. `scripts/shortcuts/README.md` covers installing, the Action Button
+binding, and how to rebuild them.
 
-1. **New Shortcut** → tap the ⓘ settings icon → **"Use as Share Sheet
-   Action"** → **Share Sheet Types**: enable Images and URLs (and Text, so
-   Safari's "Share as Text" also works).
-2. Add an **If** action: condition **"Shortcut Input" → "is" → "Image"**.
-   Everything below goes inside that If block — branch A in the **If** half,
-   branch B in the **Otherwise** half.
+- **Brain Text** — a typed or dictated thought, from the Home Screen or Siri.
+- **Brain Voice** — bound to the **Action Button**: records and sends, with
+  no prompts at all, so it works with the phone in your pocket. It sends no
+  tag; the classifier routes it. (Any prompt — Ask for Input, Choose from
+  List — requires an unlocked phone, which is the one thing the Action Button
+  is meant to avoid.)
+- **Brain Share** — in the share sheet, for photos, screenshots, Instagram
+  and YouTube links, and Safari pages. It asks for a thought and a tag.
 
-   **A — If: the input is an image (photo/screenshot):**
-   - **Extract Text from Image** (built-in Shortcuts action, on-device — this
-     is the "Apple Intelligence" pass: it's free, instant, and often means no
-     cloud vision call happens at all) → save the result as variable `OCR`.
-   - **Convert Image** → JPEG.
-   - **Resize Image** → 2048 (fit within, longest edge) — belt-and-braces
-     alongside the server's own downscale.
-   - **Ask for Input** (Text, allow empty) → prompt **"Add a thought?"** →
-     save as `Thought`.
-   - **Choose from Menu** with the 10 capture tags (`todo idea journal
-     learning person resource decision project musing conversation`) plus
-     **"No tag — let AI decide"** → save the choice (blank for "no tag") as
-     `Tag`.
-   - **Get Contents of URL**:
-     - URL: `https://cockpit.yourdomain.com/api/capture/image`
-     - Method: POST
-     - Headers: `Authorization: Bearer <your access token>`
-     - Request Body: **Form** — fields `file` (the resized image),
-       `text` (`Thought`), `tag` (`Tag`), `ocr` (`OCR`)
+Each POST is sent twice on failure, two seconds apart, carrying the same
+`X-Capture-Key`, so a retry after an attempt that silently landed returns the
+same note rather than writing a duplicate.
 
-   **B — Otherwise: the input is a URL or text (a shared link, or Safari "Share as Text"):**
-   - **Ask for Input** (Text, allow empty) → **"Add a thought?"** → `Thought`.
-   - **Choose from Menu** → same 10 tags + "No tag" → `Tag`.
-   - **Get Contents of URL**:
-     - URL: `https://cockpit.yourdomain.com/api/capture`
-     - Method: POST
-     - Headers: `Authorization: Bearer <your access token>`,
-       `Content-Type: application/json`
-     - Request Body: **JSON** — `{"text": "<Shortcut Input> <Thought>",
-       "tag": "<Tag or empty>"}`
-3. **Show Notification** — "Captured ✅" — at the end of both branches. The
-   note itself takes a minute or two to process; this is the instant trust
-   signal (the cockpit's own capture box works the same way).
+#### The API contract, if you build one by hand
 
-**⚠️ A real caveat, not a formality**: the access token lives in plain text
-inside this Shortcut once you paste it into the header field. Anyone who can
-open, export, or AirDrop the Shortcut to themselves can read it. Don't share
-this Shortcut file with anyone, and if you ever suspect it leaked, rotate
-`api.auth_token` in `data/config.json` and rebuild the Shortcut's header.
+All three routes take `Authorization: Bearer <your access token>`, and
+optionally `X-Capture-Key: <any unique string>` for the idempotent retry.
 
-**What happens next**: an image lands in `04-Resources` (if tagged/classified
-as a resource) with a description and any extracted text already filled in,
-or wherever its tag/classification sends it otherwise — a `#todo`-tagged
-whiteboard photo, for instance, gets its action items pulled into today's
-todo file exactly like a voice memo would. See `DEFERRED.md` for what this
-pass intentionally left out (video/reel *content* understanding, Apify for
-real Instagram captions, editing extracted fields from the cockpit).
+| Route | Body | Content-Type | Query parameters |
+|---|---|---|---|
+| `POST /api/capture` | JSON: `{"text": "…", "tag": "…"}` or `{"url": "https://…", "insight": "…", "tag": "…"}` | `application/json` | — |
+| `POST /api/capture/audio` | the **raw audio file** as the whole body | `audio/m4a` (or webm/ogg/mp4) | `tag`, `name` |
+| `POST /api/capture/image` | the **raw image file** as the whole body | `image/jpeg` (or png/webp) | `tag`, `name`, `insight` |
 
-### The Action Button Shortcut (capture from a locked screen)
+**Not multipart.** The audio and image routes take the file as the entire
+request body — `python-multipart` isn't a locked dependency (CLAUDE.md §7),
+so there is no form to fill in. In the Shortcuts app that means *Request
+Body: File*, not *Form*. A photo's accompanying thought rides in the
+`insight` **query parameter**, URL-encoded, not in the body.
 
-The share-sheet Shortcut above needs the phone unlocked to reach the share
-sheet. If you want to capture a quick voice thought without unlocking —
-walking, driving, hands full — bind a second Shortcut to the iPhone **Action
-Button** instead:
+The tag is one of the ten capture tags — `todo idea journal learning person
+resource decision project musing conversation` — or omitted entirely to let
+the classifier decide. Limits: 100 MB of audio, 15 MB of image; convert HEIC
+to JPEG on the device first (the Shortcuts *Convert Image* action does this).
 
-1. **Settings → Action Button** (or **Settings → Accessibility → Action
-   Button** on models without a dedicated section) → set the action to
-   **Shortcut** → pick a new Shortcut (build it in the Shortcuts app first).
-2. Build the Shortcut:
-   - **Record Audio** — this is one of the actions Apple allows to run from
-     the Action Button without a full unlock.
-   - **Ask for Input** (Text, allow empty) → **"Add a thought?"** → save as
-     `Thought`.
-   - **Choose from Menu** with the same 10 capture tags (`todo idea journal
-     learning person resource decision project musing conversation`) plus
-     **"No tag — let AI decide"** → save the choice (blank for "no tag") as
-     `Tag`.
-   - **Get Contents of URL**:
-     - URL: `https://cockpit.yourdomain.com/api/capture/audio?tag=<Tag>`
-     - Method: POST
-     - Headers: `Authorization: Bearer <your access token>`
-     - Request Body: the recorded audio file, raw (this mirrors the
-       cockpit's own mic-button endpoint — same contract, no multipart).
-3. **Show Notification** — "Captured ✅" — same instant-trust pattern as the
-   other two capture paths.
+There is **no OCR parameter**. On-device text extraction has nowhere to go on
+the server today; the pipeline describes the photo itself. (`DEFERRED.md`
+carries the line for an OCR sidecar if that ever changes.)
 
-**⚠️ Same caveat as the share-sheet Shortcut**: the access token lives in
-plain text inside this Shortcut too. Don't share or AirDrop this Shortcut
-file, and rotate `api.auth_token` if you ever suspect it leaked.
+A failure comes back as the usual three-part envelope,
+`{"error": {"what", "cause", "todo"}}` — note that `todo` is nested inside
+`error`, so reading it in Shortcuts takes two *Get Dictionary Value* steps.
 
-**Real caveat, not a formality**: whether an Action-Button Shortcut can make
-a network call *before* Face ID/passcode unlock depends on iOS's own
-automation-when-locked settings, which vary by iOS version and how the
-Shortcut is configured. If it prompts for unlock the first time, that's iOS
-gating it, not a bug in this setup — the Shortcut still runs the moment you
-unlock.
+**⚠️ A real caveat, not a formality**: once imported, the access token lives
+in plain text inside the Shortcut on the phone. Anyone who can open, export,
+or AirDrop the *installed* Shortcut can read it. Don't share an installed
+copy, and if you suspect it leaked, rotate `api.auth_token` in
+`data/config.json` and re-import.
+
+**Whether the Action Button can fire before unlock** depends on iOS's own
+automation-when-locked settings, which vary by version. If it prompts for
+Face ID the first time, that's iOS gating it, not a bug in this setup.
+
+**What happens next**: an image lands in `04-Resources` (if tagged or
+classified as a resource) with a description and any extracted text already
+filled in, or wherever its tag sends it otherwise — a `#todo`-tagged
+whiteboard photo gets its action items pulled into today's todo file exactly
+like a voice memo would. See `DEFERRED.md` for what this deliberately leaves
+out (video and reel *content* understanding, Apify for real Instagram
+captions, editing extracted fields from the cockpit).
 
 ## 8. Connect a Plaud Note Pro (optional, 10 min)
 
