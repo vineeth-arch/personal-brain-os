@@ -24,6 +24,7 @@ import plistlib
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from pathlib import Path
 
@@ -276,10 +277,19 @@ BUILDS = {"Brain Text": build_text, "Brain Voice": build_voice, "Brain Share": b
 
 
 def sign(data: dict, dest: Path):
+    """`shortcuts sign` returns before it has finished writing, and a second
+    sign started in that window loses the first one's output — so wait for the
+    file to actually appear, keeping the input alive until it does."""
+    dest.unlink(missing_ok=True)
     with tempfile.TemporaryDirectory() as tmp:
         src = Path(tmp) / "in.shortcut"  # the CLI rejects an input without this extension
         src.write_bytes(plistlib.dumps(data, fmt=plistlib.FMT_BINARY))
         subprocess.run(["shortcuts", "sign", "--mode", "anyone", "-i", str(src), "-o", str(dest)], check=True)
+        for _ in range(100):
+            if dest.exists() and dest.stat().st_size > 0:
+                return
+            time.sleep(0.1)
+    raise SystemExit(f"shortcuts sign reported success but never wrote {dest}")
 
 
 def main() -> int:
