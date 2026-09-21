@@ -32,6 +32,7 @@ class TodoItem:
     task: str
     due_iso: str | None      # "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM", else None
     remind: bool
+    recur: str | None = None  # "daily" | "weekly" — only meaningful with a due date
 
 
 def find_action_items(transcript: str) -> list[str]:
@@ -53,11 +54,13 @@ def resolve_prompt(candidates: list[str], captured: datetime) -> str:
         "Extract the action items below and resolve any natural-language dates.\n"
         f"Captured at: {stamp}.\n"
         "Return ONLY a JSON array, one object per action item:\n"
-        '{"task": string, "due": "YYYY-MM-DD" | "YYYY-MM-DDTHH:MM" | null, "remind": boolean}\n'
+        '{"task": string, "due": "YYYY-MM-DD" | "YYYY-MM-DDTHH:MM" | null, "remind": boolean, "recur": "daily" | "weekly" | null}\n'
         "Rules: resolve dates RELATIVE to the capture moment above. 'tomorrow' = the "
         "next calendar day. A weekday name = the NEXT such weekday after capture. "
         "If the date or time is ambiguous or not stated, use null — NEVER guess. "
-        "remind is true only when a specific clock time is stated.\n\n"
+        "remind is true only when a specific clock time is stated. "
+        "recur is 'daily' for 'every day', 'weekly' for 'every week', else null; "
+        "never invent it, and it needs a due date to take effect.\n\n"
         f"Action item candidates:\n{bullet_list}"
     )
 
@@ -76,7 +79,10 @@ def _validate(raw: object, fallback: list[str]) -> list[TodoItem]:
         due = entry.get("due")
         if not (isinstance(due, str) and (_DUE_DATE_RE.match(due) or _DUE_DATETIME_RE.match(due))):
             due = None
-        items.append(TodoItem(task=task, due_iso=due, remind=bool(entry.get("remind")) and due is not None))
+        recur = entry.get("recur")
+        recur = recur if recur in ("daily", "weekly") and due is not None else None
+        items.append(TodoItem(task=task, due_iso=due, remind=bool(entry.get("remind")) and due is not None,
+                              recur=recur))
     return items or [TodoItem(t, None, False) for t in fallback]
 
 
@@ -120,5 +126,5 @@ def extract(transcript: str, note_id: str, captured, config, llm_fn=None) -> lis
             if item.due_iso:
                 due, _, hhmm = item.due_iso.partition("T")
                 time = hhmm if (hhmm and item.remind) else None
-            f.write(todos.format_line(item.task, note_id, i, due, time) + "\n")
+            f.write(todos.format_line(item.task, note_id, i, due, time, item.recur) + "\n")
     return items

@@ -15,6 +15,7 @@ import type {
   TodoChild,
   TodoItem,
   TodoRange,
+  TodoRecur,
   ErrorEnvelope,
   EventRow,
   FailedItem,
@@ -466,6 +467,11 @@ export const api = {
   todos: (range: TodoRange) => request<{ items: TodoItem[] }>(`/api/todos?range=${range}`),
   toggleTodo: (id: string) =>
     request<{ ok: boolean; done: boolean }>(`/api/todos/${id}/toggle`, { method: "POST" }),
+  setTodoRecur: (id: string, recur: TodoRecur | null) =>
+    request<{ ok: boolean; recur: TodoRecur | null }>(`/api/todos/${id}/recur`, {
+      method: "POST",
+      body: JSON.stringify({ recur }),
+    }),
   breakdownTodo: (id: string, feel: number) =>
     request<{ id: string; task: string; feel: number; children: TodoChild[] }>(
       `/api/todos/${id}/breakdown`,

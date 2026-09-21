@@ -42,6 +42,8 @@ TODOS_FOLDER = "06-Todos"
 
 _FROM_RE = re.compile(r"\s*\(from \[\[[\w-]+\]\]\)$")
 
+_UNKNOWN_RECUR_RE = re.compile(r"\s*🔁\s*\S+$")  # e.g. "🔁 monthly" — not supported, keep it out of the title
+
 _DRAIN_FILED_RE = re.compile(r"filed=(\d+)")
 
 _LINE_RE = re.compile(
@@ -69,9 +71,11 @@ class Todo:
 
 
 def format_line(task: str, note_id: str, index: int,
-                due: str | None, time: str | None) -> str:
+                due: str | None, time: str | None, recur: str | None = None) -> str:
     parts = [f"- [ ] {task} (from [[{note_id}]])"]
     if due:
+        if recur in _RECUR_DAYS:  # spawn needs a due date, so only emit with one
+            parts.append(f"🔁 {recur}")
         parts.append(f"📅 {due}")
         if time:
             parts.append(f"⏰ {time}")
@@ -89,7 +93,7 @@ def parse_line(line: str) -> tuple[str, bool, str | None, str | None, str | None
     m = _LINE_RE.match(line.rstrip())
     if not m:
         return None
-    task = _FROM_RE.sub("", m["task"].strip())  # provenance stays in the file, not the UI
+    task = _FROM_RE.sub("", _UNKNOWN_RECUR_RE.sub("", m["task"].strip()))  # provenance stays in the file, not the UI
     feel = int(m["feel"]) if m["feel"] else None
     return (task, m["done"] == "x", m["due"], m["time"], m["block"], bool(m["indent"]), feel, m["recur"])
 
@@ -197,7 +201,7 @@ def _spawn_next_occurrence(vault: Path, todo: Todo) -> None:
     if todo.recur not in _RECUR_DAYS or not todo.due:
         return
     try:
-        next_due = date.fromisoformat(todo.due) + timedelta(days=_RECUR_DAYS[todo.recur])
+        next_due = max(date.fromisoformat(todo.due), today_kolkata()) + timedelta(days=_RECUR_DAYS[todo.recur])
     except ValueError:
         return
     next_block_id = _next_recur_block_id(vault, todo.block_id) if todo.block_id else None
@@ -216,6 +220,31 @@ def _spawn_next_occurrence(vault: Path, todo: Todo) -> None:
         if target.stat().st_size == 0:
             f.write(f"# Todos — {day}\n\n")
         f.write(line + "\n")
+
+
+def set_recur(vault: Path, block_id: str, recur: str | None) -> Todo:
+    """Set, change or clear the 🔁 marker on the top-level todo ^block_id, in
+    place. LookupError if unknown; ValueError if recur is invalid or the todo
+    has no due date (spawning needs one)."""
+    if recur is not None and recur not in _RECUR_DAYS:
+        raise ValueError("recur")
+    todo = next((t for t in scan(vault) if t.block_id == block_id), None)
+    if todo is None:
+        raise LookupError(block_id)
+    if not todo.due:
+        raise ValueError("due")
+    lines = todo.file.read_text(encoding="utf-8").splitlines()
+    m = _LINE_RE.match(lines[todo.line_no].rstrip())
+    line = lines[todo.line_no].rstrip()
+    if m["recur"]:  # drop " 🔁 word" (3-char lead-in)
+        line = line[:m.start("recur") - 3] + line[m.end("recur"):]
+        m = _LINE_RE.match(line)
+    if recur:
+        p = m.start("due") - 3
+        line = line[:p] + f" 🔁 {recur}" + line[p:]
+    lines[todo.line_no] = line
+    todo.file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return next(t for t in scan(vault) if t.block_id == block_id)
 
 
 def add_breakdown(vault: Path, block_id: str, feel: int, steps: list[str]) -> Todo:

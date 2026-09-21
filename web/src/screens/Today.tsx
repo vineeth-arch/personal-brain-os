@@ -329,9 +329,11 @@ function AgendaRow({
   item,
   onToggle,
   onBreakdown,
+  onRecur,
 }: {
   item: TodoItem;
   onToggle: (id: string, done: boolean) => void;
+  onRecur: (item: TodoItem) => void;
   onBreakdown: (item: TodoItem, feel: number) => Promise<void>;
 }) {
   const [dialOpen, setDialOpen] = useState(false);
@@ -375,8 +377,17 @@ function AgendaRow({
               )}
             </p>
           )}
-          {item.recur && <p className="text-subtle text-xs">🔁 {item.recur}</p>}
         </div>
+        {!item.done && (
+          <button
+            type="button"
+            onClick={() => onRecur(item)}
+            aria-label={`Repeat: ${item.recur ?? "never"}. Tap to change.`}
+            className="text-subtle hover:text-emphasis min-h-11 shrink-0 whitespace-nowrap px-1 text-xs font-bold"
+          >
+            {item.recur ? `🔁 ${item.recur}` : "Repeat"}
+          </button>
+        )}
         {item.children.length === 0 &&
           (dialOpen ? (
             <FeelDial busy={busy} onPick={(n) => void pickFeel(n)} />
@@ -447,6 +458,18 @@ function Agenda() {
     }
   };
 
+  // none -> daily -> weekly -> none; refetch (no optimism), errors toast like toggle
+  const cycleRecur = async (item: TodoItem) => {
+    const next = item.recur === null ? "daily" : item.recur === "daily" ? "weekly" : null;
+    try {
+      await api.setTodoRecur(item.id, next);
+      refetch();
+    } catch (err) {
+      const envelope = (err as { envelope?: { what: string; todo: string } }).envelope;
+      toast(envelope ? `${envelope.what} ${envelope.todo}` : "That didn't reach the server.", "error");
+    }
+  };
+
   const breakdown = async (item: TodoItem, feel: number) => {
     try {
       await api.breakdownTodo(item.id, feel);
@@ -473,7 +496,7 @@ function Agenda() {
           {today.length > 0 ? (
             <ul className="mt-2">
               {today.map((t) => (
-                <AgendaRow key={t.id} item={t} onToggle={toggle} onBreakdown={breakdown} />
+                <AgendaRow key={t.id} item={t} onToggle={toggle} onBreakdown={breakdown} onRecur={cycleRecur} />
               ))}
             </ul>
           ) : (
@@ -487,7 +510,7 @@ function Agenda() {
               </summary>
               <ul>
                 {tomorrow.map((t) => (
-                  <AgendaRow key={t.id} item={t} onToggle={toggle} onBreakdown={breakdown} />
+                  <AgendaRow key={t.id} item={t} onToggle={toggle} onBreakdown={breakdown} onRecur={cycleRecur} />
                 ))}
               </ul>
             </details>
