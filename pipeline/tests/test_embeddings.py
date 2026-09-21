@@ -250,3 +250,41 @@ def test_related_find_below_similarity_floor_falls_through_to_real_substring_hit
     result = related.find(vault, "Warehouse logistics plan", "some body", "exclude-me",
                           embeddings_db=db_path)
     assert result == {"id": "substring-candidate", "title": "warehouse-notes"}
+
+
+# ---- 7. hybrid_search ordering: pinned tiers, then body+semantic by score ---
+
+def _hybrid_setup(tmp_path, monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    vault = tmp_path / "vault"
+    db_path = tmp_path / "embeddings.db"
+    title = _note(vault, "02-Musings", "t1", "gift-ideas-list", body="unrelated", title="Gift ideas list")
+    weak = _note(vault, "02-Musings", "weak", "misc", body="a gift ideas mention", title="Misc")
+    strong = _note(vault, "02-Musings", "strong", "presents", body="birthday presents", title="Presents")
+    _seed_row(db_path, "t1", str(title), "Gift ideas list", [0.0, 1.0, 0.0])
+    _seed_row(db_path, "weak", str(weak), "Misc", [0.0, 1.0, 0.0])
+    _seed_row(db_path, "strong", str(strong), "Presents", [1.0, 0.0, 0.0])
+    monkeypatch.setattr(embeddings, "_default_post", lambda texts: [[1.0, 0.0, 0.0] for _ in texts])
+    return vault, db_path
+
+
+def test_hybrid_search_strong_semantic_outranks_body_substring(tmp_path, monkeypatch):
+    vault, db_path = _hybrid_setup(tmp_path, monkeypatch)
+    ids = [r["id"] for r in notes.hybrid_search(vault, db_path, "gift ideas", limit=10)]
+    assert ids.index("strong") < ids.index("weak")
+
+
+def test_hybrid_search_title_hit_stays_first_and_no_duplicates(tmp_path, monkeypatch):
+    vault, db_path = _hybrid_setup(tmp_path, monkeypatch)
+    ids = [r["id"] for r in notes.hybrid_search(vault, db_path, "gift ideas", limit=10)]
+    assert ids[0] == "t1"
+    assert len(ids) == len(set(ids))
+
+
+def test_hybrid_search_without_key_or_db_is_substring_only(tmp_path, monkeypatch):
+    vault, db_path = _hybrid_setup(tmp_path, monkeypatch)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    expected = notes.search_vault(vault, "gift ideas", limit=10)
+    assert notes.hybrid_search(vault, db_path, "gift ideas", limit=10) == expected
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+    assert notes.hybrid_search(vault, tmp_path / "nope.db", "gift ideas", limit=10) == expected

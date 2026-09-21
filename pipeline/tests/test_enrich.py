@@ -697,3 +697,56 @@ def test_existing_route_link_callers_unaffected_by_new_kwargs(vault):
     path = enrich.route_link(item(), "nice", enr, {"title": "Some Page"}, vault / "vault")
     assert f"cover: {COVER_URL}" in path.read_text(encoding="utf-8")
     assert not (vault / "vault" / "attachments").exists()
+
+
+def _ig(vault, monkeypatch, fetch):
+    _apify_env(monkeypatch)
+    cfg = config(vault, apify={"actor_id": "apify~instagram-scraper"})
+    return enrich.enrich_url("https://instagram.com/p/ABC/", cfg, fetch=fetch)
+
+
+@pytest.mark.parametrize("code,phrase", [(401, "token was rejected"), (402, "out of credit"),
+                                         (429, "rate-limited")])
+def test_instagram_http_failures_are_told_apart(vault, monkeypatch, code, phrase):
+    import urllib.error
+
+    def fetch(url, data=None, timeout=10, headers=None):
+        raise urllib.error.HTTPError(url, code, "x", {}, None)
+    enr = _ig(vault, monkeypatch, fetch)
+    assert enr.enriched is False and phrase in enr.detail and "fake" not in enr.detail
+
+
+def test_instagram_other_http_error_keeps_generic_message(vault, monkeypatch):
+    import urllib.error
+
+    def fetch(url, data=None, timeout=10, headers=None):
+        raise urllib.error.HTTPError(url, 500, "x", {}, None)
+    enr = _ig(vault, monkeypatch, fetch)
+    assert enr.enriched is False and "expected" in enr.detail.lower()
+
+
+def test_instagram_error_item_is_not_a_note(vault, monkeypatch):
+    enr = _ig(vault, monkeypatch, lambda *a, **k: json.dumps(
+        [{"url": "u", "error": "restricted_page", "errorDescription": "private"}]).encode())
+    assert enr.enriched is False and not enr.caption
+
+
+def test_instagram_empty_list_fails_quietly(vault, monkeypatch):
+    assert _ig(vault, monkeypatch, lambda *a, **k: b"[]").enriched is False
+
+
+def test_instagram_reel_without_caption_does_not_crash(vault, monkeypatch):
+    enr = _ig(vault, monkeypatch, lambda *a, **k: json.dumps(
+        [{"videoUrl": "https://ig.example/v.mp4", "displayUrl": "https://ig.example/c.jpg"}]).encode())
+    assert enr.enriched is True and enr.cover == "https://ig.example/c.jpg"
+
+
+def test_instagram_request_body_shape(vault, monkeypatch):
+    seen = {}
+
+    def fetch(url, data=None, timeout=10, headers=None):
+        seen.update(body=json.loads(data), headers=headers)
+        return b"[]"
+    _ig(vault, monkeypatch, fetch)
+    assert seen["body"] == {"directUrls": ["https://instagram.com/p/ABC/"],
+                            "resultsType": "posts", "resultsLimit": 1}

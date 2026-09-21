@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import shutil
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -300,10 +301,13 @@ def _enrich_instagram(url: str, config, fetch) -> Enrichment:
         # the token rides in the Authorization header, never the query string —
         # a URL carrying a secret ends up in proxy logs and error reports
         api = f"https://api.apify.com/v2/acts/{actor}/run-sync-get-dataset-items"
-        body = json.dumps({"directUrls": [url], "resultsLimit": 1}).encode()
+        body = json.dumps({"directUrls": [url], "resultsType": "posts",
+                           "resultsLimit": 1}).encode()
         items = json.loads(fetch(api, data=body, timeout=APIFY_TIMEOUT,
                                  headers={"Authorization": f"Bearer {token}"}))
         item = items[0] if isinstance(items, list) and items else {}
+        if not isinstance(item, dict) or item.get("error") or item.get("errorDescription"):
+            raise ValueError("actor returned an error item")  # private/deleted/blocked
         caption = str(item.get("caption") or "")
         cover = str(item.get("displayUrl") or item.get("thumbnailUrl") or "")
         if not (caption or cover):
@@ -312,14 +316,27 @@ def _enrich_instagram(url: str, config, fetch) -> Enrichment:
                           title=caption[:80] or "instagram-post", caption=caption,
                           cover=cover, author=str(item.get("ownerUsername", "")),
                           slides=_slides_from_item(item))
+    except urllib.error.HTTPError as e:
+        log.info("instagram enrichment failed: HTTP %s", e.code)
+        why = {401: "the Apify token was rejected",
+               402: "the Apify account is out of credit",
+               429: "Apify rate-limited the call, it retries later"}.get(e.code)
+        if why:
+            return Enrichment("instagram", False, url,
+                              detail=f"Instagram enrichment failed — {why}. The note is saved.")
+        return _instagram_failed(url)
     except Exception:
         # The broad catch is deliberate — this scraper is ToS-grey and breaks
         # routinely — but it once swallowed a TypeError from a changed call
         # signature and reported a code bug as a normal outage. Log the real
         # reason; keep telling the user the honest, useful version.
         log.info("instagram enrichment failed", exc_info=True)
-        return Enrichment("instagram", False, url,
-                          detail="Instagram enrichment failed — this is expected periodically (the scraper is ToS-grey and breaks). The note is saved; it retries later.")
+        return _instagram_failed(url)
+
+
+def _instagram_failed(url: str) -> Enrichment:
+    return Enrichment("instagram", False, url,
+                      detail="Instagram enrichment failed — this is expected periodically (the scraper is ToS-grey and breaks). The note is saved; it retries later.")
 
 
 def _enrich_web(url: str, fetch) -> Enrichment:
@@ -574,8 +591,15 @@ def move_image_to_vault(item, vault_path: Path) -> Path:
     return dest
 
 
+def _captured_line(exif_date, created: str) -> list[str]:
+    """`captured:` only when EXIF has a date that differs from `created`."""
+    d = exif_date.strftime("%Y-%m-%d") if exif_date else None
+    return [f"captured: {d}"] if d and d != created else []
+
+
 def build_image_note(item, vision: dict | None, insight: str, attachment_rel: str,
-                     note_id: str, created: str, now_iso: str, attempts: int) -> str:
+                     note_id: str, created: str, now_iso: str, attempts: int,
+                     exif_date=None) -> str:
     """No capture tag: a resource note like any other share, platform: photo
     instead of youtube/instagram/web (D-PHOTO default)."""
     description = str((vision or {}).get("description") or "").strip()
@@ -590,6 +614,7 @@ def build_image_note(item, vision: dict | None, insight: str, attachment_rel: st
         "type: resource",
         f"resource_type: {rtype}",
         f"created: {created}",
+        *_captured_line(exif_date, created),
         f"source: {item.source}",
         "origin: human",
         "meta_origin: ai",
@@ -624,7 +649,7 @@ def build_image_note(item, vision: dict | None, insight: str, attachment_rel: st
 
 
 def route_image(item, vision: dict | None, insight: str, attachment_rel: str,
-                vault_path: Path, attempts: int = 1) -> Path:
+                vault_path: Path, attempts: int = 1, exif_date=None) -> Path:
     note_id = item.captured.strftime("%Y%m%d%H%M%S")
     created = item.captured.strftime("%Y-%m-%d")
     now_iso = datetime.now().isoformat(timespec="seconds")
@@ -639,12 +664,13 @@ def route_image(item, vision: dict | None, insight: str, attachment_rel: str,
         i += 1
         path = dest_dir / f"{base}-{i}.md"
     path.write_text(build_image_note(item, vision, insight, attachment_rel,
-                                     note_id, created, now_iso, attempts), encoding="utf-8")
+                                     note_id, created, now_iso, attempts, exif_date), encoding="utf-8")
     return path
 
 
 def build_tagged_image_note(item, cls, vision: dict | None, insight: str,
-                            attachment_rel: str, note_id: str, created: str) -> str:
+                            attachment_rel: str, note_id: str, created: str,
+                            exif_date=None) -> str:
     """A photo captured WITH a capture tag: filed as that type's note instead
     of a resource (D-PHOTO 'Both') — universal frontmatter only (SCHEMA §2),
     same as every other tag-routed capture. The vision description is
@@ -656,6 +682,7 @@ def build_tagged_image_note(item, cls, vision: dict | None, insight: str,
         f"id: {note_id}",
         f"type: {cls.type}",
         f"created: {created}",
+        *_captured_line(exif_date, created),
         "source: share",
         "origin: human",
         "meta_origin: human",
@@ -679,7 +706,7 @@ def build_tagged_image_note(item, cls, vision: dict | None, insight: str,
 
 
 def route_tagged_image(item, cls, vision: dict | None, insight: str,
-                       attachment_rel: str, vault_path: Path) -> Path:
+                       attachment_rel: str, vault_path: Path, exif_date=None) -> Path:
     note_id = item.captured.strftime("%Y%m%d%H%M%S")
     created = item.captured.strftime("%Y-%m-%d")
     dest_dir = Path(vault_path) / route.TYPE_FOLDER[cls.type]
@@ -691,7 +718,7 @@ def route_tagged_image(item, cls, vision: dict | None, insight: str,
         i += 1
         path = dest_dir / f"{base}-{i}.md"
     path.write_text(build_tagged_image_note(item, cls, vision, insight, attachment_rel,
-                                            note_id, created), encoding="utf-8")
+                                            note_id, created, exif_date), encoding="utf-8")
     return path
 
 

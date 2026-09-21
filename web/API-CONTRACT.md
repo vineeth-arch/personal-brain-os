@@ -1055,6 +1055,15 @@ child rolls up onto its parent (all children done auto-marks the parent done;
 reopening one un-marks it). Toggling a parent directly never cascades down to
 its children.
 
+### `POST /api/todos/{block_id}/recur`
+
+Body `{"recur": "daily" | "weekly" | null}`. Sets, changes or (null) clears the
+`🔁` marker on the todo's line in place and git-commits the vault
+(`api: todo <id> repeat set to daily|weekly|none`). `200 {"ok": true, "recur":
+"daily"|"weekly"|null}`. Any other value → 400 envelope; unknown id → 404
+envelope; a todo with no due date → 400 envelope (repeating counts from the due
+date). The next occurrence is dated `max(due, today) + 1|7 days`.
+
 ### `POST /api/todos/{block_id}/breakdown` (B10)
 
 Body `{"feel": 1-5}`. Asks the model router for 2-4 short concrete steps,
@@ -1209,10 +1218,10 @@ re-fetch, so this re-runs **vision** on its `cover` attachment instead
 `GET /api/config` now also returns:
 ```json
 "enrichment": { "apify_token": false, "apify_actor_set": false,
-                "apify_last_call": null, "youtube_keyless": true }
+                "apify_last_attempt": null, "youtube_keyless": true }
 ```
-Booleans only — no token values (CLAUDE.md §7). `apify_last_call` = timestamp of
-the most recent Instagram `enrich` event, or null.
+Booleans only — no token values (CLAUDE.md §7). `apify_last_attempt` = timestamp of
+the most recent Instagram `enrich` event (success or failure), or null.
 
 ## MCP — Claude Desktop (Pass X)
 

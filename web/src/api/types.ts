@@ -262,6 +262,8 @@ export interface TodoChild {
   done: boolean;
 }
 
+export type TodoRecur = "daily" | "weekly";
+
 export interface TodoItem {
   id: string;
   task: string;
@@ -271,7 +273,7 @@ export interface TodoItem {
   overdue: boolean;
   file: string;
   feel: number | null; // 1-5 "how hard does it feel" dial — null until broken down
-  recur: "daily" | "weekly" | null;
+  recur: TodoRecur | null;
   children: TodoChild[];
 }
 
@@ -318,7 +320,7 @@ export interface AppConfig {
   enrichment: {
     apify_token: boolean;
     apify_actor_set: boolean;
-    apify_last_call: string | null;
+    apify_last_attempt: string | null;
     youtube_keyless: boolean;
   };
   // Pass D — which push targets are wired up. Booleans only, never key values.

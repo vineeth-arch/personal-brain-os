@@ -94,3 +94,16 @@ def test_png_and_webp_are_accepted(env):
         assert s.raw("POST", "/api/capture/image", b"RIFFxxxxWEBP", "image/webp")[0] == 201
     exts = sorted(p.suffix for p in inbox.iterdir() if not p.name.startswith("."))
     assert exts == [".png", ".webp"]
+
+
+def test_image_idempotency_key_same_key_twice(env):
+    root, _, inbox, _ = env
+    hdr = {"X-Capture-Key": "img-key-1"}
+    with Server(root) as s:
+        code1, body1 = s.raw("POST", "/api/capture/image", b"\xff\xd8\xff\xe0jpeg", "image/jpeg",
+                             extra_headers=hdr)
+        code2, body2 = s.raw("POST", "/api/capture/image", b"\xff\xd8\xff\xe0jpeg", "image/jpeg",
+                             extra_headers=hdr)
+        assert code1 == 201 and code2 == 201
+        assert body2["id"] == body1["id"]
+    assert len(list(inbox.glob("*.jpg"))) == 1

@@ -25,7 +25,7 @@ IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 UNSUPPORTED_IMAGE_EXT = {".heic", ".heif"}
 
 # "2026-07-03-0900 morning walk #idea"  (time, name, tag all after the date are optional)
-_NAME_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})-(?P<time>\d{4})\s+(?P<name>.*?)"
+_NAME_RE = re.compile(r"^(?P<date>\d{4}-\d{2}-\d{2})-(?P<time>\d{4}(?:\d{2})?)\s+(?P<name>.*?)"
                       r"(?:\s+#(?P<tag>[\w-]+))?$")
 
 
@@ -73,7 +73,8 @@ def _parse(path: Path, source_hint: str | None = None) -> Item | None:
     stem = path.stem
     m = _NAME_RE.match(stem)
     if m:
-        captured = datetime.strptime(f"{m['date']}-{m['time']}", "%Y-%m-%d-%H%M")
+        fmt = "%Y-%m-%d-%H%M%S" if len(m["time"]) == 6 else "%Y-%m-%d-%H%M"
+        captured = datetime.strptime(f"{m['date']}-{m['time']}", fmt)
         name = m["name"].strip() or stem
         tag = m["tag"]
     else:

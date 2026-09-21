@@ -387,6 +387,13 @@ def _write_todos_file(vault_path, name: str, text: str):
     (todos_dir / name).write_text(text, encoding="utf-8")
 
 
+@pytest.fixture
+def pin_today(monkeypatch):
+    """Spawn math counts from max(due, today); pin today before every fixture due."""
+    from datetime import date
+    monkeypatch.setattr(todos, "today_kolkata", lambda: date(2026, 1, 1))
+
+
 def test_recur_marker_parses_and_coexists_with_other_markers(vault):
     daily = todos.parse_line("- [ ] water plants 🔁 daily 📅 2026-09-01 ^id-1")
     assert daily[7] == "daily"
@@ -407,7 +414,7 @@ def test_recur_marker_parses_and_coexists_with_other_markers(vault):
     assert recur == "daily"
 
 
-def test_daily_spawn_math(vault):
+def test_daily_spawn_math(vault, pin_today):
     config = make_config(vault)
     _write_todos_file(config.vault_path, "2026-07-05.md",
                        "- [ ] water plants 🔁 daily 📅 2026-07-05 ^id-1\n")
@@ -421,7 +428,7 @@ def test_daily_spawn_math(vault):
     assert text.startswith("# Todos — 2026-07-06\n\n")
 
 
-def test_weekly_spawn_math(vault):
+def test_weekly_spawn_math(vault, pin_today):
     config = make_config(vault)
     _write_todos_file(config.vault_path, "2026-07-05.md",
                        "- [ ] water plants 🔁 weekly 📅 2026-07-05 ^id-1\n")
@@ -434,7 +441,7 @@ def test_weekly_spawn_math(vault):
     assert "- [ ] water plants 🔁 weekly 📅 2026-07-12 ^id-1r2" in text
 
 
-def test_month_boundary_spawn_math(vault):
+def test_month_boundary_spawn_math(vault, pin_today):
     config = make_config(vault)
     _write_todos_file(config.vault_path, "2026-07-28.md",
                        "- [ ] water plants 🔁 daily 📅 2026-07-28 ^id-daily\n")
@@ -451,7 +458,7 @@ def test_month_boundary_spawn_math(vault):
     assert "📅 2026-08-06" in weekly_next.read_text(encoding="utf-8")
 
 
-def test_double_toggle_spawns_once_and_never_deletes_spawned_line(vault):
+def test_double_toggle_spawns_once_and_never_deletes_spawned_line(vault, pin_today):
     config = make_config(vault)
     _write_todos_file(config.vault_path, "2026-07-05.md",
                        "- [ ] water plants 🔁 daily 📅 2026-07-05 ^id-1\n")
@@ -497,7 +504,7 @@ def test_recurring_todo_with_no_due_date_does_not_crash_or_spawn(vault):
     assert after == before  # no spawn
 
 
-def test_rollup_completion_of_recurring_parent_spawns_next_occurrence(vault):
+def test_rollup_completion_of_recurring_parent_spawns_next_occurrence(vault, pin_today):
     config = make_config(vault)
     _write_todos_file(config.vault_path, "2026-07-05.md",
                        "- [ ] plan the offsite 🔁 weekly 📅 2026-07-05 ^id-1\n"
@@ -548,3 +555,69 @@ def test_rollup_parent_returns_true_only_on_open_to_done_transition(vault):
     new_done = todos._flip_line(child_b.file, child_b.line_no, child_b.done)
     assert new_done is False
     assert todos._rollup_parent(parent, child_b, new_done) is False
+
+
+# ---- Phase 4.1: stale spawn, creation via capture, set_recur, unknown marker --
+
+def test_spawn_from_long_overdue_todo_counts_from_today(vault, monkeypatch):
+    from datetime import date
+    monkeypatch.setattr(todos, "today_kolkata", lambda: date(2026, 7, 26))
+    _write_todos_file(vault, "2026-07-05.md", "- [ ] water plants 🔁 weekly 📅 2026-07-05 ^id-1\n")
+    todos.toggle(vault, "id-1")
+    assert "📅 2026-08-02 ^id-1r2" in (vault / todos.TODOS_FOLDER / "2026-08-02.md").read_text(encoding="utf-8")
+
+
+def test_spawn_from_future_todo_still_counts_from_its_due(vault, monkeypatch):
+    from datetime import date
+    monkeypatch.setattr(todos, "today_kolkata", lambda: date(2026, 7, 1))
+    _write_todos_file(vault, "2026-07-05.md", "- [ ] water plants 🔁 weekly 📅 2026-07-05 ^id-1\n")
+    todos.toggle(vault, "id-1")
+    assert (vault / todos.TODOS_FOLDER / "2026-07-12.md").exists()
+
+
+def test_format_line_recur_round_trips_through_parse_and_scan(vault):
+    line = todos.format_line("water plants", "20260703140000", 1, "2026-07-05", "09:00", "daily")
+    assert line == "- [ ] water plants (from [[20260703140000]]) 🔁 daily 📅 2026-07-05 ⏰ 09:00 ^20260703140000-1"
+    assert todos.parse_line(line)[7] == "daily"
+    _write_todos_file(vault, "2026-07-03.md", line + "\n")
+    assert todos.scan(vault)[0].recur == "daily"
+    # no due -> no marker (spawn needs a date); bogus value -> no marker
+    assert "🔁" not in todos.format_line("x", "n", 1, None, None, "daily")
+    assert "🔁" not in todos.format_line("x", "n", 1, "2026-07-05", None, "monthly")
+
+
+def test_extraction_emits_recur_only_when_valid_and_dated(vault):
+    config = make_config(vault)
+    llm = lambda prompt, cfg: json.dumps([
+        {"task": "water plants every day", "due": "2026-07-05", "remind": False, "recur": "daily"},
+        {"task": "call mum every week", "due": None, "remind": False, "recur": "weekly"},
+        {"task": "stretch every month", "due": "2026-07-06", "remind": False, "recur": "monthly"},
+    ])
+    extract.extract("You need to water plants every day. Remember to call mum every week. "
+                    "Make sure to stretch every month.", "20260703140000",
+                    datetime(2026, 7, 3, 10, 0), config, llm_fn=llm)
+    text = (vault / "vault" / todos.TODOS_FOLDER / "2026-07-03.md").read_text(encoding="utf-8")
+    assert "🔁 daily 📅 2026-07-05" in text
+    assert text.count("🔁") == 1
+
+
+def test_set_recur_sets_changes_clears_and_rejects(vault):
+    _write_todos_file(vault, "2026-07-05.md",
+                      "- [ ] a (from [[n]]) 📅 2026-07-05 ⏰ 09:00 ^id-1\n- [ ] b ^id-2\n")
+    assert todos.set_recur(vault, "id-1", "daily").recur == "daily"
+    assert "- [ ] a (from [[n]]) 🔁 daily 📅 2026-07-05 ⏰ 09:00 ^id-1" in (
+        vault / todos.TODOS_FOLDER / "2026-07-05.md").read_text(encoding="utf-8")
+    assert todos.set_recur(vault, "id-1", "weekly").recur == "weekly"
+    assert todos.set_recur(vault, "id-1", None).recur is None
+    assert "🔁" not in (vault / todos.TODOS_FOLDER / "2026-07-05.md").read_text(encoding="utf-8")
+    with pytest.raises(ValueError):
+        todos.set_recur(vault, "id-1", "monthly")
+    with pytest.raises(ValueError):
+        todos.set_recur(vault, "id-2", "daily")   # no due date
+    with pytest.raises(LookupError):
+        todos.set_recur(vault, "nope", "daily")
+
+
+def test_unknown_recur_marker_is_stripped_from_the_title(vault):
+    p = todos.parse_line("- [ ] pay rent 🔁 monthly 📅 2026-07-05 ^id-1")
+    assert p[0] == "pay rent" and p[7] is None

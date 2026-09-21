@@ -22,7 +22,7 @@ from datetime import date
 from pathlib import Path
 
 from . import (archive, classify as classify_mod, config as config_mod, dex, echo as echo_mod,
-               embeddings, enrich, errors, extract, gmailpull, ingest, intake, plaud,
+               embeddings, enrich, errors, exif, extract, gmailpull, ingest, intake, plaud,
                proposals as proposals_mod, related, relationships, route, split as split_mod, todos, transliterate, vaultsync,
                vision as vision_mod)
 from .events import EventLog
@@ -255,6 +255,7 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
             # same principle as link enrichment (Pass L).
             t0 = time.monotonic()
             insight = enrich.take_image_insight(item.path)
+            exif_date = exif.capture_date(item.path)  # before the move
             attachment = enrich.move_image_to_vault(item, config.vault_path)
             attachment_rel = str(attachment.relative_to(config.vault_path))
             events.log(fkey, "archive", "ok", int((time.monotonic() - t0) * 1000),
@@ -275,10 +276,10 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
                     title=(insight.splitlines()[0].strip() if insight else item.name) or "photo",
                     tags=[tag], confidence=1.0, needs_review=False, routed_by="tag")
                 paths = [enrich.route_tagged_image(item, cls, vision_result, insight,
-                                                   attachment_rel, config.vault_path)]
+                                                   attachment_rel, config.vault_path, exif_date)]
             else:
                 paths = [enrich.route_image(item, vision_result, insight, attachment_rel,
-                                            config.vault_path)]
+                                            config.vault_path, exif_date=exif_date)]
                 cls = classify_mod.Classification(type="resource", title=paths[0].stem,
                                                   confidence=1.0, needs_review=False,
                                                   routed_by="tag" if tag else "vision")

@@ -272,6 +272,10 @@ class BreakdownBody(BaseModel):
     feel: int
 
 
+class RecurBody(BaseModel):
+    recur: str | None = None
+
+
 class SplitDecisionBody(BaseModel):
     decision: str
 
@@ -519,6 +523,29 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
             config.vault_path,
             f"api: todo {block_id} marked {'done' if done else 'open'}")
         return {"ok": True, "done": done}
+
+    @app.post("/api/todos/{block_id}/recur")
+    def todos_recur(block_id: str, body: RecurBody, config=Depends(require_token)):
+        if body.recur not in (None, "daily", "weekly"):
+            raise Envelope(
+                400, "That's not a repeat this screen understands.",
+                f"'{body.recur}' isn't daily, weekly or none.",
+                "Pick daily, weekly or none.")
+        try:
+            t = ptodos.set_recur(config.vault_path, block_id, body.recur)
+        except LookupError:
+            raise Envelope(
+                404, "That todo isn't in the daily notes anymore.",
+                "Its line was edited or removed in Obsidian, or the id is unknown.",
+                "Refresh the agenda.")
+        except ValueError:
+            raise Envelope(
+                400, "This todo can't repeat yet.",
+                "Repeating needs a due date to count from, and this one has none.",
+                "Give it a due date in Obsidian, then try again.")
+        notes.git_commit_vault(
+            config.vault_path, f"api: todo {block_id} repeat set to {body.recur or 'none'}")
+        return {"ok": True, "recur": t.recur}
 
     @app.post("/api/todos/{block_id}/breakdown")
     def todos_breakdown(block_id: str, body: BreakdownBody, config=Depends(require_token)):
@@ -1511,7 +1538,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         safe["enrichment"] = {
             "apify_token": bool(os.environ.get("APIFY_TOKEN")),
             "apify_actor_set": bool((config.raw.get("apify") or {}).get("actor_id")),
-            "apify_last_call": last_ig,
+            "apify_last_attempt": last_ig,
             "youtube_keyless": True,
         }
         safe["push"] = push_mod.availability(config)   # presence booleans only

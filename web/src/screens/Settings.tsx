@@ -816,8 +816,8 @@ function EnrichmentCards() {
             Caption + image via an Apify actor.{" "}
             {e && !e.apify_token && "Set APIFY_TOKEN in the server's environment"}
             {e && e.apify_token && !e.apify_actor_set && "Set apify.actor_id in config.json"}
-            {e?.apify_last_call && (
-              <span className="text-subtle"> Last call {new Date(e.apify_last_call).toLocaleString()}.</span>
+            {e?.apify_last_attempt && (
+              <span className="text-subtle"> Last attempt {new Date(e.apify_last_attempt).toLocaleString()}.</span>
             )}
           </p>
           <p className="text-subtle mt-2 text-xs">

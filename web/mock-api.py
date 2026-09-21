@@ -745,7 +745,7 @@ CONFIG = {
     "enrichment": {
         "apify_token": not MODE_INT_DEGRADED,
         "apify_actor_set": not MODE_INT_DEGRADED,
-        "apify_last_call": None if MODE_EMPTY else iso(now - timedelta(hours=6)),
+        "apify_last_attempt": None if MODE_EMPTY else iso(now - timedelta(hours=6)),
         "youtube_keyless": True,
     },
     # Dex on, contacts off — so the working push AND the honest "reconnect
@@ -1471,6 +1471,14 @@ class Handler(BaseHTTPRequestHandler):
                     "what": "That todo isn't in the daily notes anymore.",
                     "cause": "Its line was edited or removed in Obsidian, or the id is unknown.",
                     "todo": "Refresh the agenda."}})
+            if path.startswith("/api/todos/") and path.endswith("/recur"):
+                item = next((t for t in TODO_ITEMS if t["id"] == path.split("/")[3]), None)
+                if not item:
+                    return self._send(404, {"error": {"what": "That todo isn't in the daily notes anymore.",
+                        "cause": "The id is unknown.", "todo": "Refresh the agenda."}})
+                raw = self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                item["recur"] = json.loads(raw or b"{}").get("recur")
+                return self._send(200, {"ok": True, "recur": item["recur"]})
             if path.startswith("/api/todos/") and path.endswith("/breakdown"):
                 block_id = path.split("/")[3]
                 item = next((t for t in TODO_ITEMS if t["id"] == block_id), None)

@@ -75,8 +75,12 @@ description:              \# LLM, one line
 insight:                  \# YOUR voice, verbatim - never overwritten by AI  
 status: inbox  
 rating:                   \# 1–7, after consuming  
-captured:  
+captured:                 \# photo notes: EXIF date the photo was taken, only when it differs from `created`  
 consumed:
+platform:                 \# written by enrichment: youtube / instagram / web / photo  
+enriched:                 \# true once enrichment succeeded  
+enrich\_attempts:         \# retry counter, capped at 4  
+enrich\_last:             \# ISO timestamp of the last attempt
 
 Type extras - book: `author`; movie: `where_to_watch`, `runtime`; tutorial: `steps`, `tools_mentioned`, `transcript`; recipe: `ingredients`, `steps` (maps to Mom's Kitchen); place: `map_url`, `best_time`.
 
