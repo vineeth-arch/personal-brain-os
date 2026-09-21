@@ -205,3 +205,24 @@ def test_reenrich_image_note_returns_false_without_a_cover(vault):
         "---\nid: 20260704100000\ntype: resource\nplatform: photo\ncover: \n"
         "enrich_attempts: 1\nenrich_last: 2026-07-04T09:00:00\n---\n\nbody\n", encoding="utf-8")
     assert enrich.reenrich_image_note(note, config(vault), caller=lambda *a: "{}") is False
+
+
+# ---- captured: (EXIF) --------------------------------------------------------
+
+def test_captured_only_when_exif_date_differs_from_created(vault):
+    v = {"description": "d", "resource_type": "article"}
+    other = datetime(2026, 3, 5, 14, 7, 9)
+    plain = enrich.build_image_note(item(), v, "", "attachments/a.jpg", "1", "2026-07-04", "n", 1)
+    same = enrich.build_image_note(item(), v, "", "attachments/a.jpg", "1", "2026-07-04", "n", 1,
+                                   exif_date=CAPTURED)
+    diff = enrich.build_image_note(item(), v, "", "attachments/a.jpg", "1", "2026-07-04", "n", 1,
+                                   exif_date=other)
+    assert "captured:" not in plain and "captured:" not in same
+    assert "created: 2026-07-04\ncaptured: 2026-03-05\n" in diff
+    cls = classify.Classification(type="idea", title="t", tags=["idea"], confidence=1.0,
+                                  needs_review=False, routed_by="tag")
+    tagged = enrich.build_tagged_image_note(item(), cls, None, "", "attachments/a.jpg", "1",
+                                            "2026-07-04", exif_date=other)
+    assert "captured: 2026-03-05" in tagged
+    assert "captured:" not in enrich.build_tagged_image_note(item(), cls, None, "", "a.jpg", "1",
+                                                             "2026-07-04")

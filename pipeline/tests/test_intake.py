@@ -116,3 +116,33 @@ def test_sweep_removes_a_day_old_orphaned_sidecar(tmp_path):
 
 def test_sweep_on_a_missing_inbox_does_nothing(tmp_path):
     intake.sweep_orphaned_sidecars(tmp_path / "does-not-exist")  # must not raise
+
+
+def test_second_stamped_image_name_parses_and_minute_stamp_still_does(tmp_path):
+    a = tmp_path / "2026-07-03-090507 photo #todo.jpg"
+    b = tmp_path / "2026-07-03-0900 note.jpg"
+    for p in (a, b):
+        p.write_bytes(b"x")
+    ia, ib = intake._parse(a), intake._parse(b)
+    assert (ia.captured.hour, ia.captured.minute, ia.captured.second) == (9, 5, 7)
+    assert ia.name == "photo" and ia.tag == "todo"
+    assert (ib.captured.minute, ib.captured.second) == (0, 0)
+
+
+def test_name_starting_with_digits_is_not_mis_split(tmp_path):
+    p = tmp_path / "2026-07-03-0900 12345 receipts.jpg"
+    p.write_bytes(b"x")
+    it = intake._parse(p)
+    assert it.name == "12345 receipts" and it.captured.second == 0
+
+
+def test_same_second_photo_captures_get_distinct_files_and_ids(tmp_path):
+    from datetime import datetime
+    from api import notes
+    now = datetime(2026, 7, 3, 9, 5, 7)
+    p1, id1 = notes.image_capture_path(tmp_path, ".jpg", None, None, now)
+    p1.write_bytes(b"x")
+    p2, id2 = notes.image_capture_path(tmp_path, ".jpg", None, None, now)
+    assert p1 != p2 and id1 == "20260703090507" and id2 == "20260703090508"
+    p2.write_bytes(b"x")
+    assert intake._parse(p2).captured.strftime("%Y%m%d%H%M%S") == id2

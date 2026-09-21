@@ -641,15 +641,17 @@ def image_capture_path(inbox: Path, ext: str, name: str | None, tag: str | None,
     rule as audio_capture_path."""
     inbox.mkdir(parents=True, exist_ok=True)
     now = now or datetime.now()
-    stamp = now.strftime("%Y-%m-%d-%H%M")
     slug = _slug(name) if name and name.strip() else "photo"
     suffix = f" #{tag}" if tag else ""
-    path = inbox / f"{stamp} {slug}{suffix}{ext}"
-    i = 1
-    while path.exists():
+    # stamped to the second, and a collision advances the second too, so the
+    # note id derived from it is unique as well as the filename
+    i = 0
+    while True:
+        t = now + timedelta(seconds=i)
+        path = inbox / f"{t:%Y-%m-%d-%H%M%S} {slug}{suffix}{ext}"
+        if not path.exists():
+            return path, t.strftime("%Y%m%d%H%M%S")
         i += 1
-        path = inbox / f"{stamp} {slug}-{i}{suffix}{ext}"
-    return path, now.strftime("%Y%m%d%H%M") + "00"
 
 
 def image_insight_sidecar(image_path: Path) -> Path:
@@ -1002,8 +1004,9 @@ def sample_titles(paths: list[Path]) -> list[str]:
 
 # ---- whole-vault search (Pass Q) --------------------------------------------
 # A filesystem scan, not an index — no note content ever touches SQLite
-# (CLAUDE.md §1). At personal-vault scale (a few thousand notes) this is well
-# under 100ms; there is nothing here worth caching.
+# (CLAUDE.md §1). The substring scan reads every note per request; the semantic
+# path (hybrid_search) is a pure-Python cosine linear scan over every vector,
+# no ANN index — comfortable under ~50k notes (pipeline/embeddings.py query()).
 
 # raw/ (source recordings — the pipeline never reads it, SCHEMA-REFERENCE.md
 # §1) and _System/ (logs, not knowledge) are excluded — the same boundary the
@@ -1107,32 +1110,33 @@ def _semantic_hit(path: Path, vault: Path, hit_id: str, hit_title: str) -> dict 
 
 
 def hybrid_search(vault: Path, embeddings_db: Path, q: str, limit: int) -> list[dict]:
-    """Substring hits first (search_vault, ranking unchanged), then semantic
-    fills any remaining slots up to `limit` — a note search_vault already
-    found is never duplicated as a semantic result. Keyless, no
-    embeddings.db, or an empty index all fall back to substring-only,
-    silently — embeddings.embed_text/embeddings.query both degrade to
-    "nothing" rather than raising, so there's no separate keyless branch
-    needed here."""
+    """Title and frontmatter substring hits stay pinned on top, in
+    search_vault order. Below them, body-substring hits and semantic hits
+    are merged by cosine score, descending (a body hit with no semantic
+    score counts as 0.0, so it follows every scored hit; ties keep
+    search_vault order). No duplicate ids. Keyless, no embeddings.db, or an
+    empty index all fall back to substring-only, silently —
+    embeddings.embed_text/embeddings.query both degrade to "nothing"."""
     text_hits = search_vault(vault, q, limit=limit)
-    remaining = limit - len(text_hits)
-    if remaining <= 0:
-        return text_hits
     vector = embeddings.embed_text(q)
     if vector is None:
         return text_hits
     seen_ids = {h["id"] for h in text_hits}
-    out = list(text_hits)
-    for hit_id, hit_title, hit_path, _score in embeddings.query(embeddings_db, vector, remaining + len(seen_ids)):
-        if len(out) - len(text_hits) >= remaining:
-            break
+    scores: dict[str, float] = {}
+    extra: list[dict] = []
+    for hit_id, hit_title, hit_path, score in embeddings.query(embeddings_db, vector, limit + len(seen_ids)):
         if hit_id in seen_ids:
+            scores[hit_id] = score
             continue
         hit = _semantic_hit(Path(hit_path), vault, hit_id, hit_title)
         if hit is not None:
-            out.append(hit)
+            scores[hit_id] = score
+            extra.append(hit)
             seen_ids.add(hit_id)
-    return out
+    pinned = [h for h in text_hits if h["matched_in"] != "body"]
+    rest = [h for h in text_hits if h["matched_in"] == "body"] + extra
+    rest.sort(key=lambda h: -scores.get(h["id"], 0.0))
+    return (pinned + rest)[:limit]
 
 
 # ---- multi-topic split (Pass E, Task E1) ------------------------------------
