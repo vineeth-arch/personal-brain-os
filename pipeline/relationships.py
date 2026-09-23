@@ -106,6 +106,7 @@ class Person:
     warmth_stage: str = ""
     dex_id: str = ""
     dex_deeplink: str = ""
+    handshake_id: str = ""
     status: str = "active"
     sample: bool = False
     sections: dict[str, str] = field(default_factory=dict)
@@ -294,6 +295,7 @@ def parse_person(path: Path) -> Person | None:
         warmth_stage=(fm.get("warmth_stage") or "").strip().lower(),
         dex_id=fm.get("dex_id", "").strip(),
         dex_deeplink=fm.get("dex_deeplink", "").strip(),
+        handshake_id=(fm.get("handshake_id") or "").strip(),
         status=(fm.get("status") or "active").strip().lower(),
         sample=(fm.get("sample") or "").strip().lower() == "true",
         sections=_sections(parts[2]),
@@ -322,7 +324,8 @@ def load_people(vault_path: Path) -> list[Person]:
     folder = Path(vault_path) / PEOPLE_FOLDER
     if not folder.is_dir():
         return []
-    people = [parse_person(p) for p in sorted(folder.glob("*.md"))]
+    people = [parse_person(p) for p in sorted(folder.glob("*.md"))
+              if ".sync-conflict-" not in p.name]
     return [p for p in people if p]
 
 
