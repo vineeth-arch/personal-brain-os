@@ -37,7 +37,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from pipeline import classify, config as config_mod, enrich, intake, llm, route as proute, todos as ptodos, watcher
 from pipeline.events import EventLog
 
-from . import (build_status, google, held as held_mod, integrations, notes,
+from . import (build_status, external, google, held as held_mod, integrations, notes,
                people as people_mod, push as push_mod, selfcheck, service, watchdog)
 
 log = logging.getLogger("api")
@@ -1034,6 +1034,25 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
              "ready": i.ready}
             for i in items
         ]}
+
+    @app.get("/api/people/by-external")
+    def people_by_external(handshake_id: str = "", email: str = "", phone: str = "",
+                           config=Depends(require_token)):
+        if not (handshake_id or email or phone):
+            raise Envelope(
+                400, "Nothing to look that person up by.",
+                "The request had no handshake_id, email or phone.",
+                "Pass at least one of handshake_id, email or phone.")
+        person, basis, ambiguous = external.find_by_external(
+            Path(config.vault_path),
+            handshake_id=handshake_id, email=email, phone=phone)
+        if person is None:
+            # A miss is a normal answer, not a failure: most of Handshake's
+            # people have no note here yet.
+            return {"found": False, "basis": "", "ambiguous": False, "person": None}
+        now = datetime.now(config.tzinfo)
+        return {"found": True, "basis": basis, "ambiguous": ambiguous,
+                "person": people_mod.summary(person, now.date())}
 
     @app.get("/api/people/{person_id}")
     def person_detail(person_id: str, desk: int = 0, config=Depends(require_token)):
