@@ -75,6 +75,29 @@ class Envelope(Exception):
 ATTACHMENT_TTL_SECONDS = 600
 _ATTACHMENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]*$")
 
+# The only routes the Handshake integration token may call (Pass HB). Read
+# routes plus capture — nothing that deletes, reconfigures, runs, or pushes
+# outward. Anything else with that token is a 403, not a 401: the token is
+# valid, the route is simply not Handshake's.
+_HANDSHAKE_ROUTES = [
+    ("GET", re.compile(r"^/api/status$")),
+    ("GET", re.compile(r"^/api/people/by-external$")),
+    ("GET", re.compile(r"^/api/people/\d{14}$")),
+    ("GET", re.compile(r"^/api/search$")),
+    ("GET", re.compile(r"^/api/todos$")),
+    ("GET", re.compile(r"^/api/google/events$")),
+    ("POST", re.compile(r"^/api/capture$")),
+]
+
+
+def _handshake_may(request) -> bool:
+    # desk=1 exposes the owner-only `energy` field (api/people.py:171) —
+    # never to another app.
+    if request.query_params.get("desk") not in (None, "", "0"):
+        return False
+    return any(request.method == m and rx.match(request.url.path)
+               for m, rx in _HANDSHAKE_ROUTES)
+
 
 def sign_attachment(name: str, token: str, *, now: int | None = None,
                     ttl: int = ATTACHMENT_TTL_SECONDS) -> str:
@@ -363,6 +386,14 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         expected = str((config.raw.get("api") or {}).get("auth_token") or "")
         header = request.headers.get("Authorization", "")
         supplied = header.removeprefix("Bearer ").strip() if header.startswith("Bearer ") else ""
+        scoped = str((config.raw.get("api") or {}).get("handshake_token") or "")
+        if scoped and supplied and secrets.compare_digest(supplied, scoped):
+            if not _handshake_may(request):
+                raise Envelope(
+                    403, "That integration isn't allowed to do this.",
+                    "The Handshake token only covers reads and capture.",
+                    "Use the cockpit itself for this, or widen the allowlist in api/main.py.")
+            return config
         # an empty configured token rejects everything — never accept-all
         if not expected or not supplied or not secrets.compare_digest(supplied, expected):
             raise Envelope(
