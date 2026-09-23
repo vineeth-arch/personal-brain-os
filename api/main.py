@@ -387,6 +387,10 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
         header = request.headers.get("Authorization", "")
         supplied = header.removeprefix("Bearer ").strip() if header.startswith("Bearer ") else ""
         scoped = str((config.raw.get("api") or {}).get("handshake_token") or "")
+        # a handshake_token set equal to auth_token would otherwise fence in
+        # the master key itself and lock the cockpit out of its own routes
+        if scoped == expected:
+            scoped = ""
         if scoped and supplied and secrets.compare_digest(supplied, scoped):
             if not _handshake_may(request):
                 raise Envelope(

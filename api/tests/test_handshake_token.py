@@ -58,3 +58,20 @@ def test_master_token_still_works_on_everything(env_with_handshake_token):
         assert code == 200
         code, _ = s.req("DELETE", "/api/resources/sample?older_than=all", token=TOKEN)
         assert code == 200
+
+
+def test_handshake_token_equal_to_master_does_not_fence_the_master(env):
+    root, *_ = env
+    config = json.loads((root / "config.json").read_text(encoding="utf-8"))
+    config["api"]["handshake_token"] = TOKEN
+    (root / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    with Server(root) as s:
+        code, _ = s.req("DELETE", "/api/resources/sample?older_than=all", token=TOKEN)
+        assert code == 200
+
+
+def test_scoped_token_cannot_run_the_pipeline(env_with_handshake_token):
+    root, *_ = env_with_handshake_token
+    with Server(root) as s:
+        code, _ = s.req("POST", "/api/run", token=HS_TOKEN)
+        assert code == 403
