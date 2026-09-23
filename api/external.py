@@ -24,13 +24,15 @@ def _channel_values(person) -> list[str]:
 
 
 def _phone_key(s: str) -> str:
-    """Last ten digits. Handshake matches this way on purpose
-    (lib/people/match.ts:6-10) because country-code and formatting
-    differences are not identity differences: a note written
-    "050 123 4567" must still match Handshake's "+971501234567".
-    merge.normalize_phone alone would not."""
+    """Last nine digits, or "" if there are fewer. Country-code and
+    formatting differences are not identity differences: a note written
+    "050 123 4567" must match Handshake's "+971501234567". Nine, not ten,
+    because a local number keeps its trunk 0 ("0501234567") while the
+    international form drops it ("971501234567"), so the last ten differ in
+    their first digit. Nine covers both UAE (9-digit national numbers) and
+    India (10-digit). Handshake's lib/vault/adopt.ts uses the same key."""
     digits = merge.normalize_phone(s)
-    return digits[-10:] if len(digits) >= 10 else digits
+    return digits[-9:] if len(digits) >= 9 else ""
 
 
 def find_by_external(vault_path: Path, *, handshake_id: str = "",

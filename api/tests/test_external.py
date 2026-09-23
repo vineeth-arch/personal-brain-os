@@ -47,19 +47,31 @@ def test_resolves_by_handshake_id(vault_env):
 
 
 def test_resolves_by_phone_across_country_code_formatting(vault_env):
-    # NOTE: the plan's own illustrative pair ("050 123 4567" vs
-    # "+971501234567") does NOT actually satisfy the literal `_phone_key`
-    # "last 10 digits" algorithm — UAE's 3-digit country code plus the local
-    # trunk "0" produces "0501234567" vs "1501234567", which differ in their
-    # leading digit. Verified by direct computation before writing this test.
-    # This pair (a 2-digit country code, no local trunk-zero) is a case where
-    # the literal algorithm genuinely succeeds, and still exercises a
-    # real country-code + formatting difference.
+    # India: 10-digit national number, no trunk zero.
     _, vault, folder = vault_env
     _person(folder, "Priya Raman", "20260701090000", phone="98765 43210")
     person, basis, ambiguous = external.find_by_external(vault, phone="+919876543210")
     assert person is not None and person.id == "20260701090000"
     assert basis == "phone" and ambiguous is False
+
+
+def test_resolves_uae_local_trunk_zero_against_international(vault_env):
+    # The case that broke last-ten matching: local "050…" keeps the trunk 0,
+    # international "+971 50…" drops it.
+    _, vault, folder = vault_env
+    _person(folder, "Omar Haddad", "20260701090001", phone="050 123 4567")
+    person, basis, _ = external.find_by_external(vault, phone="+971501234567")
+    assert person is not None and person.id == "20260701090001"
+    assert basis == "phone"
+
+
+def test_short_number_is_not_a_phone_key(vault_env):
+    # Fewer than nine digits must never match anything — an extension or a
+    # typo would otherwise collide with every number ending the same way.
+    _, vault, folder = vault_env
+    _person(folder, "Short Number", "20260701090002", phone="4567")
+    person, _, _ = external.find_by_external(vault, phone="4567")
+    assert person is None
 
 
 def test_ambiguous_when_phone_and_email_disagree(vault_env):
