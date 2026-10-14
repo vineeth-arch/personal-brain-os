@@ -1,112 +1,102 @@
-# The three capture Shortcuts
+# The Brain Shortcuts (iOS 27)
 
-Three iOS Shortcuts that send captures straight into the cockpit:
+Six iOS Shortcuts that send captures to the cockpit and search it:
 
-| Shortcut | Where it lives | What it sends | Verified |
-|---|---|---|---|
-| **Brain Text** | Home Screen / Siri / Spotlight | A typed or dictated thought → `POST /api/capture` | ✅ end to end |
-| **Brain Share** | The **share sheet** | A link, Safari page or selected text → `POST /api/capture` | ✅ end to end |
-| **Brain Voice** | The **Action Button** | A recording → `POST /api/capture/audio` (raw m4a) | ⚠️ see below |
+| Shortcut | Where it lives | What it does |
+|---|---|---|
+| **Brain Text** | Home Screen / Siri / Spotlight | A typed or dictated thought (+ tag) → `POST /api/capture` |
+| **Brain Voice** | **Action Button** | Records, no prompts → `POST /api/capture/audio` |
+| **Brain Share** | Share sheet (links, text) | Shared item + a thought + tag → `POST /api/capture` |
+| **Brain Photo** | Share sheet (photos), or pick from Photos | Resize → JPEG → optional Apple Intelligence description → `POST /api/capture/image?ai_note=` |
+| **Brain Screenshot** | iOS 27 **Screenshot** automation | Latest screenshot, same as Brain Photo |
+| **Brain Ask** | Siri / Home Screen | `GET /api/search`, reads back the top five matches |
 
-Run `python3 scripts/shortcuts/build.py` to regenerate `dist/*.shortcut`.
-The readable plists land in `src/` — those are what you diff. The signed
-files carry a fresh signature each time, so they are never byte-reproducible
-and there is no `--check` mode.
+`src/*.xml` are the readable, diffable shortcuts (no secrets). `dist/*.shortcut`
+are the signed files you install.
 
 ## Installing them
 
-1. AirDrop the three files in `dist/` to the phone (or put them in iCloud
-   Drive and tap them in Files).
-2. Each asks **two questions on import**:
-   - *Your Brain Cockpit address* — e.g. `https://cockpit.example.com`.
-     **No trailing slash**, no stray spaces: the answer is used exactly as
-     typed (see "Replace Text" below for why nothing tidies it up).
-   - *Your access token* — the `api.auth_token` value from `config.json`.
-3. For the voice one: **Settings → Action Button → Shortcut → Brain Voice**.
-4. The share one registers itself in the share sheet. If it doesn't appear,
-   tap **Edit Actions…** at the bottom of the share sheet and switch it on.
+1. **Delete any older shortcut with the same name** on the phone first. iOS
+   silently skips an import whose name already exists.
+2. AirDrop the files in `dist/` to the phone (or put them in iCloud Drive and
+   tap them in Files) and tap **Add Shortcut**.
+3. Each asks on import:
+   - *Your Brain Cockpit address*, e.g. `https://cockpit.example.com`.
+     **No trailing slash.** A slash at the end makes the shortcut stop with a
+     message telling you to re-import.
+   - *Your access token*, the `api.auth_token` value from `config.json`.
+   - Photo and Screenshot also ask *Describe with Apple Intelligence? yes/no*.
+4. Brain Voice: **Settings → Action Button → Shortcut → Brain Voice**.
+5. Brain Screenshot: **Shortcuts → Automation → + → Screenshot → Run Brain
+   Screenshot**, with *Ask Before Running* on so not every screenshot is sent.
+6. If the address is behind Cloudflare Access, add a **Bypass** Access
+   application for `/api/capture`, `/api/search` and `/api/health`. Shortcuts
+   cannot complete a browser login.
 
-**The committed files contain no secret** — the address and token exist only
-as answers on your phone. Once installed, though, the token sits in plain
+The committed files hold no secret. Once installed, the token sits in plain
 text inside the shortcut on the device: don't re-export or AirDrop an
 *installed* copy, and if you suspect it leaked, rotate `api.auth_token` and
 re-import.
 
-## What is verified, and what isn't
+## Offline-safe: the Brain Outbox
 
-Brain Text and Brain Share were run end to end against a real server: the
-note landed in the inbox with the right body and the right tag, and sending
-the same `X-Capture-Key` twice returned the same note id and wrote one file.
+Text, Share and Voice first save the capture to **Files › Shortcuts › Brain
+Outbox** (`<key>.json` or `<key>.m4a`), then send everything in that folder,
+and delete each file only when the server answers with an `id`. No signal, a
+server outage or a wrong token leaves the file there, and the next run of any
+of the three sends it. The file name is the `X-Capture-Key`, and the server
+never expires those keys, so a resend can't create a duplicate note.
 
-**Brain Voice is not verified.** Its upload puts the recording in the request
-body (`WFHTTPBodyType: File`), and that path could not be exercised off the
-phone — Record Audio needs a microphone and a tap, and feeding a file in via
-`shortcuts run -i` never reached the server. Everything around it (the URL,
-the headers, the notification) is shared with the two that do work. **Check
-it once on the phone**: press the Action Button, speak, and confirm a note
-appears in Triage. If nothing arrives, say so — the fix is in `post()`.
+A capture the server rejects for good (for example an empty thought, a 400)
+stays in the outbox and shows the server's what/todo notification on every
+run. Delete that file in Files › Shortcuts › Brain Outbox.
 
-## Why they're built by a script
+Photo and Screenshot are not queued: the original stays in your library, so
+just share it again.
 
-The `.shortcut` format is an undocumented plist of nested token strings and
-action-output references, and it is silently lenient: a wrong key doesn't
-fail the import, it produces an action with a blank field that only fails
-later, on the phone. Generating all three from one file keeps them
-consistent and makes a fix a one-line change instead of thirty taps.
+## Apple Intelligence (Photo, Screenshot)
 
-Five things learned the hard way here, each of which cost a debugging round
-and is now encoded in `build.py`:
+With *yes* on import, the shortcut asks the system model to describe the photo
+(under 400 characters, including visible text) and sends it as `ai_note`. The
+server stores it under `## On-device AI description`, never as your insight,
+and still runs its own vision too. If Apple Intelligence is off or refuses,
+the run stops with an error: delete the shortcut and re-import it with *no*.
 
-- **The Text action is `is.workflow.actions.gettext`**, not `…actions.text`.
-  A wrong identifier fails the run with "an action could not be found".
-- **Named variables resolve to empty.** Set Variable plus
-  `{"Type": "Variable"}` reads back as nothing, so every reference is a
-  direct action-output reference — which is also what Apple's own gallery
-  workflows use.
-- **Replace Text wedges the runner.** Any `is.workflow.actions.text.replace`
-  in the chain makes the run hang forever with no error and no request. That
-  is why nothing trims the address or the token.
-- **Format Date behaves the same way**, so the idempotency key is two random
-  numbers rather than a timestamp.
-- **A hand-written If is rejected**: it renders as "Please choose a value for
-  each parameter in this action" and stops the run. So there are no branches
-  at all — no retry, and the share shortcut handles links only.
+## How they're built
 
-## No retry, by design
+Every shortcut is built by the **shortcuts-playground** plugin
+(`/shortcuts-playground:build`, edits via `/shortcuts-playground:remix` on the
+file in `src/`), which validates and signs it. Actions its knowledge base
+doesn't document were verified on macOS 27 first; see `PROBE27.md`
+(`probe27.py` regenerates those probes). After building or remixing:
 
-Each capture is a single POST. Shortcuts has no try/catch, no readable HTTP
-status code, and no If that survives hand-serialisation, so there is nothing
-sound to branch on. Instead the notification shows the server's own reply:
-a success reads `{"id": …, "status": "captured"}` and a failure carries the
-three-part what/cause/todo sentences. A genuine network failure aborts with
-iOS's own alert.
+```bash
+cp ~/Documents/"Shortcuts Playground"/drafts/"Brain Text.xml" scripts/shortcuts/src/
+cp ~/Documents/"Shortcuts Playground"/"Brain Text.shortcut" scripts/shortcuts/dist/
+python3 scripts/shortcuts/check_shortcuts.py
+```
 
-Every request still sends an `X-Capture-Key`, so if you re-run a capture the
-server can recognise a duplicate. The cockpit's PWA has a real offline
-outbox; the shortcuts deliberately don't reimplement one.
+`check_shortcuts.py` fails a shortcut that bakes in an address or token,
+points an import question at the wrong action, sends before saving to the
+outbox, POSTs without an `X-Capture-Key`, or fails the plugin validator.
 
-## Photos
+Things that break a generated shortcut, learned the hard way:
 
-Not here. A photo needs the raw-file upload plus an If to tell it from a
-link, and neither survives. Use the cockpit's own camera button in the PWA,
-which already resizes and uploads. The share shortcut's declared input
-classes leave images out, so iOS won't offer it for a photo.
+- **URL Encode returns empty** unless its input is a text token string.
+- **Get Items in Range errors** when the list is shorter than the range.
+- **Replace Text and Format Date hang the runner.**
+- An **If** needs its input wrapped as `{"Type": "Variable", ...}`. The old
+  hand-written If failed for that reason. With the wrapper, a named variable
+  set in each branch is readable after End If.
 
 ## Testing a change
 
-`shortcuts run` drives a shortcut end to end, but **Shortcuts cannot reach
-`127.0.0.1`**, so point a test build at a public URL:
-
-```bash
-cloudflared tunnel --url http://127.0.0.1:8765          # prints an https URL
-python3 scripts/shortcuts/build.py --test "<that url>" <token> --out /tmp/t
-```
-
-`--test` bakes the address and token in and replaces every prompt with a
-fixed value, so the shortcut runs unattended. Open each file to import it,
-click **Add Shortcut**, then `shortcuts run "Brain Text"`. Never commit a
-`--test` build: it holds a token.
-
-Importing needs one GUI click per file — there is no `shortcuts add`
-subcommand, and the screen must be unlocked. Run only one `cloudflared` at a
-time; a second one silently takes the hostname and health checks fail.
+`shortcuts run` drives a shortcut, but Shortcuts can't reach `127.0.0.1`, so
+run a throwaway cockpit (`BRAIN_COCKPIT_ROOT=<temp root>`, test vault, test
+token) behind `cloudflared tunnel --url http://127.0.0.1:8765`. Build a test
+copy with the URL and token baked into the import-question Text actions,
+import it under a different name, and pass input as a **file path**
+(`shortcuts run "Name" -i /tmp/x.txt`). Never commit a test copy: it holds a
+token. Files you create in Brain Outbox from the shell aren't seen by
+Shortcuts until iCloud indexes them; test the outbox with files the shortcut
+itself writes.
