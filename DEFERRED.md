@@ -53,7 +53,7 @@
 - ~~Pass 13: Resources gallery/drawer don't render local `attachments/` covers (bearer-auth means a plain `<img src>` can't authenticate) — falls back to the existing category-initial tile; needs an authed image-serving route or a signed short-lived URL scheme. Still true after Pass V2/V3's photo capture landed — nothing added an attachments-serving route.~~ — SHIPPED in Pass F: HMAC-signed short-lived `/api/att/{name}` route (F1).
 - Pass 13: Instagram/YouTube reel and video CONTENT understanding (downloading media, frame-sampling to vision) — only metadata/caption/transcript extraction ships this pass, same as Pass L.
 - ~~Pass 13: Apify setup for real Instagram captions/thumbnails — the seam already exists (pipeline/enrich.py); fallback-first (owner's own words + AI description) ships without it.~~ — code + docs done in the backlog pass (401/402/429 told apart, error items guarded, Integrations card, GO-LIVE section). Still needs the user's `APIFY_TOKEN` on Railway.
-- ~~Pass 13: the iOS Shortcut has no offline queue / auto-retry — a failed POST (no signal, server down) is lost from the Shortcut's perspective; the user would need to re-share.~~ — PARTIALLY SHIPPED in Pass F: the Shortcut now retries the POST once and shows a distinct failure notification (F6); a full offline queue for the Shortcut itself is still out of scope (a manual [YOU] rebuild, no state to persist between runs) — the cockpit's own PWA got a real offline outbox instead (F4).
+- ~~Pass 13: the iOS Shortcut has no offline queue / auto-retry — a failed POST (no signal, server down) is lost from the Shortcut's perspective; the user would need to re-share.~~ — PARTIALLY SHIPPED in Pass F: the Shortcut now retries the POST once and shows a distinct failure notification (F6); a full offline queue for the Shortcut itself is still out of scope (a manual [YOU] rebuild, no state to persist between runs) — the cockpit's own PWA got a real offline outbox instead (F4). UPDATE iOS 27 pass (2026-10-14): the plugin-built Shortcuts now have a real Files outbox (Brain Outbox) with resend + X-Capture-Key dedupe; the "retries once" F6 note above never matched the generated shortcuts.
 - Pass V2/V3: carousel-image OCR / multi-frame description for Instagram carousels — vision.py describes one photo at a time; a carousel share still goes through Pass L's Apify enrichment, not vision.
 - Pass V2/V4: Android PWA `share_target` — iOS Safari ignores it, so the Shortcut is the only cross-platform share-sheet path this round; an Android-only share target is a separate, smaller add later.
 - ~~Pass V3: download a resource's cover image into `attachments/` instead of hot-linking it — matches how a photo capture's own attachment already works, but link covers (YouTube thumbnails, IG display URLs) still point at the source.~~ — SHIPPED in Pass F: best-effort download at enrich time behind `enrich.download_covers` (F2).
@@ -103,9 +103,9 @@
 - Emit an `icon.svg` from the same geometry constants in `web/scripts/make_icons.py` for a crisp desktop favicon (one source of truth; never hand-author a second SVG).
 - Railway's public domain (`app-production-6c89.up.railway.app`) answers without a Cloudflare Access challenge, so Access guards only the custom domain — the bearer token is the real lock on the API. Closing it means Railway private networking or a tunnel-only ingress.
 - The Shortcuts' `--test` harness needs a public URL (`cloudflared tunnel`) because Shortcuts cannot reach `127.0.0.1` — a loopback request hangs on a local-network permission that never arrives. An automated (non-GUI) import path doesn't exist: `shortcuts` has no `add` subcommand.
-- Shortcuts: photo capture from the share sheet (needs the raw-file upload plus an If to tell a photo from a link; a hand-serialised If is rejected by Shortcuts). The PWA's camera button covers it.
-- Shortcuts: retry-on-failure and a prettier success notification, both of which need a working If action — the generated one is rejected, so the notification shows the server's raw reply instead.
-- Shortcuts: Brain Voice's raw-file upload is unverified off-device (Record Audio needs a mic; `shortcuts run -i` never reached the server with a File body).
+- ~~Shortcuts: photo capture from the share sheet (needs the raw-file upload plus an If to tell a photo from a link; a hand-serialised If is rejected by Shortcuts). The PWA's camera button covers it.~~ — SHIPPED in the iOS 27 pass: Brain Photo + Brain Screenshot (plugin-built, verified If).
+- ~~Shortcuts: retry-on-failure and a prettier success notification, both of which need a working If action — the generated one is rejected, so the notification shows the server's raw reply instead.~~ — SHIPPED in the iOS 27 pass: Files outbox resend + readable success/error notifications.
+- ~~Shortcuts: Brain Voice's raw-file upload is unverified off-device (Record Audio needs a mic; `shortcuts run -i` never reached the server with a File body).~~ — SHIPPED in the iOS 27 pass: File-body upload verified with `shortcuts run -i` against a test server.
 
 
 ## Backlog pass (logged 2026-09-21)
@@ -114,3 +114,7 @@
 - Recurrence beyond `daily|weekly` (monthly, weekdays, every-N-days); an unknown `🔁 word` is now stripped from the task text and treated as non-recurring.
 - `todos.set_recur` and `todos.toggle` write the vault line with a plain `write_text`, not a temp-file rename.
 - Search: within-rank ordering of pure substring hits is still by file path; `06-Todos/` still not indexed.
+
+## iOS 27 Shortcuts pass (logged 2026-10-14)
+- Brain Ask synthesized answer: a server endpoint that answers a question from the vault (Brain Ask currently lists the top five search matches only).
+- Brain Outbox poison files: a capture the server rejects as permanently invalid (e.g. empty text, 400) stays in the outbox and re-notifies each run until deleted by hand in Files.

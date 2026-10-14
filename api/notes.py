@@ -612,7 +612,7 @@ def remux_for_duration(path: Path) -> None:
 
 
 # ---- image capture (Pass V2) -------------------------------------------------
-# A photo shared from the "→ Brain Cloud" Shortcut or the cockpit's own photo
+# A photo shared from the Brain Photo Shortcut or the cockpit's own photo
 # button. HEIC never reaches this server — resizing AND format conversion
 # happen on the device (the Shortcut's Resize/Convert steps, the PWA's canvas
 # downscale), so no new dependency is needed here (CLAUDE.md §7: no Pillow,

@@ -812,7 +812,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
     @app.post("/api/capture", status_code=201)
     def capture(request: Request, body: CaptureBody, config=Depends(require_token)):
         # Two shapes, same route (Pass S): {text} is the quick-capture box;
-        # {url, insight?} is a share (the "→ Brain Cloud" Shortcut, or a
+        # {url, insight?} is a share (the Brain Share Shortcut, or a
         # future in-app share button) — the insight rides ALONGSIDE the URL
         # rather than being mashed into one blob the pipeline has to unpick.
         if body.url is not None:

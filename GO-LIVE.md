@@ -191,27 +191,30 @@ There are three ways in, from fastest-setup to richest:
 - **Android**: any recorder or file manager set to save into the synced
   inbox folder works the same way.
 
-### The three capture Shortcuts (voice, share sheet, quick text)
+### The six Brain Shortcuts (iOS 27)
 
-Three ready-made Shortcuts live in `scripts/shortcuts/dist/` — AirDrop them
-to the phone and each asks for your cockpit address and access token once, on
-import. `scripts/shortcuts/README.md` covers installing, the Action Button
-binding, and how to rebuild them.
+Six ready-made Shortcuts live in `scripts/shortcuts/dist/`. AirDrop them to
+the phone; each asks for your cockpit address and access token once, on
+import. They are built with the shortcuts-playground plugin; see
+`scripts/shortcuts/README.md` for install steps and how to change them.
 
-- **Brain Text** — a typed or dictated thought, from the Home Screen or Siri.
-- **Brain Voice** — bound to the **Action Button**: records and sends, with
-  no prompts at all, so it works with the phone in your pocket. It sends no
-  tag; the classifier routes it. (Any prompt — Ask for Input, Choose from
-  List — requires an unlocked phone, which is the one thing the Action Button
-  is meant to avoid.)
-- **Brain Share** — in the share sheet, for Instagram and YouTube links,
-  Safari pages and selected text. It asks for a thought and a tag. Photos go
-  through the cockpit's own camera button instead — see the README for why.
+- **Brain Text**: a typed or dictated thought, from the Home Screen or Siri.
+- **Brain Voice**: bound to the **Action Button**. Records and sends with no
+  prompts; the classifier routes it.
+- **Brain Share**: share sheet, for links, Safari pages and selected text.
+  Asks for a thought and a tag.
+- **Brain Photo**: share sheet for photos (or pick from Photos). Resizes,
+  converts to JPEG and, if you said yes on import, adds an Apple Intelligence
+  description, which is stored as an AI-written section, never as your insight.
+- **Brain Screenshot**: sends your latest screenshot; pair it with the iOS 27
+  Screenshot automation.
+- **Brain Ask**: searches your vault and reads back the top five matches.
 
-Each capture is a single POST carrying an `X-Capture-Key`, and the
-notification shows the server's own reply, so a failure tells you what to do
-next. Brain Text and Brain Share are verified end to end; Brain Voice's
-upload path has only been checked on the phone — confirm it once.
+**Offline-safe**: Text, Share and Voice save each capture into
+*Files › Shortcuts › Brain Outbox* before sending, delete it only when the
+server confirms it, and resend anything left over on the next run. Every
+capture carries an `X-Capture-Key`, so a resend never makes a duplicate.
+Notifications show the server's own what/todo text when something fails.
 
 #### The API contract, if you build one by hand
 
@@ -222,13 +225,15 @@ optionally `X-Capture-Key: <any unique string>` for the idempotent retry.
 |---|---|---|---|
 | `POST /api/capture` | JSON: `{"text": "…", "tag": "…"}` or `{"url": "https://…", "insight": "…", "tag": "…"}` | `application/json` | — |
 | `POST /api/capture/audio` | the **raw audio file** as the whole body | `audio/m4a` (or webm/ogg/mp4) | `tag`, `name` |
-| `POST /api/capture/image` | the **raw image file** as the whole body | `image/jpeg` (or png/webp) | `tag`, `name`, `insight` |
+| `POST /api/capture/image` | the **raw image file** as the whole body | `image/jpeg` (or png/webp) | `tag`, `name`, `insight`, `ai_note` |
 
 **Not multipart.** The audio and image routes take the file as the entire
 request body — `python-multipart` isn't a locked dependency (CLAUDE.md §7),
 so there is no form to fill in. In the Shortcuts app that means *Request
 Body: File*, not *Form*. A photo's accompanying thought rides in the
-`insight` **query parameter**, URL-encoded, not in the body.
+`insight` **query parameter**, URL-encoded, not in the body. An on-device AI
+description goes in `ai_note` (also URL-encoded); the note keeps it under its
+own `## On-device AI description` heading, separate from your insight.
 
 The tag is one of the ten capture tags — `todo idea journal learning person
 resource decision project musing conversation` — or omitted entirely to let
@@ -239,10 +244,9 @@ There is **no OCR parameter**. On-device text extraction has nowhere to go on
 the server today; the pipeline describes the photo itself. (`DEFERRED.md`
 carries the line for an OCR sidecar if that ever changes.)
 
-Building one by hand in the Shortcuts app is fine, but note that three
-actions break a generated shortcut outright — Replace Text and Format Date
-hang the runner, and a hand-serialised If is rejected. Tapping them out in
-the app avoids all three; `scripts/shortcuts/README.md` has the detail.
+Building one by hand in the Shortcuts app is fine. If you generate one,
+avoid Replace Text and Format Date (both hang the runner) and see
+`scripts/shortcuts/PROBE27.md` for the action shapes verified on iOS 27.
 
 A failure comes back as the usual three-part envelope,
 `{"error": {"what", "cause", "todo"}}` — note that `todo` is nested inside

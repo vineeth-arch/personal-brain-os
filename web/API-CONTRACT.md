@@ -193,7 +193,7 @@ Two request shapes on the same route (Pass S) — send one or the other:
 - `{"text": "call the plumber", "tag": "todo"}` — the quick-capture box.
   `tag` optional (`null`/omitted), one of the 8 capture tags, no `#`.
 - `{"url": "https://...", "insight": "the hook part is great", "tag": null}`
-  — a share (the iOS/macOS "→ Brain Cloud" Shortcut, see help.html §S). `url`
+  — a share (the iOS/macOS Brain Share Shortcut, see help.html §08d). `url`
   must start with `http://`/`https://`; `insight` is optional. The server
   composes the inbox capture as `insight + "\n\n" + url` (or `url` alone) —
   the pipeline's link detection (Pass L) picks it up unchanged, and the
@@ -235,20 +235,24 @@ a capture tag, or when the recording arrives empty. `413` when the upload
 passes the server's 100 MB limit — nothing partial is left in the inbox in any
 of those cases.
 
-### `POST /api/capture/image?tag=&name=&insight=`
+### `POST /api/capture/image?tag=&name=&insight=&ai_note=`
 
-A photo from the "→ Brain Cloud" Shortcut or the cockpit's own photo button
+A photo from the Brain Photo / Brain Screenshot Shortcuts or the cockpit's own photo button
 (Pass V1/V2/V4). Same raw-body transport as `/capture/audio` — the body is the
 **raw image bytes**, `Content-Type` decides the extension: `image/jpeg`,
 `image/png`, `image/webp`. **The client always resizes and converts before
 sending** (max edge 2048px, JPEG) — the server never decodes an image, so
 HEIC/HEIF are rejected outright, never accepted-then-converted (CLAUDE.md §7:
-no Pillow, no server-side image decode). All three query params are optional:
+no Pillow, no server-side image decode). All four query params are optional:
 `tag` is one of the 8 capture tags (no `#`), `name` becomes the filename's
 human hint (default `photo`), `insight` is the quick thought typed at share
 time — written to a `.{filename}.insight` sidecar dotfile in the inbox
 **before** the image itself, so the watcher never sees an image without any
 insight that was meant to go with it.
+`ai_note` is an on-device (Apple Intelligence) description from the Brain Photo /
+Brain Screenshot Shortcuts: written to a `.{filename}.ainote` sidecar the same way,
+and rendered under its own `## On-device AI description` heading — never into
+`## Insight`, because it is AI-written, not the user's words. Blank is ignored.
 
 `201 {"id": "20260703061500", "status": "captured"}` — same shape as every
 other capture.

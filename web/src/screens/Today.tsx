@@ -861,7 +861,7 @@ function PhotoButton({ tag, onCaptured }: { tag: CaptureTag | null; onCaptured: 
         kind: "blocked",
         what: "That image couldn't be read.",
         cause: "This browser couldn't decode the photo you picked.",
-        todo: "Try sharing it via the “→ Brain Cloud” Shortcut instead, or pick a different photo.",
+        todo: "Try sharing it via the Brain Photo Shortcut instead, or pick a different photo.",
       });
       return;
     }
