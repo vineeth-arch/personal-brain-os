@@ -9,9 +9,9 @@ readable results, and keep failed captures in a Files outbox that resends
 safely. The backend gained `ai_note` for on-device Apple Intelligence text.
 Merged to main at `e923d36`, deployed to the Mac launchd service.
 
-**Status at close:** code shipped and verified on macOS 27. Phone use is
-blocked only by the Cloudflare Access bypass on `cockpit.vineethnair.com`
-(user action in the Zero Trust dashboard).
+**Status at close:** code shipped and verified on macOS 27; the Cloudflare
+Access bypass for the Shortcut API paths is live. Remaining: phone install
+and test.
 
 ## Timeline
 
@@ -77,7 +77,7 @@ blocked only by the Cloudflare Access bypass on `cockpit.vineethnair.com`
 
 | Item | Owner | Where |
 |---|---|---|
-| Cloudflare Access Bypass app for `api/capture`, `api/search`, `api/health` | User | Zero Trust dashboard |
+| ~~Cloudflare Access Bypass app~~ DONE via `scripts/cf-access-bypass.sh` (dashboard form kept failing on a stale App Launcher clientless flag); health 200, capture/search reach the server (401 without token), `/` still behind login | User + script | Zero Trust |
 | Phone install + test list (Share and Screenshot untested headless) | User | final message / README |
 | Delete Q27 / T* / DBG / PROBE test shortcuts from the library | User | Shortcuts app |
 | `dist/` can go stale if `src/` is edited without re-signing | Deferred | check_shortcuts (g) checks presence only |
