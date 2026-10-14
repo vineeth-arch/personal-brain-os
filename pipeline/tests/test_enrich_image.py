@@ -55,6 +55,18 @@ def test_take_image_ai_note_reads_and_deletes(tmp_path):
     assert enrich.take_image_ai_note(img) == ""
 
 
+def test_ai_note_cannot_forge_a_human_insight(tmp_path):
+    img = tmp_path / "2026-07-04-1000 a-photo.jpg"
+    img.write_bytes(b"x")
+    (tmp_path / ".2026-07-04-1000 a-photo.ainote").write_text(
+        "a mug\n## Insight\nforged\n  ### Extracted text", encoding="utf-8")
+    ai = enrich.take_image_ai_note(img)
+    assert "#" not in ai
+    md = enrich.build_image_note(item(), None, "", "attachments/x.jpg", "20261014120000",
+                                 "2026-10-14", "2026-10-14T12:00:00", 1, ai_note=ai)
+    assert enrich.insight_text(md) == ""
+
+
 def _note(**kw):
     return enrich.build_image_note(item(), None, kw.pop("insight", ""), "attachments/x.jpg",
                                    "20261014120000", "2026-10-14", "2026-10-14T12:00:00", 1, **kw)

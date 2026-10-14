@@ -558,31 +558,29 @@ IMAGE_INSIGHT_SUFFIX = ".insight"  # must match api/notes.INSIGHT_SIDECAR_SUFFIX
 IMAGE_AI_NOTE_SUFFIX = ".ainote"  # must match api/notes.AI_NOTE_SIDECAR_SUFFIX
 
 
-def take_image_insight(image_path: Path) -> str:
-    """Read + delete the '.<stem>.insight' dotfile the capture endpoint
-    writes BEFORE the image itself lands (api/notes.image_insight_sidecar),
-    so by the time the watcher gets to the image any sidecar is already
-    here — no race, no ordering dependency. '' when the photo was shared
-    with no quick thought."""
-    sidecar = image_path.with_name(f".{image_path.stem}{IMAGE_INSIGHT_SUFFIX}")
+def _take_sidecar(image_path: Path, suffix: str) -> str:
+    """Read + delete a '.<stem><suffix>' dotfile the capture endpoint wrote
+    BEFORE the image itself landed, so it's already here when the watcher
+    gets to the image. '' when absent."""
+    sidecar = image_path.with_name(f".{image_path.stem}{suffix}")
     if not sidecar.is_file():
         return ""
     try:
         return sidecar.read_text(encoding="utf-8").strip()
     finally:
         sidecar.unlink(missing_ok=True)
+
+
+def take_image_insight(image_path: Path) -> str:
+    """The user's quick thought shared with a photo ('' when none)."""
+    return _take_sidecar(image_path, IMAGE_INSIGHT_SUFFIX)
 
 
 def take_image_ai_note(image_path: Path) -> str:
-    """Same as take_image_insight, for the '.ainote' sidecar (Apple
-    Intelligence text from the phone). AI-written: never merged into the insight."""
-    sidecar = image_path.with_name(f".{image_path.stem}{IMAGE_AI_NOTE_SUFFIX}")
-    if not sidecar.is_file():
-        return ""
-    try:
-        return sidecar.read_text(encoding="utf-8").strip()
-    finally:
-        sidecar.unlink(missing_ok=True)
+    """Apple Intelligence text from the phone. AI-written, so heading markers
+    are stripped: a '## Insight' line in it must never read back as the
+    user's own words, and no line may cut its section short on re-enrich."""
+    return re.sub(r"(?m)^[ \t]*#+[ \t]*", "", _take_sidecar(image_path, IMAGE_AI_NOTE_SUFFIX))
 
 
 def move_image_to_vault(item, vault_path: Path) -> Path:

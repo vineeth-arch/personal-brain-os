@@ -94,9 +94,10 @@ def check(xml: Path, dist: Path | None, probed: set[str]) -> list[str]:
             continue
         if "https://" in plistlib.dumps(p).decode("utf-8", "replace"):
             errs.append(f"(c) literal https:// at action {i} ({ident[i]}): addresses come from the import question only")
-        for k, v in header_items(p):
-            if k.lower() == "authorization" and not v.startswith("Bearer " + FFFC):
-                errs.append(f"(c) Authorization at action {i} is not 'Bearer <token variable>'")
+        if ident[i] == A + "downloadurl":
+            auth = [v for k, v in header_items(p) if k.lower() == "authorization"]
+            if not auth or not auth[0].startswith("Bearer " + FFFC):
+                errs.append(f"(c) request at action {i} lacks 'Authorization: Bearer <token variable>'")
 
     # (d) write-ahead: outbox shortcuts save before any network call
     if xml.stem in OUTBOX:

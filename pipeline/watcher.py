@@ -274,7 +274,7 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
             if note_type and note_type != "resource":
                 cls = classify_mod.Classification(
                     type=note_type,
-                    title=enrich._first_line(insight) or enrich._first_line(ai_note) or item.name or "photo",
+                    title=(enrich._first_line(insight) or item.name) or "photo",  # origin: human — never named by AI text
                     tags=[tag], confidence=1.0, needs_review=False, routed_by="tag")
                 paths = [enrich.route_tagged_image(item, cls, vision_result, insight,
                                                    attachment_rel, config.vault_path, exif_date,
