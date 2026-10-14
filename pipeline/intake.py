@@ -120,12 +120,13 @@ def sweep_orphaned_sidecars(inbox_path: Path, now: float | None = None) -> None:
     if not inbox.is_dir():
         return
     now = time.time() if now is None else now
-    for sidecar in inbox.glob(".*.insight"):
-        stem = sidecar.name[1:-len(".insight")]
-        if any((inbox / f"{stem}{ext}").exists() for ext in IMAGE_EXT):
-            continue  # the image is still here — not orphaned, the watcher owns it
-        try:
-            if now - sidecar.stat().st_mtime >= ORPHAN_SIDECAR_AGE_SECONDS:
-                sidecar.unlink(missing_ok=True)
-        except OSError:
-            continue
+    for suffix in (".insight", ".ainote"):
+        for sidecar in inbox.glob(f".*{suffix}"):
+            stem = sidecar.name[1:-len(suffix)]
+            if any((inbox / f"{stem}{ext}").exists() for ext in IMAGE_EXT):
+                continue  # the image is still here — not orphaned, the watcher owns it
+            try:
+                if now - sidecar.stat().st_mtime >= ORPHAN_SIDECAR_AGE_SECONDS:
+                    sidecar.unlink(missing_ok=True)
+            except OSError:
+                continue

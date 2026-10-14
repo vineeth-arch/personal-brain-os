@@ -624,6 +624,7 @@ IMAGE_MIME_EXT = {
 }
 MAX_IMAGE_BYTES = 15 * 1024 * 1024
 INSIGHT_SIDECAR_SUFFIX = ".insight"
+AI_NOTE_SIDECAR_SUFFIX = ".ainote"  # Apple Intelligence text — AI-written, never the insight
 
 
 def image_extension(content_type: str | None) -> str | None:
@@ -660,6 +661,12 @@ def image_insight_sidecar(image_path: Path) -> Path:
     image itself, so the watcher can never see the image without its sidecar
     already there — no race, no ordering dependency between the two writes."""
     return image_path.with_name(f".{image_path.stem}{INSIGHT_SIDECAR_SUFFIX}")
+
+
+def image_ai_note_sidecar(image_path: Path) -> Path:
+    """Dotfile carrying on-device AI text for a photo; same write-before-image
+    ordering guarantee as image_insight_sidecar."""
+    return image_path.with_name(f".{image_path.stem}{AI_NOTE_SIDECAR_SUFFIX}")
 
 
 # ---- resurface (Pass R, B6) --------------------------------------------------

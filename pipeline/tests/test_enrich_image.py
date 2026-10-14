@@ -45,6 +45,57 @@ def test_take_image_insight_is_blank_when_no_sidecar(tmp_path):
     assert enrich.take_image_insight(img) == ""
 
 
+def test_take_image_ai_note_reads_and_deletes(tmp_path):
+    img = tmp_path / "2026-07-04-1000 a-photo.jpg"
+    img.write_bytes(b"x")
+    sidecar = tmp_path / ".2026-07-04-1000 a-photo.ainote"
+    sidecar.write_text("  A red mug \n", encoding="utf-8")
+    assert enrich.take_image_ai_note(img) == "A red mug"
+    assert not sidecar.exists()
+    assert enrich.take_image_ai_note(img) == ""
+
+
+def _note(**kw):
+    return enrich.build_image_note(item(), None, kw.pop("insight", ""), "attachments/x.jpg",
+                                   "20261014120000", "2026-10-14", "2026-10-14T12:00:00", 1, **kw)
+
+
+def test_ai_note_is_its_own_section_never_insight():
+    text = _note(ai_note="A red mug")
+    assert "## On-device AI description\n\nA red mug" in text
+    assert "## Insight" not in text
+    assert "title: A red mug" in text
+    assert text.index("![[attachments/x.jpg]]") < text.index("## On-device AI description")
+
+
+def test_insight_still_wins_title_over_ai_note():
+    text = _note(insight="Mine", ai_note="A red mug")
+    assert "title: Mine" in text
+    assert "## Insight\n\nMine" in text and "## On-device AI description\n\nA red mug" in text
+
+
+def test_tagged_image_ai_note_section():
+    cls = classify.Classification(type="musing", title="t", tags=["idea"],
+                                  confidence=1.0, needs_review=False, routed_by="tag")
+    text = enrich.build_tagged_image_note(item(tag="idea"), cls, None, "", "attachments/x.jpg",
+                                          "20261014120000", "2026-10-14", ai_note="A red mug")
+    assert "## On-device AI description\n\nA red mug" in text
+    assert text.index("![[attachments/x.jpg]]") < text.index("## On-device AI description")
+
+
+def test_reenrich_keeps_ai_note_section(vault):
+    note = _seed_photo_note(vault)
+    note.write_text(note.read_text(encoding="utf-8")
+                    + "\n## On-device AI description\n\nA red mug\n", encoding="utf-8")
+
+    def caller(path, mime, key):
+        import json
+        return json.dumps({"description": "d", "resource_type": "book", "extracted_text": "x"})
+
+    enrich.reenrich_image_note(note, config(vault), caller=caller)
+    assert "## On-device AI description\n\nA red mug" in note.read_text(encoding="utf-8")
+
+
 # ---- move_image_to_vault ------------------------------------------------------
 
 def test_move_image_to_vault_lands_in_attachments(vault):

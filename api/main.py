@@ -924,7 +924,7 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
 
     @app.post("/api/capture/image", status_code=201)
     async def capture_image(request: Request, config=Depends(require_token)):
-        """A photo from the "→ Brain Cloud" Shortcut or the cockpit's own photo
+        """A photo from the "Brain Photo" Shortcut or the cockpit's own photo
         button (Pass V2). Same raw-body streaming as capture_audio. The client
         is always the one that resizes and converts — HEIC/large originals
         never reach this server, so there's nothing to decode here."""
@@ -986,12 +986,16 @@ def create_app(root: Path | None = None, app_root: Path | None = None) -> FastAP
                 insight = request.query_params.get("insight") or ""
                 if insight.strip():
                     notes.image_insight_sidecar(path).write_text(insight.strip(), encoding="utf-8")
+                ai = (request.query_params.get("ai_note") or "").strip()
+                if ai:
+                    notes.image_ai_note_sidecar(path).write_text(ai, encoding="utf-8")
                 os.replace(tmp, path)
             except BaseException:
                 Path(tmp).unlink(missing_ok=True)
                 sidecar = notes.image_insight_sidecar(path)
                 if sidecar.exists():
                     sidecar.unlink(missing_ok=True)
+                notes.image_ai_note_sidecar(path).unlink(missing_ok=True)
                 raise
             if capture_key:
                 events.mark_capture_key(capture_key, note_id)

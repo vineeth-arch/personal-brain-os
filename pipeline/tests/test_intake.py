@@ -146,3 +146,18 @@ def test_same_second_photo_captures_get_distinct_files_and_ids(tmp_path):
     assert p1 != p2 and id1 == "20260703090507" and id2 == "20260703090508"
     p2.write_bytes(b"x")
     assert intake._parse(p2).captured.strftime("%Y%m%d%H%M%S") == id2
+
+
+def test_orphan_ainote_swept_only_when_image_gone(tmp_path):
+    later = intake.time.time() + intake.ORPHAN_SIDECAR_AGE_SECONDS + 1
+    kept = tmp_path / ".2026-07-03-0900 photo.ainote"
+    kept.write_text("A red mug", encoding="utf-8")
+    (tmp_path / "2026-07-03-0900 photo.jpg").write_bytes(b"x")
+    orphan = tmp_path / ".2026-07-03-1000 gone.ainote"
+    orphan.write_text("A red mug", encoding="utf-8")
+    intake.sweep_orphaned_sidecars(tmp_path, now=later)
+    assert kept.exists() and not orphan.exists()
+    fresh = tmp_path / ".2026-07-03-1100 fresh.ainote"
+    fresh.write_text("A red mug", encoding="utf-8")
+    intake.sweep_orphaned_sidecars(tmp_path)
+    assert fresh.exists()

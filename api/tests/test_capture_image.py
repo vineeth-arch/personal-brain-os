@@ -107,3 +107,24 @@ def test_image_idempotency_key_same_key_twice(env):
         assert code1 == 201 and code2 == 201
         assert body2["id"] == body1["id"]
     assert len(list(inbox.glob("*.jpg"))) == 1
+
+
+def test_capture_image_ai_note_writes_separate_sidecar(env):
+    root, _, inbox, _ = env
+    from pipeline import intake
+    with Server(root) as s:
+        code, _ = s.raw("POST", "/api/capture/image?ai_note=A%20red%20mug&insight=mine",
+                        b"\xff\xd8\xff\xe0jpeg", "image/jpeg")
+        assert code == 201
+    img = intake.poll(inbox)[0].path
+    assert img.with_name(f".{img.stem}.ainote").read_text(encoding="utf-8") == "A red mug"
+    assert img.with_name(f".{img.stem}.insight").read_text(encoding="utf-8") == "mine"
+
+
+def test_capture_image_blank_ai_note_writes_nothing(env):
+    root, _, inbox, _ = env
+    with Server(root) as s:
+        code, _ = s.raw("POST", "/api/capture/image?ai_note=%20%20",
+                        b"\xff\xd8\xff\xe0jpeg", "image/jpeg")
+        assert code == 201
+    assert [p for p in inbox.iterdir() if p.name.startswith(".")] == []

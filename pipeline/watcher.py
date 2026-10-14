@@ -255,6 +255,7 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
             # same principle as link enrichment (Pass L).
             t0 = time.monotonic()
             insight = enrich.take_image_insight(item.path)
+            ai_note = enrich.take_image_ai_note(item.path)
             exif_date = exif.capture_date(item.path)  # before the move
             attachment = enrich.move_image_to_vault(item, config.vault_path)
             attachment_rel = str(attachment.relative_to(config.vault_path))
@@ -273,13 +274,14 @@ def process_file(item, config, events: EventLog, deps: Deps) -> Result:
             if note_type and note_type != "resource":
                 cls = classify_mod.Classification(
                     type=note_type,
-                    title=(insight.splitlines()[0].strip() if insight else item.name) or "photo",
+                    title=enrich._first_line(insight) or enrich._first_line(ai_note) or item.name or "photo",
                     tags=[tag], confidence=1.0, needs_review=False, routed_by="tag")
                 paths = [enrich.route_tagged_image(item, cls, vision_result, insight,
-                                                   attachment_rel, config.vault_path, exif_date)]
+                                                   attachment_rel, config.vault_path, exif_date,
+                                                   ai_note=ai_note)]
             else:
                 paths = [enrich.route_image(item, vision_result, insight, attachment_rel,
-                                            config.vault_path, exif_date=exif_date)]
+                                            config.vault_path, exif_date=exif_date, ai_note=ai_note)]
                 cls = classify_mod.Classification(type="resource", title=paths[0].stem,
                                                   confidence=1.0, needs_review=False,
                                                   routed_by="tag" if tag else "vision")

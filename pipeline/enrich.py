@@ -555,6 +555,7 @@ def route_link(item, user_text: str, enr: Enrichment, structured: dict,
 # is best-effort decoration on top, same as link enrichment (Pass L).
 
 IMAGE_INSIGHT_SUFFIX = ".insight"  # must match api/notes.INSIGHT_SIDECAR_SUFFIX
+IMAGE_AI_NOTE_SUFFIX = ".ainote"  # must match api/notes.AI_NOTE_SIDECAR_SUFFIX
 
 
 def take_image_insight(image_path: Path) -> str:
@@ -564,6 +565,18 @@ def take_image_insight(image_path: Path) -> str:
     here — no race, no ordering dependency. '' when the photo was shared
     with no quick thought."""
     sidecar = image_path.with_name(f".{image_path.stem}{IMAGE_INSIGHT_SUFFIX}")
+    if not sidecar.is_file():
+        return ""
+    try:
+        return sidecar.read_text(encoding="utf-8").strip()
+    finally:
+        sidecar.unlink(missing_ok=True)
+
+
+def take_image_ai_note(image_path: Path) -> str:
+    """Same as take_image_insight, for the '.ainote' sidecar (Apple
+    Intelligence text from the phone). AI-written: never merged into the insight."""
+    sidecar = image_path.with_name(f".{image_path.stem}{IMAGE_AI_NOTE_SUFFIX}")
     if not sidecar.is_file():
         return ""
     try:
@@ -597,16 +610,25 @@ def _captured_line(exif_date, created: str) -> list[str]:
     return [f"captured: {d}"] if d and d != created else []
 
 
+def _first_line(text: str) -> str:
+    return text.splitlines()[0].strip() if text else ""
+
+
+def _image_title(insight: str, description: str, ai_note: str) -> str:
+    """insight line 1 -> vision description -> ai_note line 1 -> 'photo'."""
+    return _first_line(insight) or description or _first_line(ai_note) or "photo"
+
+
 def build_image_note(item, vision: dict | None, insight: str, attachment_rel: str,
                      note_id: str, created: str, now_iso: str, attempts: int,
-                     exif_date=None) -> str:
+                     exif_date=None, ai_note: str = "") -> str:
     """No capture tag: a resource note like any other share, platform: photo
     instead of youtube/instagram/web (D-PHOTO default)."""
     description = str((vision or {}).get("description") or "").strip()
     rtype = str((vision or {}).get("resource_type") or "").lower()
     if rtype not in RESOURCE_TYPES:
         rtype = "article"
-    title = (insight.splitlines()[0].strip() if insight else "") or description or "photo"
+    title = _image_title(insight, description, ai_note)
     extracted = str((vision or {}).get("extracted_text") or "").strip()
     fm = [
         "---",
@@ -621,7 +643,7 @@ def build_image_note(item, vision: dict | None, insight: str, attachment_rel: st
         f"title: {route._scalar(title)}",
         f"cover: {route._scalar(attachment_rel)}",
         "source_url: ",
-        f"description: {route._scalar(description)}",
+        f"description: {route._scalar(description or _first_line(ai_note))}",
         "status: inbox",
         "platform: photo",
         f"enriched: {'true' if vision else 'false'}",
@@ -638,6 +660,8 @@ def build_image_note(item, vision: dict | None, insight: str, attachment_rel: st
         # guarantee as a link's ## Insight
         body += ["## Insight", "", insight, ""]
     body += [f"![[{attachment_rel}]]", ""]
+    if ai_note:
+        body += ["## On-device AI description", "", ai_note, ""]
     if extracted:
         body += ["## Extracted text", "", extracted, ""]
     if not vision:
@@ -649,12 +673,11 @@ def build_image_note(item, vision: dict | None, insight: str, attachment_rel: st
 
 
 def route_image(item, vision: dict | None, insight: str, attachment_rel: str,
-                vault_path: Path, attempts: int = 1, exif_date=None) -> Path:
+                vault_path: Path, attempts: int = 1, exif_date=None, ai_note: str = "") -> Path:
     note_id = item.captured.strftime("%Y%m%d%H%M%S")
     created = item.captured.strftime("%Y-%m-%d")
     now_iso = datetime.now().isoformat(timespec="seconds")
-    title = (insight.splitlines()[0].strip() if insight else "") or \
-            str((vision or {}).get("description") or "").strip() or "photo"
+    title = _image_title(insight, str((vision or {}).get("description") or "").strip(), ai_note)
     dest_dir = Path(vault_path) / route.TYPE_FOLDER["resource"]
     dest_dir.mkdir(parents=True, exist_ok=True)
     base = f"{created}-{route._kebab(title)}"
@@ -664,13 +687,13 @@ def route_image(item, vision: dict | None, insight: str, attachment_rel: str,
         i += 1
         path = dest_dir / f"{base}-{i}.md"
     path.write_text(build_image_note(item, vision, insight, attachment_rel,
-                                     note_id, created, now_iso, attempts, exif_date), encoding="utf-8")
+                                     note_id, created, now_iso, attempts, exif_date, ai_note), encoding="utf-8")
     return path
 
 
 def build_tagged_image_note(item, cls, vision: dict | None, insight: str,
                             attachment_rel: str, note_id: str, created: str,
-                            exif_date=None) -> str:
+                            exif_date=None, ai_note: str = "") -> str:
     """A photo captured WITH a capture tag: filed as that type's note instead
     of a resource (D-PHOTO 'Both') — universal frontmatter only (SCHEMA §2),
     same as every other tag-routed capture. The vision description is
@@ -696,6 +719,8 @@ def build_tagged_image_note(item, cls, vision: dict | None, insight: str,
     if insight:
         body += [insight, ""]
     body += [f"![[{attachment_rel}]]", ""]
+    if ai_note:
+        body += ["## On-device AI description", "", ai_note, ""]
     description = (vision or {}).get("description")
     if description:
         body += ["## AI description", "", description, ""]
@@ -706,7 +731,8 @@ def build_tagged_image_note(item, cls, vision: dict | None, insight: str,
 
 
 def route_tagged_image(item, cls, vision: dict | None, insight: str,
-                       attachment_rel: str, vault_path: Path, exif_date=None) -> Path:
+                       attachment_rel: str, vault_path: Path, exif_date=None,
+                       ai_note: str = "") -> Path:
     note_id = item.captured.strftime("%Y%m%d%H%M%S")
     created = item.captured.strftime("%Y-%m-%d")
     dest_dir = Path(vault_path) / route.TYPE_FOLDER[cls.type]
@@ -718,7 +744,7 @@ def route_tagged_image(item, cls, vision: dict | None, insight: str,
         i += 1
         path = dest_dir / f"{base}-{i}.md"
     path.write_text(build_tagged_image_note(item, cls, vision, insight, attachment_rel,
-                                            note_id, created, exif_date), encoding="utf-8")
+                                            note_id, created, exif_date, ai_note), encoding="utf-8")
     return path
 
 
