@@ -6,7 +6,15 @@
 #   usage: scripts/cf-access-bypass.sh [hostname]
 set -euo pipefail
 : "${CF_API_TOKEN:?set CF_API_TOKEN first}"
-: "${CF_ACCOUNT_ID:?set CF_ACCOUNT_ID first}"
+if ! [[ "${CF_ACCOUNT_ID:-}" =~ ^[0-9a-f]{32}$ ]]; then  # unset or a placeholder: ask Cloudflare
+  CF_ACCOUNT_ID=$(curl -sS https://api.cloudflare.com/client/v4/accounts -H "Authorization: Bearer $CF_API_TOKEN" | python3 -c '
+import sys, json
+d = json.load(sys.stdin)
+r = d.get("result") or []
+if len(r) != 1:
+    sys.exit("Set CF_ACCOUNT_ID to one of: " + json.dumps([(a["name"], a["id"]) for a in r] or d.get("errors")))
+print(r[0]["id"])')
+fi
 HOST="${1:-cockpit.vineethnair.com}"
 NAME="Cockpit Shortcuts API"
 API="https://api.cloudflare.com/client/v4/accounts/$CF_ACCOUNT_ID/access"
