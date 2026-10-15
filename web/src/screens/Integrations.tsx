@@ -10,9 +10,11 @@ import type {
 import { CloudEngineConfirm } from "../components/CloudEngineConfirm";
 import { ErrorState } from "../components/ErrorState";
 import { IntegrationIcon } from "../components/IntegrationIcon";
-import { StatusBadge } from "../components/StatusBadge";
+import { IntegrationGuide } from "../components/IntegrationGuide";
+import { Disc, TrafficLight } from "../components/TrafficLight";
 import { toast } from "../components/Toast";
 import { usePolling } from "../hooks/usePolling";
+import { guideFor, lightOf, LIGHT_WORD, type Light } from "../lib/integrationGuides";
 
 // Worst status across the health cards drives the one accent-lit summary strip.
 const SEVERITY: Record<IntegrationStatus, number> = { problem: 3, warn: 2, ok: 0, unknown: 0 };
@@ -34,20 +36,30 @@ function fmtClock(iso: string): string {
 
 // The ONE teal element on the screen: calm + a single accent dot when all-clear;
 // tonal for warnings; spark pink for problems (mirrors Today's HeroCard).
+type Filter = "all" | "attention" | "off";
+
 function SummaryStrip({
   cards,
   checkedAt,
   onRecheck,
   rechecking,
+  filter,
+  onFilter,
 }: {
   cards: IntegrationCard[];
   checkedAt: string;
   onRecheck: () => void;
   rechecking: boolean;
+  filter: Filter;
+  onFilter: (f: Filter) => void;
 }) {
   const status = overall(cards);
-  const health = cards.filter((c) => c.group === "health");
-  const attention = health.filter((c) => c.status === "warn" || c.status === "problem").length;
+  const lit = cards.filter((c) => c.group !== "link" || lightOf(c) !== null);
+  const count = (l: Light) => lit.filter((c) => lightOf(c) === l).length;
+  const bad = count("bad");
+  const warn = count("warn");
+  // Optional integrations (PDL, Apify, Hindi, OpenAI) being off is calm, not a fault.
+  const notSetUp = lit.filter((c) => lightOf(c) === "off" && !(guideFor(c.id)?.optional)).length;
 
   const shell =
     status === "problem"
@@ -61,13 +73,20 @@ function SummaryStrip({
       : status === "problem"
         ? "text-spark-text opacity-80"
         : "text-subtle";
-  const untested = health.filter((c) => c.status === "unknown").length;
   const line =
-    status === "ok"
-      ? untested > 0
-        ? `All connected · ${untested} untested`
-        : "All connected"
-      : `${attention} of ${health.length} need${attention === 1 ? "s" : ""} a look`;
+    bad > 0
+      ? `${bad} not working`
+      : warn > 0
+        ? `${warn} need${warn === 1 ? "s" : ""} a look`
+        : notSetUp > 0
+          ? `All working · ${notSetUp} not set up`
+          : "All connected";
+  const chips: { light: Light; filter: Filter }[] = [
+    { light: "ok", filter: "all" },
+    { light: "warn", filter: "attention" },
+    { light: "bad", filter: "attention" },
+    { light: "off", filter: "off" },
+  ];
 
   return (
     <section className={`rounded-xl p-5 ${shell}`}>
@@ -93,6 +112,21 @@ function SummaryStrip({
           Checked {fmtClock(checkedAt)}
         </span>
       </div>
+      <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label="Filter by status">
+        {chips.map((chip) => (
+          <button
+            key={chip.light}
+            type="button"
+            aria-pressed={filter !== "all" && filter === chip.filter}
+            onClick={() => onFilter(filter === chip.filter ? "all" : chip.filter)}
+            className="bg-default border-subtle text-emphasis inline-flex min-h-11 items-center gap-2 rounded-xl border px-3 text-sm font-bold"
+          >
+            <Disc light={chip.light} />
+            <span className="tabular-nums">{count(chip.light)}</span>
+            <span className="text-subtle font-semibold">{LIGHT_WORD[chip.light]}</span>
+          </button>
+        ))}
+      </div>
     </section>
   );
 }
@@ -108,6 +142,7 @@ function HealthCard({
   onEngine,
   onNtfy,
   onVaultSync,
+  onGuide,
   busy,
 }: {
   card: IntegrationCard;
@@ -116,6 +151,7 @@ function HealthCard({
   onEngine: (engine: EngineName) => void;
   onNtfy: () => void;
   onVaultSync: () => void;
+  onGuide: (id: string) => void;
   busy: boolean;
 }) {
   const [confirmCloud, setConfirmCloud] = useState(false);
@@ -202,7 +238,7 @@ function HealthCard({
         </div>
       </div>
       <div className="mt-3 flex items-center gap-2">
-        <StatusBadge status={card.status} label={badgeLabel(card)} />
+        <TrafficLight light={lightOf(card) ?? "off"} detail={badgeLabel(card)} />
       </div>
       {card.detail && <p className="text-subtle mt-2 text-sm">{card.detail}</p>}
       {card.error && (
@@ -232,13 +268,34 @@ function HealthCard({
           </dl>
         </details>
       )}
-      <div className="mt-4">{action}</div>
+      <div className="mt-4 flex flex-wrap items-center gap-2">
+        {action}
+        <GuideButton card={card} onGuide={onGuide} />
+      </div>
     </article>
   );
 }
 
-function LinkCard({ card }: { card: IntegrationCard }) {
+// "Connect" when nothing is set up or it is broken, "Fix" when it needs a look,
+// "Guide" when healthy. No registry entry → no button.
+function GuideButton({ card, onGuide }: { card: IntegrationCard; onGuide: (id: string) => void }) {
+  if (!guideFor(card.id)) return null;
+  const light = lightOf(card);
+  const label = light === "ok" ? "Guide" : light === "warn" ? "Fix" : "Connect";
+  return (
+    <button
+      type="button"
+      onClick={() => onGuide(card.id)}
+      className="text-emphasis min-h-11 rounded-xl px-4 text-sm font-bold underline underline-offset-4"
+    >
+      {label}
+    </button>
+  );
+}
+
+function LinkCard({ card, onGuide }: { card: IntegrationCard; onGuide: (id: string) => void }) {
   const external = card.url?.startsWith("http");
+  const light = lightOf(card);
   return (
     <article className="bg-default border-subtle flex flex-col rounded-xl border p-4">
       <div className="flex items-start gap-3">
@@ -248,7 +305,12 @@ function LinkCard({ card }: { card: IntegrationCard }) {
           <p className="text-default mt-1 text-sm">{card.description}</p>
         </div>
       </div>
-      <div className="mt-4">
+      {light && (
+        <div className="mt-3">
+          <TrafficLight light={light} />
+        </div>
+      )}
+      <div className="mt-4 flex flex-wrap items-center gap-2">
         <a
           href={card.url}
           target={external ? "_blank" : undefined}
@@ -257,6 +319,7 @@ function LinkCard({ card }: { card: IntegrationCard }) {
         >
           Open ↗
         </a>
+        {light && <GuideButton card={card} onGuide={onGuide} />}
       </div>
     </article>
   );
@@ -406,11 +469,13 @@ function GoogleCard({
   card,
   onConnect,
   onDisconnect,
+  onGuide,
   busy,
 }: {
   card: IntegrationCard;
   onConnect: () => void;
   onDisconnect: () => void;
+  onGuide: (id: string) => void;
   busy: boolean;
 }) {
   const connected = card.meta?.connected === true;
@@ -448,7 +513,7 @@ function GoogleCard({
         </div>
       </div>
       <div className="mt-3 flex items-center gap-2">
-        <StatusBadge status={card.status} label={badgeLabel(card)} />
+        <TrafficLight light={lightOf(card) ?? "off"} detail={badgeLabel(card)} />
       </div>
 
       {connected && count !== undefined && count !== null && (
@@ -529,6 +594,7 @@ function GoogleCard({
               Connect Google
             </button>
           )}
+          <GuideButton card={card} onGuide={onGuide} />
         </div>
       )}
     </article>
@@ -551,6 +617,16 @@ function SkeletonGrid() {
 export function Integrations() {
   const { data, error, loading, refetch } = usePolling(() => api.integrations());
   const [busy, setBusy] = useState(false);
+  const [guideId, setGuideId] = useState<string | null>(null);
+  const [filter, setFilter] = useState<Filter>("all");
+  const dialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const d = dialogRef.current;
+    if (!d) return;
+    if (guideId && !d.open) d.showModal();
+    if (!guideId && d.open) d.close();
+  }, [guideId]);
 
   const recheck = async () => {
     setBusy(true);
@@ -640,13 +716,39 @@ export function Integrations() {
   }
 
   const cards = data!.cards;
-  const health = cards.filter((c) => c.group === "health");
-  const googleCards = cards.filter((c) => c.group === "google");
+  // Worst first; optional-and-off sinks below real gaps; healthy last. Stable by payload order.
+  const rank = (c: IntegrationCard) => {
+    const l = lightOf(c);
+    if (l === "bad") return 0;
+    if (l === "warn") return 1;
+    if (l === "off") return guideFor(c.id)?.optional ? 3 : 2;
+    return 4;
+  };
+  const inView = (c: IntegrationCard) => {
+    const l = lightOf(c);
+    return filter === "all" || (filter === "attention" ? l === "warn" || l === "bad" : l === "off");
+  };
+  const byRank = (list: IntegrationCard[]) =>
+    list
+      .map((c, i) => ({ c, i }))
+      .sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i)
+      .map((x) => x.c);
+  const health = byRank(cards.filter((c) => c.group === "health" && inView(c)));
+  const googleCards = cards.filter((c) => c.group === "google" && inView(c));
   const links = cards.filter((c) => c.group === "link");
+  const guideCard = guideId ? cards.find((c) => c.id === guideId) : undefined;
+  const guide = guideId ? guideFor(guideId) : undefined;
 
   return (
     <div className="space-y-8">
-      <SummaryStrip cards={cards} checkedAt={data!.generated_at} onRecheck={recheck} rechecking={busy} />
+      <SummaryStrip
+        cards={cards}
+        checkedAt={data!.generated_at}
+        onRecheck={recheck}
+        rechecking={busy}
+        filter={filter}
+        onFilter={setFilter}
+      />
 
       <section>
         <p className="text-subtle text-[11px] font-bold uppercase tracking-[0.08em]">Health checks</p>
@@ -660,10 +762,14 @@ export function Integrations() {
               onEngine={switchEngine}
               onNtfy={testNtfy}
               onVaultSync={syncVault}
+              onGuide={setGuideId}
               busy={busy}
             />
           ))}
         </div>
+        {filter !== "all" && health.length + googleCards.length === 0 && (
+          <p className="text-subtle mt-3 text-sm">Nothing here. Everything in this view is connected.</p>
+        )}
       </section>
 
       {googleCards.length > 0 && (
@@ -676,6 +782,7 @@ export function Integrations() {
                 card={card}
                 onConnect={connectGoogle}
                 onDisconnect={disconnectGoogle}
+                onGuide={setGuideId}
                 busy={busy}
               />
             ))}
@@ -693,11 +800,32 @@ export function Integrations() {
         ) : (
           <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
             {links.map((card) => (
-              <LinkCard key={card.id} card={card} />
+              <LinkCard key={card.id} card={card} onGuide={setGuideId} />
             ))}
           </div>
         )}
       </section>
+
+      <dialog
+        ref={dialogRef}
+        aria-label="Integration guide"
+        onClose={() => setGuideId(null)}
+        onClick={(e) => {
+          if (e.target === dialogRef.current) setGuideId(null);
+        }}
+        className="bg-default text-default border-subtle m-0 mt-auto max-h-[85dvh] w-full max-w-lg overflow-y-auto overscroll-contain rounded-t-xl border p-5 backdrop:bg-black/50 sm:m-auto sm:rounded-xl"
+      >
+        {guideCard && guide && (
+          <IntegrationGuide
+            card={guideCard}
+            guide={guide}
+            redirectUri={`${getApiBase()}/api/google/callback`}
+            onRecheck={recheck}
+            onClose={() => setGuideId(null)}
+            busy={busy}
+          />
+        )}
+      </dialog>
     </div>
   );
 }

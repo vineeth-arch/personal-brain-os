@@ -42,6 +42,11 @@
   --cal-brand-emphasis: #d60059;
   --cal-brand-text: #ffffff;
   --cal-spark: #ff006c;
+  /* Status lights (Pass G): marks, not an accent. Always paired with glyph + word. */
+  --cal-ok: #1a7f37; --cal-ok-ink: #ffffff;
+  --cal-warn: #b45309; --cal-warn-ink: #ffffff;
+  --cal-bad: #c62828; --cal-bad-ink: #ffffff;
+  --cal-off: #6e6a61; --cal-off-ink: #ffffff;
 }
 .dark {
   --cal-bg: #1f006e;
@@ -63,6 +68,10 @@
   --cal-brand-emphasis: #00c9a3;
   --cal-brand-text: #11003b;
   --cal-spark: #ff006c;
+  --cal-ok: #3ddc84; --cal-ok-ink: #11003b;
+  --cal-warn: #fbbf24; --cal-warn-ink: #11003b;
+  --cal-bad: #ff6b6b; --cal-bad-ink: #11003b;
+  --cal-off: #9b8fc9; --cal-off-ink: #11003b;
   color-scheme: dark;
 }
 
@@ -77,6 +86,14 @@
   --color-brand: var(--cal-brand-text);
   --color-spark: var(--cal-spark);
   --color-spark-text: #ffffff;
+  --color-light-ok: var(--cal-ok);
+  --color-light-ok-ink: var(--cal-ok-ink);
+  --color-light-warn: var(--cal-warn);
+  --color-light-warn-ink: var(--cal-warn-ink);
+  --color-light-bad: var(--cal-bad);
+  --color-light-bad-ink: var(--cal-bad-ink);
+  --color-light-off: var(--cal-off);
+  --color-light-off-ink: var(--cal-off-ink);
 }
 
 /* Semantic utilities (DESIGNSYSTEM.md §6). bg-emphasis and text-emphasis map to
