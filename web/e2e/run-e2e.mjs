@@ -359,6 +359,17 @@ try {
   await gmailCard.getByRole("button", { name: "Connect Google" }).waitFor();
   console.log("✓ Gmail card offers Connect Google while unlinked");
 
+  // Pass G: traffic light + guide. Unlinked Gmail is grey "Not connected", and
+  // its Connect guide opens a dialog whose first unfinished step is "Next".
+  await gmailCard.getByText("Not connected").first().waitFor();
+  await gmailCard.getByRole("button", { name: /^Connect$/ }).click();
+  const guideDialog = page.getByRole("dialog");
+  await guideDialog.getByRole("heading", { name: "Gmail" }).waitFor();
+  await guideDialog.getByText("Next:").waitFor({ state: "attached" });
+  await page.keyboard.press("Escape");
+  await guideDialog.waitFor({ state: "hidden" });
+  console.log("✓ Gmail shows Not connected; its guide opens and Esc closes it");
+
   // Link an account by writing the refresh token the way the OAuth callback
   // would, then bust the 60s health-card cache from the UI.
   const linked = JSON.parse(fs.readFileSync(path.join(root, "config.json"), "utf8"));
@@ -435,6 +446,23 @@ try {
     assert.ok([404, 405].includes(probe.status), `unexpected status ${probe.status} for ${sendPath}`);
   }
   console.log("✓ No send route exists on the API");
+
+  // Pass G coverage gate (the di-portal "every screen has a guide" test): every
+  // non-link card must offer a guide that opens on its own name. A card added
+  // to api/integrations.py without an entry in lib/integrationGuides.ts fails here.
+  const payload = await (await fetch(`${BASE}/api/integrations`,
+    { headers: { Authorization: `Bearer ${TOKEN}` } })).json();
+  const guided = payload.cards.filter((c) => c.group !== "link");
+  assert.ok(guided.length >= 10, "expected the health + google cards");
+  for (const c of guided) {
+    const art = page.locator("article")
+      .filter({ has: page.getByRole("heading", { name: c.name }) }).first();
+    await art.getByRole("button", { name: /^(Guide|Fix|Connect)$/ }).click();
+    await page.getByRole("dialog").getByRole("heading", { name: c.name }).waitFor();
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+  }
+  console.log(`✓ All ${guided.length} non-link cards open a guide`);
 
   // ---- 6. Mic capture: record in the PWA → a file lands in the inbox (Pass V) ---
   // Typing into the quick-capture box first also exercises D22: that text is

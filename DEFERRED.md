@@ -118,3 +118,4 @@
 ## iOS 27 Shortcuts pass (logged 2026-10-14)
 - Brain Ask synthesized answer: a server endpoint that answers a question from the vault (Brain Ask currently lists the top five search matches only).
 - Brain Outbox poison files: a capture the server rejects as permanently invalid (e.g. empty text, 400) stays in the outbox and re-notifies each run until deleted by hand in Files.
+- Integrations guide: deep-link into a specific Settings section (needs a hash-query focus param; the router already strips "?") and optional reachability pings for n8n/ZimaOS/Supabase link cards.
